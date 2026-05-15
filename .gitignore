@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+*.pyc
+
+# External reference repos (have their own .git)
+references/
+
+# Local Claude Code settings
+.claude/settings.local.json

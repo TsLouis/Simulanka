@@ -1,0 +1,52 @@
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name = "simulanka"
+version = "0.1.0"
+description = "Research Graph Kernel for semi-automated scientific workflows"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Simulanka authors" }]
+dependencies = [
+    "typer>=0.12",
+    "pydantic>=2.7",
+    "python-ulid>=2.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-cov>=5",
+    "ruff>=0.5",
+    "mypy>=1.10",
+]
+torch = [
+    "torch>=2.4",
+]
+
+[project.scripts]
+simulanka = "simulanka.cli.app:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/simulanka"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["references", "researcher-handoff"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+# typer's recommended idiom uses function-call defaults (Argument/Option); not a real bug.
+ignore = ["B008"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
