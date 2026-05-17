@@ -269,7 +269,7 @@ TaskContract(
 
 **自由模式不动**：`run agent --prompt '...'` 不挂 task、不做检查、不写 `contract` attr。`--prompt` / `--task` 互斥。
 
-**仍不在 Alpha**：proposal / 多 attempt 比较；契约的版本化；budget.time_seconds 在 detached 模式下的实际执行（仍只在 sync 模式作为 timeout 生效）；超出 wall-clock 之外的预算维度（cost / tokens）。
+**仍不在 Alpha**：契约的版本化；budget.time_seconds 在 detached 模式下的实际执行（仍只在 sync 模式作为 timeout 生效）；超出 wall-clock 之外的预算维度（cost / tokens）。
 
 ## 6. 存储与一致性
 
@@ -354,7 +354,7 @@ simulanka graph index rebuild
 13. ✅ `run agent --detach`（detached 模式下也跑 workspace diff，见 §5.5）。
 14. ✅ TaskContract + 第一等 `task` 节点（goal + allowed_outputs + budget + acceptance，见 §5.6）。
 
-下一步候选：多 attempt / proposal 比较；前端 canvas。视具体研究流程触发。
+下一步候选：前端 canvas。视具体研究流程触发。多 attempt 比较等约定层议题落到 agent 工程，不进 kernel。
 
 仍在 Alpha 范围外：artifact store、前端 canvas、file binding 的 snapshot/generated 模式。`fs_path` 类 attrs 留给后续 `attrs_model` 扩展。
 
