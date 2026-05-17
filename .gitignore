@@ -13,3 +13,4 @@ references/
 
 # Local Claude Code settings
 .claude/settings.local.json
+.gitnexus

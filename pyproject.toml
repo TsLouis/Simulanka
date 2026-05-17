@@ -48,5 +48,15 @@ python_version = "3.11"
 strict = true
 files = ["src", "tests"]
 
+[[tool.mypy.overrides]]
+module = ["torch", "torch.*"]
+ignore_missing_imports = true
+
+# Dummy torch.nn.Module subclasses in the importer tests are pure fixtures;
+# strict mode otherwise flags them as "subclass of Any".
+[[tool.mypy.overrides]]
+module = ["tests.test_torch_importer"]
+disallow_subclassing_any = false
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
