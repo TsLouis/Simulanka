@@ -212,9 +212,18 @@ finished marker 存在？
 
 **zombie 检测**：`os.kill(pid, 0)` 对 zombie 返回成功（zombie 仍有 PID 但已死），所以 `_is_alive` 读 `/proc/<pid>/status` 看 `State:`，是 `Z` 当 dead 处理。Linux/WSL 专属；其他平台 fallback 到 kill-probe（精度降级）。
 
-#### 不在 Alpha
+#### `run agent --detach`（第 13 步加入）
 
-- `run agent --detach`：agent wrapper 在 subprocess 之后做 workspace diff，detached 模式下需要把 before-snapshot 持久化、reconcile 时计算 diff。值得做但优先级低。
+同样的"两段：launch → 惰性 reconcile"骨架，加上一层 agent diff 的延后计算：
+
+1. `start_agent_run`：先在主进程里算 before-snapshot，然后委托 `runner.start_run` 拉起 subprocess。subprocess 已经在跑之后，把 `before_snapshot.json`、`agent_meta.json`（agent、argv、workdir、track_scope）、`prompt.txt` 写进 `<run_dir>/`。CLI 立刻返回。
+2. `finalize_agent_diff(layout, run_node)`：CLI 在 `run status / wait / reconcile` 里跑完 runner 的 reconcile 之后再调一次。它检查 `agent_meta.json` 是否存在 + status 是否终态 + `changes.json` 是否已写过——三者决定走 noop / 计算 diff / 复用现成 diff 三条路径之一。
+3. Runner 仍然完全不感知 agent。snapshot 和 changes.json 都不进图（理由同 §5.4）。
+
+before-snapshot 是 launch 前的快照，所以即便 subprocess 在我们写 meta 之前就开始改文件也不会丢；meta 写失败只会让 finalize 退化为 noop，run 节点本身仍由 runner 正常收尾。
+
+#### 仍不在 Alpha
+
 - 超时：detached 模式无 timeout；用 `run kill` 主动中止。
 - 后台日志 tail：用户自己 `tail -f $(simulanka run status ... | jq -r .stdout_path)`。
 
@@ -226,6 +235,41 @@ simulanka run wait <selector> [--timeout N] [--interval 0.5]
 simulanka run kill <selector>       # SIGTERM 到 process group
 simulanka run reconcile [<sel>|all]
 ```
+
+### 5.6 TaskContract + 第一等 `task` 节点（第 14 步加入）
+
+之前 agent 只接 free-form prompt，无法对"做了什么"和"该做什么"做对照。第 14 步把 agent 输入升格为结构化合同 + 第一等 graph 实体。
+
+**`TaskContract`**（`simulanka.contract`，Pydantic）：
+```python
+TaskContract(
+    goal: str,                                    # 必填，原 prompt 的语义升级
+    allowed_outputs: list[str] = [],              # gitignore-ish 通配，支持 **
+    budget: BudgetSpec(time_seconds: float | None),
+    acceptance: AcceptanceSpec(command: str) | None,
+)
+```
+
+**`task` 节点**：父类型 `directory` / `experiment`；attrs 平铺契约字段（goal、allowed_outputs、budget_time_seconds、acceptance_command）。Edge type 新增 `fulfills` (run → task)。
+
+**两段流程**：
+1. 用户先 `simulanka task create --parent ... --name ... --goal ... [--allow] [--budget-time] [--accept]`（或 `--contract <file>`）建一个 task 节点。
+2. 用 `simulanka run agent --task <selector> --parent ... --name ...` 真正发起 agent run。agent 层做四件事：
+   - 把契约镜像到 run 节点 `contract` attr（带 `task_node_id` 反向链），并写一份 `<run_dir>/contract.json` 留档（task 后续被改也不影响历史 run）。
+   - 创建 `fulfills` 边。
+   - 跑 agent，算 diff（与 §5.4 / §5.5 完全相同的路径）。
+   - 调 `check_contract`：
+     - `allowed_outputs` 非空 → 把 diff 里所有路径过通配，违例进 `out_of_scope_files`。
+     - `acceptance.command` 非空 → 在 workdir 跑这个命令（用 `sh -c`），acceptance.log 保存到 `<run_dir>/`。
+   - 把结果写到 run 节点 `contract_check` attr：`status ∈ {passed, out_of_scope, acceptance_failed, no_check}`，外加 `acceptance_exit_code`、`acceptance_log_path`。
+
+**优先级**：scope 违例 > acceptance 失败 > passed。两者全空 → `no_check`（向后兼容 `--prompt` 自由模式）。
+
+**Detached + 契约**：`start_agent_run --task` 在 launch 后立刻镜像契约到 run 节点，把 `task_node_id` 写进 `agent_meta.json`；`finalize_agent_diff` 跑完 diff 之后自动跑 `check_contract`（acceptance 命令在 host 进程的 finalize 阶段同步执行，不是在 detached subprocess 里）。再次 finalize 看到 run 节点已有 `contract_check` attr，跳过——幂等。
+
+**自由模式不动**：`run agent --prompt '...'` 不挂 task、不做检查、不写 `contract` attr。`--prompt` / `--task` 互斥。
+
+**仍不在 Alpha**：proposal / 多 attempt 比较；契约的版本化；budget.time_seconds 在 detached 模式下的实际执行（仍只在 sync 模式作为 timeout 生效）；超出 wall-clock 之外的预算维度（cost / tokens）。
 
 ## 6. 存储与一致性
 
@@ -307,8 +351,10 @@ simulanka graph index rebuild
 10. ✅ Run executor（见 §5.3）。
 11. ✅ Agent wrapper（见 §5.4）。
 12. ✅ `update_attrs` op + 异步执行（见 §5.5）。
+13. ✅ `run agent --detach`（detached 模式下也跑 workspace diff，见 §5.5）。
+14. ✅ TaskContract + 第一等 `task` 节点（goal + allowed_outputs + budget + acceptance，见 §5.6）。
 
-下一步候选：`run agent --detach`（detached 模式下也跑 workspace diff）；TaskContract 化（goal + allowed_outputs + budget 结构化输入）；前端 canvas。视具体研究流程触发。
+下一步候选：多 attempt / proposal 比较；前端 canvas。视具体研究流程触发。
 
 仍在 Alpha 范围外：artifact store、前端 canvas、file binding 的 snapshot/generated 模式。`fs_path` 类 attrs 留给后续 `attrs_model` 扩展。
 

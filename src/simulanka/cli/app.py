@@ -8,12 +8,14 @@ from simulanka import __version__
 from simulanka.cli.graph import graph_app
 from simulanka.cli.import_ import import_app
 from simulanka.cli.run import run_app
+from simulanka.cli.task import task_app
 from simulanka.layout import init_project
 
 app = typer.Typer(help="Simulanka — research graph kernel CLI", no_args_is_help=True)
 app.add_typer(graph_app, name="graph")
 app.add_typer(import_app, name="import")
 app.add_typer(run_app, name="run")
+app.add_typer(task_app, name="task")
 
 
 @app.command()

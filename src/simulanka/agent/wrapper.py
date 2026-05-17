@@ -30,28 +30,27 @@ import shlex
 from dataclasses import dataclass
 from pathlib import Path
 
+from simulanka.contract import (
+    ContractCheckResult,
+    TaskContract,
+    check_contract,
+    contract_from_task_attrs,
+    task_node_attrs,
+)
+from simulanka.kernel.apply import apply_patch_now
+from simulanka.kernel.intent import CreateEdgeOp, UpdateAttrsOp
 from simulanka.layout.project import ProjectLayout
 from simulanka.runner import exec_run
+from simulanka.storage.entity_store import load_node
 
-# ---------------------------------------------------------------------------
-# Built-in agent templates
-# ---------------------------------------------------------------------------
-# Each template is an argv list. ``{prompt}`` in any element is replaced with
-# the user's prompt (no shell interpolation — substitution is positional).
-#
-# These defaults are starting points only. If codex or claude change their
-# invocation format, override the relevant entry here or set the env var
-# ``SIMULANKA_AGENT_<UPPERCASE_NAME>_ARGV='binary --flag {prompt}'``.
-
+# ``{prompt}`` is substituted positionally (no shell interpolation). Override
+# via env var ``SIMULANKA_AGENT_<UPPERCASE_NAME>_ARGV`` when an agent CLI
+# changes its invocation format.
 AGENT_TEMPLATES: dict[str, list[str]] = {
     "codex": ["codex", "exec", "{prompt}"],
     "claude": ["claude", "-p", "{prompt}"],
 }
 
-# Filesystem entries that are noise for diff purposes (caches, VCS, our own
-# bookkeeping, common venv/build dirs). The list is intentionally short and
-# conservative — users with unusual layouts can pass ``track_scope`` to narrow
-# the snapshot to a subdirectory.
 _DEFAULT_DIFF_IGNORE = frozenset({
     ".simulanka", ".git", ".hg", ".svn",
     "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
@@ -75,17 +74,16 @@ class AgentRunResult:
     files_modified: list[str]
     files_deleted: list[str]
     duration_seconds: float
+    task_node_id: str | None = None
+    contract_check: ContractCheckResult | None = None
 
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
 
 def run_agent(
     layout: ProjectLayout,
     *,
     agent: str,
-    prompt: str,
+    prompt: str | None = None,
+    task_node_id: str | None = None,
     parent: str,
     name: str,
     workdir: Path | None = None,
@@ -96,19 +94,22 @@ def run_agent(
 ) -> AgentRunResult:
     """Invoke an external agent CLI and record the run + workspace diff.
 
-    Args:
-        agent: short name. Looks up ``AGENT_TEMPLATES`` (or env override).
-        prompt: the task to send. Substituted into the argv template.
-        parent: directory/experiment selector for the resulting run node.
-        workdir: agent cwd. Defaults to the project root.
-        timeout: subprocess timeout in seconds.
-        extra_args: appended to the argv before substitution (positional).
-        track_scope: subdirectories (relative to workdir) to snapshot. Defaults
-            to the workdir root. Useful when the project contains huge data
-            directories you don't want to hash on every run.
+    Exactly one of ``prompt`` or ``task_node_id`` must be given:
+
+    * ``prompt``: free-form goal text. No contract recorded, no checks run.
+    * ``task_node_id``: id of a ``task`` node. The contract is mirrored onto
+      the run node, ``allowed_outputs`` is checked against the workspace diff,
+      and ``acceptance.command`` (if any) is executed in the workdir afterwards.
+
+    ``timeout`` overrides ``contract.budget.time_seconds`` when both are set.
     """
+    resolved_prompt, contract = _resolve_prompt_and_contract(layout, prompt, task_node_id)
+    effective_timeout = timeout
+    if effective_timeout is None and contract is not None:
+        effective_timeout = contract.budget.time_seconds
+
     template = _resolve_template(agent)
-    argv = [_fill(part, prompt) for part in template]
+    argv = [_fill(part, resolved_prompt) for part in template]
     if extra_args:
         argv.extend(extra_args)
     command = shlex.join(argv)
@@ -123,7 +124,7 @@ def run_agent(
         parent=parent,
         name=name,
         workdir=effective_workdir,
-        timeout=timeout,
+        timeout=effective_timeout,
         agent=agent,
         actor=actor,
     )
@@ -132,7 +133,7 @@ def run_agent(
     diff = _diff(before, after, base=layout.root)
 
     prompt_path = exec_result.run_dir / "prompt.txt"
-    prompt_path.write_text(prompt, encoding="utf-8")
+    prompt_path.write_text(resolved_prompt, encoding="utf-8")
     changes_path = exec_result.run_dir / "changes.json"
     changes_path.write_text(
         json.dumps(
@@ -149,6 +150,19 @@ def run_agent(
         encoding="utf-8",
     )
 
+    contract_result: ContractCheckResult | None = None
+    if contract is not None and task_node_id is not None:
+        contract_result = _apply_contract(
+            layout,
+            run_node_id=exec_result.run_node_id,
+            run_dir=exec_result.run_dir,
+            task_node_id=task_node_id,
+            contract=contract,
+            diff=diff,
+            workdir=effective_workdir,
+            actor=actor,
+        )
+
     return AgentRunResult(
         run_node_id=exec_result.run_node_id,
         status=exec_result.status,
@@ -160,12 +174,110 @@ def run_agent(
         files_modified=diff["modified"],
         files_deleted=diff["deleted"],
         duration_seconds=exec_result.duration_seconds,
+        task_node_id=task_node_id,
+        contract_check=contract_result,
     )
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+def _resolve_prompt_and_contract(
+    layout: ProjectLayout, prompt: str | None, task_node_id: str | None,
+) -> tuple[str, TaskContract | None]:
+    """Validate the prompt/task pair and return (effective_prompt, contract)."""
+    if prompt is not None and task_node_id is None:
+        return prompt, None
+    if prompt is None and task_node_id is not None:
+        try:
+            task_node = load_node(layout, task_node_id)
+        except FileNotFoundError as exc:
+            raise AgentError(f"task node {task_node_id!r} not found.") from exc
+        if task_node.type != "task":
+            raise AgentError(
+                f"node {task_node_id!r} is type {task_node.type!r}, not 'task'.",
+            )
+        contract = contract_from_task_attrs(task_node.attrs)
+        return contract.goal, contract
+    raise AgentError(
+        "Exactly one of `prompt` or `task_node_id` must be provided.",
+    )
+
+
+def write_contract_snapshot(
+    run_dir: Path, *, task_node_id: str, contract: TaskContract,
+) -> Path:
+    """Persist the resolved contract next to ``prompt.txt`` for audit. Returns the path."""
+    contract_path = run_dir / "contract.json"
+    contract_path.write_text(
+        json.dumps(
+            {"task_node_id": task_node_id, **contract.model_dump()},
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    return contract_path
+
+
+def _apply_contract(
+    layout: ProjectLayout,
+    *,
+    run_node_id: str,
+    run_dir: Path,
+    task_node_id: str,
+    contract: TaskContract,
+    diff: dict[str, list[str]],
+    workdir: Path,
+    actor: str,
+) -> ContractCheckResult | None:
+    """Mirror contract onto the run node, add fulfills edge, optionally run checks."""
+    write_contract_snapshot(run_dir, task_node_id=task_node_id, contract=contract)
+    apply_patch_now(
+        layout,
+        ops=[
+            UpdateAttrsOp(
+                target=run_node_id,
+                attrs={
+                    "contract": {
+                        "task_node_id": task_node_id,
+                        **task_node_attrs(contract),
+                    },
+                },
+            ),
+            CreateEdgeOp(type="fulfills", source=run_node_id, target=task_node_id),
+        ],
+        actor=actor,
+        note=f"agent: fulfills task {task_node_id}",
+    )
+
+    if not contract.has_checks():
+        return None
+
+    result = check_contract(
+        contract,
+        diff=diff,
+        workdir=workdir,
+        acceptance_log_dest=run_dir / "acceptance.log",
+        layout_root=layout.root,
+    )
+    apply_patch_now(
+        layout,
+        ops=[UpdateAttrsOp(target=run_node_id, attrs=_check_attrs(result))],
+        actor=actor,
+        note=f"agent: contract_check {result.status}",
+    )
+    return result
+
+
+def _check_attrs(result: ContractCheckResult) -> dict[str, object]:
+    """Shape of the ``contract_check`` attr written to a run node."""
+    return {
+        "contract_check": {
+            "status": result.status,
+            "out_of_scope_files": list(result.out_of_scope_files),
+            "acceptance_exit_code": result.acceptance_exit_code,
+            "acceptance_log_path": result.acceptance_log_path,
+        },
+    }
+
 
 def _resolve_template(agent: str) -> list[str]:
     env_key = f"SIMULANKA_AGENT_{agent.upper()}_ARGV"
@@ -258,10 +370,8 @@ def _diff(
     }
 
 
-# Re-exposed for callers who want to invoke exec_run directly with the same
-# argv-shaping logic. Most callers should use ``run_agent`` instead.
 def build_command(agent: str, prompt: str, extra_args: list[str] | None = None) -> str:
-    """Public helper: return the shell command string an agent invocation would use."""
+    """Return the shell command string an agent invocation would use."""
     template = _resolve_template(agent)
     argv = [_fill(part, prompt) for part in template]
     if extra_args:

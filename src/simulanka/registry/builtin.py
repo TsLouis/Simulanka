@@ -58,6 +58,10 @@ NODE_TYPES: dict[str, NodeTypeSpec] = {
         name="note",
         allow_parents=frozenset({"directory", "experiment", "run"}),
     ),
+    "task": NodeTypeSpec(
+        name="task",
+        allow_parents=frozenset({"directory", "experiment"}),
+    ),
 }
 
 # ---------------------------------------------------------------------------
@@ -126,6 +130,12 @@ EDGE_TYPES: dict[str, EdgeTypeSpec] = {
         # target side because configs may be modeled later as their own type.
         source_node_types=frozenset({"run"}),
         target_node_types=frozenset({"model", "file"}),
+    ),
+    "fulfills": EdgeTypeSpec(
+        name="fulfills",
+        needs_ports=False,
+        source_node_types=frozenset({"run"}),
+        target_node_types=frozenset({"task"}),
     ),
 }
 

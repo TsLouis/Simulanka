@@ -47,6 +47,31 @@ class _Pending:
     canonical_ops: list[dict[str, Any]]
 
 
+def apply_patch_now(
+    layout: ProjectLayout,
+    *,
+    ops: list[IntentOp],
+    actor: str,
+    note: str | None = None,
+) -> Receipt:
+    """Convenience wrapper: build a ``PatchIntent`` from the live ``graph_version``.
+
+    Use when the caller has no reason to construct the intent itself and just
+    wants to land *ops* atomically against the current head. The single source
+    of the ``graph_version`` read prevents the off-by-one window that occurs
+    when callers load the manifest, build ops, then call apply_patch.
+    """
+    return apply_patch(
+        layout,
+        PatchIntent(
+            ops=ops,
+            actor=actor,
+            base_graph_version=load_manifest(layout).graph_version,
+            note=note,
+        ),
+    )
+
+
 def apply_patch(layout: ProjectLayout, intent: PatchIntent) -> Receipt:
     check_versions(layout)
     manifest = load_manifest(layout)

@@ -1,4 +1,14 @@
-"""``simulanka run`` — execute commands and record them as ``run`` nodes."""
+"""``simulanka run`` — execute commands and record them as ``run`` nodes.
+
+Exit codes (POSIX-style, single source of truth):
+
+* ``0`` — success: run completed with status=done (and contract passed, if any).
+* ``1`` — the run itself failed: status=failed / timed_out / exit_code != 0.
+* ``2`` — caller / runtime error: bad selector, runner error, wait timeout,
+  or a detached run is still ``running`` when ``status`` is queried.
+* ``3`` — contract violation: run finished but ``contract_check.status`` is
+  ``out_of_scope`` or ``acceptance_failed``.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +18,13 @@ from typing import Annotated
 
 import typer
 
-from simulanka.agent import AgentError, run_agent
+from simulanka.agent import (
+    AgentDiffSummary,
+    AgentError,
+    finalize_agent_diff,
+    run_agent,
+    start_agent_run,
+)
 from simulanka.kernel.resolver import resolve_node
 from simulanka.layout.project import ProjectLayout
 from simulanka.runner import (
@@ -140,10 +156,6 @@ def run_agent_cmd(
             ),
         ),
     ],
-    prompt: Annotated[
-        str,
-        typer.Option("--prompt", help="Task prompt to send to the agent."),
-    ],
     parent: Annotated[
         str,
         typer.Option(
@@ -156,6 +168,27 @@ def run_agent_cmd(
         str,
         typer.Option("--name", "-n", help="Name for the run node (unique within parent)."),
     ],
+    prompt: Annotated[
+        str | None,
+        typer.Option(
+            "--prompt",
+            help=(
+                "Free-form goal text. Mutually exclusive with --task. "
+                "No contract, no checks."
+            ),
+        ),
+    ] = None,
+    task: Annotated[
+        str | None,
+        typer.Option(
+            "--task",
+            help=(
+                "Task node selector (id or /abs/path). Sources goal + budget + "
+                "allowed_outputs + acceptance from that task; records a "
+                "`fulfills` edge."
+            ),
+        ),
+    ] = None,
     workdir: Annotated[
         Path | None,
         typer.Option(
@@ -185,14 +218,67 @@ def run_agent_cmd(
             ),
         ),
     ] = None,
+    detach: Annotated[
+        bool,
+        typer.Option(
+            "--detach",
+            "-d",
+            help=(
+                "Launch in a new session and return immediately. The diff is "
+                "computed lazily on the next `run status` / `run wait`. "
+                "`--timeout` is ignored — use `run kill` to stop a detached run."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Invoke an agent CLI (codex / claude / ...) and capture what it touched."""
     layout = ProjectLayout.require()
+
+    if (prompt is None) == (task is None):
+        typer.echo(
+            "Error: pass exactly one of --prompt or --task.", err=True,
+        )
+        raise typer.Exit(code=2)
+
+    task_node_id: str | None = None
+    if task is not None:
+        try:
+            task_node_id = resolve_node(layout, task).id
+        except ValueError as exc:
+            typer.echo(f"Error resolving --task: {exc}", err=True)
+            raise typer.Exit(code=2) from exc
+
+    if detach:
+        try:
+            started = start_agent_run(
+                layout,
+                agent=agent,
+                prompt=prompt,
+                task_node_id=task_node_id,
+                parent=parent,
+                name=name,
+                workdir=workdir,
+                extra_args=extra,
+                track_scope=track,
+            )
+        except (AgentError, RunnerError) as exc:
+            typer.echo(f"Agent error: {exc}", err=True)
+            raise typer.Exit(code=2) from exc
+        typer.echo(f"Started (detached, agent={agent}): {started.run_node_id}")
+        typer.echo(f"  pid           = {started.pid}")
+        typer.echo(f"  run_dir       = {started.run_dir}")
+        typer.echo(f"  prompt        = {started.prompt_path}")
+        if started.task_node_id is not None:
+            typer.echo(f"  fulfills task = {started.task_node_id}")
+        typer.echo(f"  follow with   = simulanka run wait {started.run_node_id}")
+        return
+
     try:
         result = run_agent(
             layout,
             agent=agent,
             prompt=prompt,
+            task_node_id=task_node_id,
             parent=parent,
             name=name,
             workdir=workdir,
@@ -216,8 +302,17 @@ def run_agent_cmd(
         f"  files: +{len(result.files_added)} "
         f"~{len(result.files_modified)} -{len(result.files_deleted)}"
     )
+    if result.contract_check is not None:
+        cc = result.contract_check
+        typer.echo(f"  contract      = {cc.status}")
+        if cc.out_of_scope_files:
+            typer.echo(f"    out_of_scope = {cc.out_of_scope_files}")
+        if cc.acceptance_exit_code is not None:
+            typer.echo(f"    acceptance_exit = {cc.acceptance_exit_code}")
     if result.status != "done":
         raise typer.Exit(code=1)
+    if result.contract_check is not None and result.contract_check.status != "passed":
+        raise typer.Exit(code=3)
 
 
 # ---------------------------------------------------------------------------
@@ -233,7 +328,8 @@ def run_status(
     """Reconcile and print the current state of a run."""
     layout = ProjectLayout.require()
     node = _reconcile_or_die(layout, target)
-    _print_run_summary(node)
+    summary = finalize_agent_diff(layout, node)
+    _print_run_summary(node, summary)
     if node.attrs.get("status") == "running":
         raise typer.Exit(code=2)
     if node.attrs.get("status") != "done":
@@ -265,7 +361,8 @@ def run_wait(
     except RunnerError as exc:
         typer.echo(f"Runner error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
-    _print_run_summary(node)
+    summary = finalize_agent_diff(layout, node)
+    _print_run_summary(node, summary)
     if node.attrs.get("status") != "done":
         raise typer.Exit(code=1)
 
@@ -309,6 +406,7 @@ def run_reconcile(
             return
         for n in running:
             updated = reconcile_run(layout, n.id)
+            finalize_agent_diff(layout, updated)
             typer.echo(
                 f"{updated.id}  {str(updated.attrs.get('status')):8s}  "
                 f"exit={updated.attrs.get('exit_code')}  name={updated.name}"
@@ -316,7 +414,8 @@ def run_reconcile(
     else:
         node_id = _resolve_to_id(layout, target)
         node = reconcile_run(layout, node_id)
-        _print_run_summary(node)
+        summary = finalize_agent_diff(layout, node)
+        _print_run_summary(node, summary)
 
 
 def _resolve_to_id(layout: ProjectLayout, selector: str) -> str:
@@ -336,8 +435,10 @@ def _reconcile_or_die(layout: ProjectLayout, selector: str) -> Node:
         raise typer.Exit(code=2) from exc
 
 
-def _print_run_summary(node: Node) -> None:
-    typer.echo(json.dumps({
+def _print_run_summary(
+    node: Node, diff: AgentDiffSummary | None = None,
+) -> None:
+    payload: dict[str, object] = {
         "id": node.id,
         "name": node.name,
         "status": node.attrs.get("status"),
@@ -349,4 +450,15 @@ def _print_run_summary(node: Node) -> None:
         "run_handle": node.attrs.get("run_handle"),
         "stdout_path": node.attrs.get("stdout_path"),
         "stderr_path": node.attrs.get("stderr_path"),
-    }, indent=2))
+    }
+    if diff is not None:
+        payload["changes_path"] = diff.changes_path
+        payload["files_added"] = len(diff.added)
+        payload["files_modified"] = len(diff.modified)
+        payload["files_deleted"] = len(diff.deleted)
+        if diff.contract_check is not None:
+            cc = diff.contract_check
+            payload["contract_status"] = cc.status
+            payload["out_of_scope_files"] = cc.out_of_scope_files
+            payload["acceptance_exit_code"] = cc.acceptance_exit_code
+    typer.echo(json.dumps(payload, indent=2))
