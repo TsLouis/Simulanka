@@ -310,7 +310,7 @@ def run_reconcile(
         for n in running:
             updated = reconcile_run(layout, n.id)
             typer.echo(
-                f"{updated.id}  {updated.attrs.get('status'):8s}  "
+                f"{updated.id}  {str(updated.attrs.get('status')):8s}  "
                 f"exit={updated.attrs.get('exit_code')}  name={updated.name}"
             )
     else:

@@ -21,7 +21,6 @@ Design choices (see memory ``project-async-runner-design`` for the why):
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import os
 import shlex
 import signal
@@ -30,7 +29,6 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
 
 from ulid import ULID
 
@@ -45,18 +43,16 @@ from simulanka.kernel.intent import (
 from simulanka.layout.project import ProjectLayout
 from simulanka.runner.exec import (
     RunnerError,
+    RunStatus,
     _log_file_attrs,
+    _log_file_attrs_from_path,
     _maybe_relative,
     _merged_env,
     _nearest_directory,
     _resolve_parent,
 )
 from simulanka.schema.entities import Node
-from simulanka.storage.entity_store import iter_edges, load_node
-
-RunStatus = Literal["running", "done", "failed"]
-
-_EMPTY_SHA256 = "sha256:" + hashlib.sha256(b"").hexdigest()
+from simulanka.storage.entity_store import load_node
 
 # Wrapper script template. Quoting strategy:
 #   - The run dir is shell-quoted into the template via shlex.quote — it never
@@ -118,7 +114,6 @@ def start_run(
     )
     wrapper.chmod(0o755)
 
-    # Touch logs so file nodes can record an initial (empty) content hash.
     stdout_log = run_dir / "stdout.log"
     stderr_log = run_dir / "stderr.log"
     stdout_log.write_bytes(b"")
@@ -157,8 +152,8 @@ def start_run(
         "detached": True,
     }
 
-    # Patch 1: run node + 2 log file nodes (with empty-content hashes; they
-    # will be refreshed at reconcile time).
+    # Log nodes carry the empty-file hash; reconcile refreshes them when the
+    # wrapper writes its `finished` marker.
     nodes_intent = PatchIntent(
         ops=[
             CreateNodeOp(
@@ -168,25 +163,13 @@ def start_run(
                 type="file",
                 name=f"{name}.stdout.log",
                 parent=log_parent_node.id,
-                attrs={
-                    "fs_path": stdout_rel,
-                    "content_hash": _EMPTY_SHA256,
-                    "kind": "run_log",
-                    "binding": "managed",
-                    "size_bytes": 0,
-                },
+                attrs=_log_file_attrs(b"", stdout_rel),
             ),
             CreateNodeOp(
                 type="file",
                 name=f"{name}.stderr.log",
                 parent=log_parent_node.id,
-                attrs={
-                    "fs_path": stderr_rel,
-                    "content_hash": _EMPTY_SHA256,
-                    "kind": "run_log",
-                    "binding": "managed",
-                    "size_bytes": 0,
-                },
+                attrs=_log_file_attrs(b"", stderr_rel),
             ),
         ],
         actor=actor,
@@ -196,9 +179,6 @@ def start_run(
     receipt = apply_patch(layout, nodes_intent)
     run_node_id, stdout_node_id, stderr_node_id = receipt.nodes
 
-    # Patch 2: produces edges + store log node ids on the run node for fast
-    # lookup at reconcile time. Both go in one patch since the run node and
-    # file nodes already exist after patch 1.
     edges_intent = PatchIntent(
         ops=[
             CreateEdgeOp(type="produces", source=run_node_id, target=stdout_node_id),
@@ -248,8 +228,7 @@ def reconcile_run(layout: ProjectLayout, run_node_id: str) -> Node:
     pid = node.attrs.get("pid")
 
     if finished_marker.exists():
-        exit_code = int((run_dir / "exit_code").read_text(encoding="utf-8").strip())
-        ended_at = _parse_iso_z((run_dir / "ended_at").read_text(encoding="utf-8").strip())
+        exit_code, ended_at = _read_finished_markers(run_dir)
         status: RunStatus = "done" if exit_code == 0 else "failed"
     else:
         if isinstance(pid, int) and _is_alive(pid):
@@ -366,12 +345,13 @@ def _finalize(
     stdout_node_id = run_node.attrs.get("stdout_node_id")
     stderr_node_id = run_node.attrs.get("stderr_node_id")
     if not isinstance(stdout_node_id, str) or not isinstance(stderr_node_id, str):
-        # Fallback: re-derive from produces edges. Should not happen with
-        # start_run as written, but keeps the code robust to manual editing.
-        stdout_node_id, stderr_node_id = _derive_log_node_ids(layout, run_node)
+        raise RunnerError(
+            f"run {run_node.id} is missing stdout_node_id/stderr_node_id; "
+            "the start_run patch was incomplete."
+        )
 
-    stdout_bytes = (layout.root / str(run_node.attrs["stdout_path"])).read_bytes()
-    stderr_bytes = (layout.root / str(run_node.attrs["stderr_path"])).read_bytes()
+    stdout_rel = str(run_node.attrs["stdout_path"])
+    stderr_rel = str(run_node.attrs["stderr_path"])
 
     ops: list[CreateNodeOp | CreatePortOp | CreateEdgeOp | UpdateAttrsOp] = [
         UpdateAttrsOp(
@@ -385,11 +365,11 @@ def _finalize(
         ),
         UpdateAttrsOp(
             target=stdout_node_id,
-            attrs=_log_file_attrs(stdout_bytes, str(run_node.attrs["stdout_path"])),
+            attrs=_log_file_attrs_from_path(layout.root / stdout_rel, stdout_rel),
         ),
         UpdateAttrsOp(
             target=stderr_node_id,
-            attrs=_log_file_attrs(stderr_bytes, str(run_node.attrs["stderr_path"])),
+            attrs=_log_file_attrs_from_path(layout.root / stderr_rel, stderr_rel),
         ),
     ]
     apply_patch(
@@ -404,23 +384,18 @@ def _finalize(
     return load_node(layout, run_node.id)
 
 
-def _derive_log_node_ids(layout: ProjectLayout, run_node: Node) -> tuple[str, str]:
-    """Last-resort lookup of stdout/stderr file node ids via produces edges + paths."""
-    stdout_rel = str(run_node.attrs["stdout_path"])
-    stderr_rel = str(run_node.attrs["stderr_path"])
-    stdout_id: str | None = None
-    stderr_id: str | None = None
-    for edge in iter_edges(layout):
-        if edge.type != "produces" or edge.source_id != run_node.id:
-            continue
-        target = load_node(layout, edge.target_id)
-        path = target.attrs.get("fs_path")
-        if path == stdout_rel:
-            stdout_id = target.id
-        elif path == stderr_rel:
-            stderr_id = target.id
-    if stdout_id is None or stderr_id is None:
-        raise RunnerError(
-            f"could not locate log nodes for run {run_node.id} via produces edges."
+def _read_finished_markers(run_dir: Path) -> tuple[int | None, datetime]:
+    """Parse ``exit_code`` and ``ended_at`` markers; tolerate partial writes."""
+    try:
+        exit_code: int | None = int(
+            (run_dir / "exit_code").read_text(encoding="utf-8").strip()
         )
-    return stdout_id, stderr_id
+    except (FileNotFoundError, ValueError):
+        exit_code = None
+    try:
+        ended_at = _parse_iso_z(
+            (run_dir / "ended_at").read_text(encoding="utf-8").strip()
+        )
+    except (FileNotFoundError, ValueError):
+        ended_at = datetime.now(UTC)
+    return exit_code, ended_at

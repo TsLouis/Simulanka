@@ -20,6 +20,7 @@ What the runner does **not** do (Alpha):
 from __future__ import annotations
 
 import hashlib
+import os
 import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -35,7 +36,7 @@ from simulanka.layout.project import ProjectLayout
 from simulanka.schema.entities import Node
 from simulanka.storage.entity_store import load_node
 
-RunStatus = Literal["done", "failed", "timed_out"]
+RunStatus = Literal["running", "done", "failed", "timed_out"]
 
 
 class RunnerError(RuntimeError):
@@ -139,7 +140,6 @@ def exec_run(
         "run_handle": run_handle,
     }
 
-    # Patch 1: run node + 2 log file nodes. All parents pre-exist on disk.
     nodes_intent = PatchIntent(
         ops=[
             CreateNodeOp(
@@ -168,7 +168,6 @@ def exec_run(
     nodes_receipt = apply_patch(layout, nodes_intent)
     run_node_id, stdout_node_id, stderr_node_id = nodes_receipt.nodes
 
-    # Patch 2: produces edges referencing the now-saved nodes.
     edges_intent = PatchIntent(
         ops=[
             CreateEdgeOp(type="produces", source=run_node_id, target=stdout_node_id),
@@ -233,6 +232,25 @@ def _log_file_attrs(content: bytes, rel_path: str) -> dict[str, object]:
     }
 
 
+def _log_file_attrs_from_path(path: Path, rel_path: str) -> dict[str, object]:
+    """Like :func:`_log_file_attrs` but streams the file from disk.
+
+    Avoids loading the entire log into memory, which matters for long-running
+    training jobs whose stdout/stderr can run to hundreds of MB.
+    """
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            digest.update(chunk)
+    return {
+        "fs_path": rel_path,
+        "content_hash": "sha256:" + digest.hexdigest(),
+        "kind": "run_log",
+        "binding": "managed",
+        "size_bytes": path.stat().st_size,
+    }
+
+
 def _maybe_relative(path: Path, root: Path) -> str:
     try:
         return str(path.relative_to(root.resolve())).replace("\\", "/") or "."
@@ -243,5 +261,4 @@ def _maybe_relative(path: Path, root: Path) -> str:
 def _merged_env(overrides: dict[str, str] | None) -> dict[str, str] | None:
     if overrides is None:
         return None
-    import os
     return {**os.environ, **overrides}
