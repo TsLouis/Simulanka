@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -10,6 +11,14 @@ from simulanka.layout.project import ProjectLayout
 from simulanka.registry.file_kinds import FILE_KINDS, FileKindSpec
 from simulanka.schema.entities import Node
 from simulanka.storage.entity_store import iter_nodes
+
+REFERENCE_HASH_SENTINEL = "sha256:reference"
+"""Reference-binding nodes record this in place of a content hash.
+
+Reference kinds (e.g. `baseline`) point at external/large/live trees we don't
+own — hashing their bytes would be slow and meaningless (the hash drifts every
+time upstream changes). Doctor checks existence only for these nodes.
+"""
 
 
 class FileRegistryError(ValueError):
@@ -59,13 +68,19 @@ def register_file(
 ) -> FileResult:
     """Register an existing file (or directory, for reference kinds) into the graph."""
     spec = _spec_or_error(kind)
-    abs_path = (layout.root / path).resolve()
+    # Normalize `..`/`.` without following symlinks: reference-kind entries
+    # (e.g. baselines/DS_r → /home/ts/mnt/remote/DS_r) must still count as
+    # in-project for the containment check below. `.resolve()` would follow
+    # the symlink to its target and reject any external reference.
+    in_project = Path(os.path.normpath((layout.root / path).absolute()))
+    root_abs = Path(os.path.normpath(layout.root.absolute()))
     try:
-        rel_path = abs_path.relative_to(layout.root.resolve())
+        rel_path = in_project.relative_to(root_abs)
     except ValueError as exc:
         raise FileRegistryError(
             f"`{path}` is outside the project root `{layout.root}`."
         ) from exc
+    abs_path = in_project.resolve()
     rel = str(rel_path)
     rel_str = rel.replace("\\", "/")
 
@@ -104,12 +119,12 @@ def _commit_file_node(
     if abs_path is None:
         abs_path = layout.root / rel_path
 
-    if spec.binding == "reference" and abs_path.is_dir():
-        hash_str = _hash_directory(abs_path)
+    if spec.binding == "reference":
+        hash_str = REFERENCE_HASH_SENTINEL
         size: int | None = None
     else:
         hash_str = "sha256:" + hashlib.sha256(content).hexdigest()
-        size = len(content) if spec.binding == "managed" else abs_path.stat().st_size
+        size = len(content)
 
     receipt = apply_patch(
         layout,
@@ -179,12 +194,3 @@ def _find_managed_dir_node(layout: ProjectLayout, kind: str) -> Node:
     )
 
 
-def _hash_directory(root: Path) -> str:
-    """Stable hash over a directory's file contents (sorted relative paths)."""
-    h = hashlib.sha256()
-    for entry in sorted(root.rglob("*")):
-        if entry.is_file():
-            h.update(str(entry.relative_to(root)).encode("utf-8"))
-            h.update(b"\0")
-            h.update(hashlib.sha256(entry.read_bytes()).digest())
-    return "sha256:" + h.hexdigest()

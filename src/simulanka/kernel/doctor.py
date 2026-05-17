@@ -269,9 +269,14 @@ def _check_file_nodes(layout: ProjectLayout) -> list[Issue]:
                 message=f"file node `{n.id}` references `{rel}` which no longer exists.",
             ))
             continue
-        recorded = n.attrs.get("content_hash")
+        # Reference-binding nodes (e.g. baselines) intentionally don't track
+        # content hash — they point at live external trees whose bytes would
+        # drift constantly. Existence (checked above) is the only contract.
         binding = n.attrs.get("binding", "managed")
-        actual = _hash_path(abs_path, binding=str(binding))
+        if binding == "reference":
+            continue
+        recorded = n.attrs.get("content_hash")
+        actual = _hash_path(abs_path)
         if recorded != actual:
             out.append(Issue(
                 code="file_hash_drift",
@@ -320,15 +325,7 @@ def _check_untracked_managed_files(layout: ProjectLayout) -> list[Issue]:
     return out
 
 
-def _hash_path(path: Path, *, binding: str) -> str:
-    if path.is_dir():
-        h = hashlib.sha256()
-        for entry in sorted(path.rglob("*")):
-            if entry.is_file():
-                h.update(str(entry.relative_to(path)).encode("utf-8"))
-                h.update(b"\0")
-                h.update(hashlib.sha256(entry.read_bytes()).digest())
-        return "sha256:" + h.hexdigest()
+def _hash_path(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
