@@ -115,6 +115,8 @@ EDGE_TYPES: dict[str, EdgeTypeSpec]   # needs_ports, source_types, target_types,
 >
 > 历史：最初用 `torch.export` + `nn_module_stack` 归因，2026-05-19 在 Hiera 上发现对 transformer 系统性丢边（残差 `+` 是 functional op，没 nn_module_stack）。换成纯 hook 修了残差但还漏 functional bridge（`window_partition(norm1(x))` 这种夹在两 Module 之间的 reshape 会断链）。加 TorchDispatchMode 后 producer 集合穿透任意 functional op 链路，是 strict superset。
 
+**导入入口约定（结构完备性的保证）**：build_fn 必须返回 baseline 的**顶层**模型实例（例如整个 `SAM2Base`），不是手挑的组件。结构完备性由 `model.named_modules()` 这个 PyTorch 自己的 API 保证 —— 在顶层 import 时，全部子模块及其子树**不可能漏**。手挑组件的旧用法（一个 baseline 写 N 个 build_fn）已淘汰，原因是漏哪个完全靠人记，2026-05-19 实操中真漏掉了 PromptEncoder/MemoryEncoder/FpnNeck。
+
 **Alpha 不做**：
 - aten 层级图（leaf-leaf 边收起来了；多级展开留给查询/前端）
 - 配置文件解析为图节点（用 `file:config` 节点 + `uses` 边足够）
@@ -124,6 +126,15 @@ EDGE_TYPES: dict[str, EdgeTypeSpec]   # needs_ports, source_types, target_types,
 **已知支持范围**：能跑通一次 forward 的模型都行，包括 data-dependent control flow。代价是要给真 example_inputs 跑一次推理，结构反映的是这次 trace 的执行路径（不同 input shape / mode 可能不同）。
 
 **CLI**：`simulanka import torch --build pkg.mod:fn --name N [--parent /dir]`
+
+#### 待加（Alpha 收尾前两项）
+
+1. **`example_inputs=None` 走 structure-only 路径**。顶层模型如 `SAM2Base` 的 forward 是跟踪 pipeline，构造合法 example_inputs 代价大；这种情况下允许"只走 `named_modules`、跳过 data flow trace"。落地一个 `model` + 一组 `module` 节点 + 一个 `dataflow_unavailable=true` 属性。这是 top-level import 约定的兜底 —— 没了它，约定只是嘴上说说。
+2. **导出 [Google Model Explorer](https://github.com/google-ai-edge/model-explorer) 兼容格式**。schema 极简（`namespace` 分层 + `incomingEdges`），与我们的 module 树 + data_flow 边天然对应。一个 `to_model_explorer()` 函数 ≈ 50 行，换来浏览器里的交互式可视化前端（折叠/展开/搜索/选中显示属性）—— 用户验证图结构的主要工具。
+
+#### 调研结论（2026-05-19）
+
+调过开源生态找能直接替换的 backend：`torch.fx` / `torch.export` 在 functional 残差边和 data-dependent control flow 上 2026 仍有真问题（PyTorch 2.11 的 `draft_export` 是诊断，不是修复）；`torchinfo`/`torchviz`/`hiddenlayer` 只是 viz；`Netron`/Model Explorer 只渲染图、不抓图；`nnsight` 是干预 API；唯一对位的 `torchlens`（2026-05 活跃）机制等价（monkey-patch + hooks），能力**不更优**，且无 `weakref.finalize` 这层语义。结论是自研路径合理，可以借 torchlens 的 numerical validation 思路给 doctor 加图正确性自检（低优先级）。
 
 ### 5.3 Run executor（第 9 步加入）
 
