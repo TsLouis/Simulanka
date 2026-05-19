@@ -1,25 +1,27 @@
-"""Import a PyTorch ``nn.Module`` into the graph kernel via ``torch.export``.
+"""Import a PyTorch ``nn.Module`` into the graph kernel via forward hooks.
 
 The importer produces a structural view that matches how the researcher wrote
 the model:
 
 * **Module hierarchy** comes from ``model.named_modules()`` — one ``model`` node
-  for the root and one ``module`` node per non-root submodule. This is the
-  "Block contains Conv2d" view, not the aten-op flat view.
-* **Data flow** comes from ``torch.export``. We use each fx node's
-  ``meta["nn_module_stack"]`` to attribute aten ops to their originating
-  ``nn.Module``. A leaf-level flow ``A.fqn -> B.fqn`` is then rolled up to
-  the first diverging ancestor pair (so ``b1.lin -> b2.lin`` becomes
-  ``b1 -> b2``, while ``b1.lin -> b1.act`` stays at leaf granularity).
-
-The runtime ``torch`` dependency is loaded lazily so users without it can still
-use the rest of the kernel.
+  for the root and one ``module`` node per non-root submodule.
+* **Data flow** comes from a real forward pass under module hooks *plus* a
+  ``TorchDispatchMode`` that intercepts every aten op. Each tensor carries a
+  producer **set** (which modules' outputs it descends from); aten ops merge
+  inputs' producer sets into outputs; module hooks emit an edge at every
+  module-boundary crossing and reset the boundary tensor's producer to that
+  module. Producer sets propagate through aten ops, so lineage survives
+  functional bridges (``+``, ``cat``, ``reshape``, ``window_partition``) that
+  have no ``nn_module_stack`` and would otherwise be lost. A leaf-level edge
+  ``A.fqn -> B.fqn`` is then rolled up to the first diverging ancestor pair
+  (so ``b1.lin -> b2.lin`` becomes ``b1 -> b2``, while ``b1.lin -> b1.act``
+  stays at leaf granularity).
 """
 
 from __future__ import annotations
 
 import importlib
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -28,13 +30,14 @@ from simulanka.kernel.intent import CreateEdgeOp, CreateNodeOp, CreatePortOp, Pa
 from simulanka.layout.project import ProjectLayout
 
 if TYPE_CHECKING:  # pragma: no cover
+    import torch
     import torch.nn as nn
 
 BuildFn = Callable[[], "tuple[nn.Module, tuple[Any, ...]]"]
 
 
 class ImportError(RuntimeError):
-    """Raised when the model cannot be imported (build failure, export failure, ...)."""
+    """Raised when the model cannot be imported (build failure, trace failure, ...)."""
 
 
 @dataclass(frozen=True)
@@ -71,7 +74,6 @@ def import_model(
         raise ImportError(f"name {name!r} must not contain '.' or '/'.")
 
     torch = _require_torch()
-    torch_export = importlib.import_module("torch.export")
 
     try:
         built = build_fn()
@@ -149,13 +151,11 @@ def import_model(
             layout, _fqn_to_selector(root_path, fqn), actor=actor,
         )
 
-    # 4. Trace and collect leaf-level data flows.
+    # 4. Trace data flow via a real forward pass under hooks.
     try:
-        ep = torch_export.export(model, example_inputs)
-    except Exception as exc:  # noqa: BLE001 — export failure surfaces verbatim
-        raise ImportError(f"torch.export.export failed: {exc!r}") from exc
-
-    leaf_edges = _collect_leaf_edges(ep)
+        leaf_edges = _collect_leaf_edges(model, example_inputs)
+    except Exception as exc:  # noqa: BLE001 — surface forward-pass failures
+        raise ImportError(f"forward-hook trace failed: {exc!r}") from exc
 
     # 5. Roll up to diverging-ancestor pairs and dedupe.
     peer_edges: set[tuple[str, str]] = set()
@@ -296,43 +296,113 @@ def _commit_io_ports(layout: ProjectLayout, node_selector: str, *, actor: str) -
     )
 
 
-def _collect_leaf_edges(exported_program: Any) -> set[tuple[str, str]]:
-    """Walk fx nodes and emit module-level (src_fqn → tgt_fqn) flows.
+def _collect_leaf_edges(
+    model: Any, example_inputs: tuple[Any, ...],
+) -> set[tuple[str, str]]:
+    """Run model under forward hooks + ``TorchDispatchMode``; return leaf
+    ``(src_fqn, tgt_fqn)`` data-flow edges.
 
-    Uses ``meta['nn_module_stack']`` (an OrderedDict whose innermost value is
-    ``(fqn, qualified_type)``) to attribute each aten op to its source module.
+    The producer map is keyed by ``id(tensor)``. CPython recycles memory
+    addresses immediately after GC, so intermediate aten outputs that go out
+    of scope would leave stale entries behind and a new tensor at the reused
+    address would inherit them. Every stamp therefore registers a
+    ``weakref.finalize`` that removes the entry the moment the tensor is
+    collected.
     """
-    import torch  # local: respect lazy-loading contract
+    import weakref
 
+    import torch
+    from torch.utils._python_dispatch import TorchDispatchMode
+
+    producer: dict[int, set[str]] = {}
     edges: set[tuple[str, str]] = set()
-    for fx_node in exported_program.graph_module.graph.nodes:
-        if fx_node.op in ("placeholder", "output", "get_attr"):
-            continue
-        cur_fqn = _innermost_fqn(fx_node)
-        if cur_fqn is None:
-            continue
-        for inp in fx_node.all_input_nodes:
-            if not isinstance(inp, torch.fx.Node):  # pragma: no cover — safety
+
+    def _drop(tid: int) -> None:
+        producer.pop(tid, None)
+
+    def _stamp(t: torch.Tensor, srcs: set[str]) -> None:
+        if not srcs:
+            return
+        tid = id(t)
+        producer[tid] = set(srcs)
+        weakref.finalize(t, _drop, tid)
+
+    def _emit_for(t: torch.Tensor, fqn: str) -> None:
+        srcs = producer.get(id(t))
+        if not srcs:
+            return
+        for src in srcs:
+            if src and src != fqn:
+                edges.add((src, fqn))
+
+    def make_pre_hook(fqn: str) -> Callable[..., None]:
+        def pre_hook(module: Any, args: Any, kwargs: Any) -> None:
+            for t in _iter_tensors(args):
+                _emit_for(t, fqn)
+            for t in _iter_tensors(kwargs):
+                _emit_for(t, fqn)
+        return pre_hook
+
+    def make_post_hook(fqn: str) -> Callable[..., None]:
+        def post_hook(module: Any, args: Any, output: Any) -> None:
+            for t in _iter_tensors(output):
+                _stamp(t, {fqn})
+        return post_hook
+
+    class _LineageMode(TorchDispatchMode):
+        def __init__(self) -> None:
+            super().__init__()  # type: ignore[no-untyped-call]
+
+        def __torch_dispatch__(
+            self,
+            func: Any,
+            types: Any,
+            args: Any = (),
+            kwargs: Any = None,
+        ) -> Any:
+            kwargs = kwargs or {}
+            merged: set[str] = set()
+            for t in _iter_tensors(args):
+                s = producer.get(id(t))
+                if s:
+                    merged |= s
+            for t in _iter_tensors(kwargs):
+                s = producer.get(id(t))
+                if s:
+                    merged |= s
+            out = func(*args, **kwargs)
+            if merged:
+                for t in _iter_tensors(out):
+                    _stamp(t, merged)
+            return out
+
+    handles = []
+    try:
+        for fqn, mod in model.named_modules():
+            if fqn == "":
                 continue
-            in_fqn = _innermost_fqn(inp)
-            if in_fqn is None:
-                continue
-            if in_fqn == cur_fqn:
-                continue
-            edges.add((in_fqn, cur_fqn))
+            handles.append(
+                mod.register_forward_pre_hook(make_pre_hook(fqn), with_kwargs=True),
+            )
+            handles.append(mod.register_forward_hook(make_post_hook(fqn)))
+
+        with torch.no_grad(), _LineageMode():
+            model(*example_inputs)
+    finally:
+        for h in handles:
+            h.remove()
+
     return edges
 
 
-def _innermost_fqn(fx_node: Any) -> str | None:
-    stack = fx_node.meta.get("nn_module_stack")
-    if not stack:
-        return None
-    # Innermost = last value. Each value is ``(fqn, type_qualname)``.
-    try:
-        last_value = next(reversed(stack.values()))
-    except StopIteration:  # pragma: no cover — defensive
-        return None
-    if not isinstance(last_value, tuple) or not last_value:
-        return None
-    fqn = last_value[0]
-    return fqn if isinstance(fqn, str) else None
+def _iter_tensors(obj: Any) -> Iterator[torch.Tensor]:
+    import torch
+
+    if isinstance(obj, torch.Tensor):
+        yield obj
+    elif isinstance(obj, (list, tuple)):
+        for x in obj:
+            yield from _iter_tensors(x)
+    elif isinstance(obj, dict):
+        for x in obj.values():
+            yield from _iter_tensors(x)

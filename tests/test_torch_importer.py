@@ -128,3 +128,79 @@ def test_diverging_ancestors_unit() -> None:
     assert _diverging_ancestors("x", "x") is None
     assert _diverging_ancestors("a.b.c", "a.b.d") == ("a.b.c", "a.b.d")
     assert _diverging_ancestors("a.b.c", "a.d") == ("a.b", "a.d")
+
+
+def _build_residual_net() -> tuple[Any, tuple[Any, ...]]:
+    """Toy transformer-shaped net with a functional ``+`` residual."""
+    import torch.nn as nn
+
+    class ResBlock(nn.Module):
+        def __init__(self, d: int) -> None:
+            super().__init__()
+            self.norm = nn.LayerNorm(d)
+            self.lin = nn.Linear(d, d)
+
+        def forward(self, x: Any) -> Any:
+            return x + self.lin(self.norm(x))
+
+    class Net(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.b = ResBlock(4)
+            self.head = nn.Linear(4, 2)
+
+        def forward(self, x: Any) -> Any:
+            return self.head(self.b(x))
+
+    return Net(), (torch.randn(2, 4),)
+
+
+def test_functional_residual_captured(tmp_path: Path) -> None:
+    """Functional ``+`` residual still yields the ``b -> head`` edge."""
+    from simulanka.storage.entity_store import iter_edges
+
+    layout = init_project(tmp_path, with_scaffold=False).layout
+    _make_directory(layout, "models")
+    result = import_model(layout, _build_residual_net, name="ResNet", parent="/models")
+
+    ids = result.module_node_ids
+    by_endpoints = {(e.source_id, e.target_id) for e in iter_edges(layout) if e.type == "data_flow"}
+
+    assert (ids["b.norm"], ids["b.lin"]) in by_endpoints
+    assert (ids["b"], ids["head"]) in by_endpoints
+
+
+def _build_functional_bridge_net() -> tuple[Any, tuple[Any, ...]]:
+    """Two Modules separated by a functional reshape (new tensor id)."""
+    import torch.nn as nn
+
+    class Net(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.norm = nn.LayerNorm(8)
+            self.head = nn.Linear(8, 2)
+
+        def forward(self, x: Any) -> Any:
+            x = self.norm(x)
+            x = x.reshape(-1, 2, 4).flatten(1)
+            return self.head(x)
+
+    return Net(), (torch.randn(3, 8),)
+
+
+def test_functional_bridge_between_modules_captured(tmp_path: Path) -> None:
+    """Module-to-Module flow across a functional reshape still emits an edge."""
+    from simulanka.storage.entity_store import iter_edges
+
+    layout = init_project(tmp_path, with_scaffold=False).layout
+    _make_directory(layout, "models")
+    result = import_model(
+        layout, _build_functional_bridge_net, name="Bridge", parent="/models",
+    )
+
+    ids = result.module_node_ids
+    by_endpoints = {
+        (e.source_id, e.target_id)
+        for e in iter_edges(layout) if e.type == "data_flow"
+    }
+    assert (ids["norm"], ids["head"]) in by_endpoints
