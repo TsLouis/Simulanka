@@ -109,15 +109,19 @@ EDGE_TYPES: dict[str, EdgeTypeSpec]   # needs_ports, source_types, target_types,
 
 **层级**：`model.named_modules()` 出来的 dotted fqn 直接成为 `/<parent>/<name>/<fqn 用 / 替换 . >` 这条路径上的 module 节点。每个 module + 根 model 都自动配 `in`/`out` 两个 tensor port。
 
-**数据流**：`torch.export.export(model, example_inputs)`，遍历 fx graph，借 `meta["nn_module_stack"]` 把每个 aten op 归到它所属的 nn.Module。leaf-leaf 流回滚到"首个发散祖先"那一对（`b1.lin → b2.lin` 折成 `b1 → b2`；`b1.lin → b1.act` 保留为同级），再连成 `data_flow` 边。
+**数据流**：在每个非根 submodule 上挂 `register_forward_pre_hook` + `register_forward_hook`，再叠一层 `TorchDispatchMode` 拦截 aten op，跑一遍真实 forward。每个 tensor 携带一个 **producer 集合**（祖先模块 fqn），aten op 把所有输入的集合并到输出，post_hook 在模块边界把输出的 producer 重置为 `{fqn}`，pre_hook 在边界发 `(src, fqn)` 边。leaf-leaf 流回滚到"首个发散祖先"那一对（`b1.lin → b2.lin` 折成 `b1 → b2`；`b1.lin → b1.act` 保留为同级），再连成 `data_flow` 边。
+
+> 实现坑：producer map 用 `id(tensor)` 键控，CPython 回收后立即复用内存地址，老 producer 残留会污染新 tensor。每次 stamp 必须注册 `weakref.finalize(t, _drop, tid)` 在 GC 时自动 pop，否则边数会爆掉一个量级。
+>
+> 历史：最初用 `torch.export` + `nn_module_stack` 归因，2026-05-19 在 Hiera 上发现对 transformer 系统性丢边（残差 `+` 是 functional op，没 nn_module_stack）。换成纯 hook 修了残差但还漏 functional bridge（`window_partition(norm1(x))` 这种夹在两 Module 之间的 reshape 会断链）。加 TorchDispatchMode 后 producer 集合穿透任意 functional op 链路，是 strict superset。
 
 **Alpha 不做**：
 - aten 层级图（leaf-leaf 边收起来了；多级展开留给查询/前端）
 - 配置文件解析为图节点（用 `file:config` 节点 + `uses` 边足够）
-- shape/dtype 元数据（`ExportedProgram` 里有，先没存）
+- shape/dtype 元数据（hook 拿不到，要 shape 得另起 export pass）
 - 自定义 autograd function、`torch.compile` 后的图、量化图
 
-**已知支持范围**：纯 functional + 静态控制流的 forward。data-dependent control flow（Dynamo 阻断）的模型 import 会失败 —— 错误原样冒上来。
+**已知支持范围**：能跑通一次 forward 的模型都行，包括 data-dependent control flow。代价是要给真 example_inputs 跑一次推理，结构反映的是这次 trace 的执行路径（不同 input shape / mode 可能不同）。
 
 **CLI**：`simulanka import torch --build pkg.mod:fn --name N [--parent /dir]`
 
