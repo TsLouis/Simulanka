@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
@@ -154,7 +154,7 @@ def init_project(root: Path, *, with_scaffold: bool = True) -> InitResult:
         graph_version=0,
         kernel_version=__version__,
         project_id=new_id("prj"),
-        created_at=datetime.now(UTC),
+        created_at=datetime.now(timezone.utc),
         content_hash=EMPTY_CONTENT_HASH,
     )
     write_manifest(layout, manifest)

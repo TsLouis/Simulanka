@@ -27,7 +27,7 @@ import signal
 import subprocess
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ulid import ULID
@@ -120,7 +120,7 @@ def start_run(
     stderr_log.write_bytes(b"")
 
     effective_workdir = (workdir or layout.root).resolve()
-    started_at = datetime.now(UTC)
+    started_at = datetime.now(timezone.utc)
 
     proc = subprocess.Popen(
         ["sh", str(wrapper)],
@@ -235,7 +235,7 @@ def reconcile_run(layout: ProjectLayout, run_node_id: str) -> Node:
             return node  # still running
         # Process disappeared without writing the marker.
         exit_code = None
-        ended_at = datetime.now(UTC)
+        ended_at = datetime.now(timezone.utc)
         status = "failed"
 
     return _finalize(layout, node, status=status, exit_code=exit_code, ended_at=ended_at)
@@ -397,5 +397,5 @@ def _read_finished_markers(run_dir: Path) -> tuple[int | None, datetime]:
             (run_dir / "ended_at").read_text(encoding="utf-8").strip()
         )
     except (FileNotFoundError, ValueError):
-        ended_at = datetime.now(UTC)
+        ended_at = datetime.now(timezone.utc)
     return exit_code, ended_at

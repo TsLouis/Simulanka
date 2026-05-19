@@ -23,7 +23,7 @@ import hashlib
 import os
 import subprocess
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
@@ -93,7 +93,7 @@ def exec_run(
     stderr_log = run_dir / "stderr.log"
     effective_workdir = (workdir or layout.root).resolve()
 
-    started_at = datetime.now(UTC)
+    started_at = datetime.now(timezone.utc)
     completed: subprocess.CompletedProcess[bytes] | None = None
     try:
         completed = subprocess.run(
@@ -108,7 +108,7 @@ def exec_run(
     except subprocess.TimeoutExpired as exc:
         stdout_bytes = exc.stdout or b""
         stderr_bytes = exc.stderr or b""
-    ended_at = datetime.now(UTC)
+    ended_at = datetime.now(timezone.utc)
 
     if completed is not None:
         stdout_bytes = completed.stdout
