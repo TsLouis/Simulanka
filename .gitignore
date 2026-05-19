@@ -13,4 +13,8 @@ references/
 
 # Local Claude Code settings
 .claude/settings.local.json
+.claude/skills/
 .gitnexus
+
+# Live graph state from local dev/testing of the kernel itself
+.simulanka/
