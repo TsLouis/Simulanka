@@ -18,7 +18,9 @@ class ResolveError(ValueError):
 
 
 def resolve_node(layout: ProjectLayout, selector: str) -> Node:
-    """Resolve a selector to a Node. Supports stable id and absolute /a/b path."""
+    """Resolve a selector to a Node. Supports stable id, absolute `/a/b` path,
+    or a bare name when it uniquely identifies one node — same convention as
+    ``resolve_port``."""
     if not selector:
         raise ResolveError("Empty selector.")
 
@@ -30,10 +32,7 @@ def resolve_node(layout: ProjectLayout, selector: str) -> Node:
     if selector.startswith("/"):
         return _resolve_path(layout, selector)
 
-    raise ResolveError(
-        f"Selector `{selector}` is not a stable id or absolute path. "
-        "Use `nod_...` or `/a/b`."
-    )
+    return _resolve_unique_name(layout, selector)
 
 
 def resolve_port(layout: ProjectLayout, selector: str) -> Port:
