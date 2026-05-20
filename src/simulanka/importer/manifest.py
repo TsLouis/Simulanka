@@ -22,6 +22,7 @@ top-level subtree.
 from __future__ import annotations
 
 import importlib
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -153,9 +154,23 @@ def lint_manifest(
     return issues
 
 
+def _ensure_baseline_on_syspath(manifest_path: Path) -> None:
+    """Prepend the baseline root (parent of ``simulanka_builds/``) to sys.path.
+
+    The manifest references build_fns as ``simulanka_builds.<x>:<fn>``; since
+    each baseline ships its own ``simulanka_builds/`` package, the baseline
+    root must be importable. Idempotent — re-importing the same baseline in
+    one process is a no-op.
+    """
+    baseline_dir = str(manifest_path.resolve().parent.parent)
+    if baseline_dir not in sys.path:
+        sys.path.insert(0, baseline_dir)
+
+
 def check_baseline(manifest_path: Path) -> list[LintIssue]:
     """Lint-only entry: instantiate the top-level via the manifest's build_fn
     and check coverage. Does not touch the graph."""
+    _ensure_baseline_on_syspath(manifest_path)
     manifest = load_baseline_manifest(manifest_path)
     top_model, _ = _instantiate_build(manifest.top_level.build, role="top_level")
     return lint_manifest(manifest, top_model)
@@ -174,6 +189,7 @@ def import_baseline(
     ``build`` is committed as a sibling ``model`` node under the same parent,
     with a focused dataflow trace.
     """
+    _ensure_baseline_on_syspath(manifest_path)
     manifest = load_baseline_manifest(manifest_path)
 
     top_model, top_inputs = _instantiate_build(
