@@ -53,8 +53,23 @@ class UpdateAttrsOp(BaseModel):
     attrs: dict[str, Any] = Field(default_factory=dict)
 
 
+class RenameNodeOp(BaseModel):
+    """Change a node's ``name`` field. Sibling-unique under the same parent.
+
+    Callers that also need to update side-effect attrs (e.g. ``fs_path`` on
+    file/directory nodes) should pair this with an ``UpdateAttrsOp`` in the
+    same ``PatchIntent`` — the kernel touches graph state only.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["rename_node"] = "rename_node"
+    target: str           # node selector
+    new_name: str
+
+
 IntentOp = Annotated[
-    CreateNodeOp | CreatePortOp | CreateEdgeOp | UpdateAttrsOp,
+    CreateNodeOp | CreatePortOp | CreateEdgeOp | UpdateAttrsOp | RenameNodeOp,
     Field(discriminator="kind"),
 ]
 

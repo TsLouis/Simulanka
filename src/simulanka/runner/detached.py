@@ -36,7 +36,7 @@ from simulanka.kernel.apply import apply_patch
 from simulanka.kernel.intent import (
     CreateEdgeOp,
     CreateNodeOp,
-    CreatePortOp,
+    IntentOp,
     PatchIntent,
     UpdateAttrsOp,
 )
@@ -353,7 +353,7 @@ def _finalize(
     stdout_rel = str(run_node.attrs["stdout_path"])
     stderr_rel = str(run_node.attrs["stderr_path"])
 
-    ops: list[CreateNodeOp | CreatePortOp | CreateEdgeOp | UpdateAttrsOp] = [
+    ops: list[IntentOp] = [
         UpdateAttrsOp(
             target=run_node.id,
             attrs={

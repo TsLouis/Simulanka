@@ -13,6 +13,7 @@ from simulanka.kernel.intent import (
     IntentOp,
     PatchIntent,
     Receipt,
+    RenameNodeOp,
     UpdateAttrsOp,
 )
 from simulanka.kernel.manifest import compute_content_hash, load_manifest, write_manifest
@@ -153,6 +154,8 @@ def _apply_op(
         return _handle_create_edge(layout, op, actor, now, pending, prefix=prefix)
     if isinstance(op, UpdateAttrsOp):
         return _handle_update_attrs(layout, op, pending, prefix=prefix)
+    if isinstance(op, RenameNodeOp):
+        return _handle_rename_node(layout, op, pending, prefix=prefix)
     raise NotImplementedError(f"Unsupported op: {op!r}")  # pragma: no cover
 
 
@@ -359,6 +362,60 @@ def _handle_update_attrs(
             "kind": "update_attrs",
             "entity_id": existing.id,
             "changed_keys": sorted(op.attrs.keys()),
+        }
+    )
+    return []
+
+
+def _handle_rename_node(
+    layout: ProjectLayout,
+    op: RenameNodeOp,
+    pending: _Pending,
+    *,
+    prefix: str,
+) -> list[str]:
+    if not op.new_name:
+        return [f"{prefix}: new_name must be non-empty."]
+    try:
+        existing = resolve_node(layout, op.target)
+    except ValueError as exc:
+        return [f"{prefix}: {exc}"]
+
+    for staged in pending.updated_nodes:
+        if staged.id == existing.id:
+            existing = staged
+            break
+
+    old_name = existing.name
+
+    # Sibling-unique under the same parent. Use on-disk view, then overlay any
+    # pending creations/updates in the same patch so a rename in the same
+    # PatchIntent as a CreateNodeOp still sees the new sibling.
+    from simulanka.storage.entity_store import iter_nodes
+    siblings: list[Node] = []
+    for n in iter_nodes(layout):
+        if n.parent_id == existing.parent_id and n.id != existing.id:
+            siblings.append(n)
+    for n in pending.nodes:
+        if n.parent_id == existing.parent_id and n.id != existing.id:
+            siblings.append(n)
+    for n in pending.updated_nodes:
+        # Overlay updated names onto the sibling view.
+        siblings = [n if s.id == n.id else s for s in siblings]
+    if any(s.name == op.new_name for s in siblings):
+        scope = existing.parent_id or "(root)"
+        return [f"{prefix}: sibling under `{scope}` already named `{op.new_name}`."]
+
+    updated = existing.model_copy(update={"name": op.new_name})
+    pending.updated_nodes = [n for n in pending.updated_nodes if n.id != existing.id]
+    pending.updated_nodes.append(updated)
+
+    pending.canonical_ops.append(
+        {
+            "kind": "rename_node",
+            "entity_id": existing.id,
+            "old_name": old_name,
+            "new_name": op.new_name,
         }
     )
     return []

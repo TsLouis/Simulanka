@@ -175,15 +175,13 @@ def _scaffold_managed_layout(layout: ProjectLayout) -> None:
     # Imported here to avoid a circular import at module load time.
     from simulanka.kernel.apply import apply_patch
     from simulanka.kernel.intent import (
-        CreateEdgeOp,
         CreateNodeOp,
-        CreatePortOp,
+        IntentOp,
         PatchIntent,
-        UpdateAttrsOp,
     )
     from simulanka.registry.file_kinds import FILE_KINDS
 
-    ops: list[CreateNodeOp | CreatePortOp | CreateEdgeOp | UpdateAttrsOp] = []
+    ops: list[IntentOp] = []
     for kind, spec in FILE_KINDS.items():
         # Filesystem side.
         (layout.root / spec.dir_name).mkdir(parents=True, exist_ok=True)
