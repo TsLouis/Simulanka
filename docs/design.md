@@ -395,3 +395,100 @@ FileRegistry 当前刻意保持简单，存在两处已被识别的限制，留�
 2. ID：**ULID + 前缀**（如 `nod_01HX...`）。
 3. 项目定位：默认 `$PWD` 向上找 `.simulanka/`；`SIMULANKA_PROJECT` 环境变量覆盖。不加 `--project` 开关，YAGNI。
 4. `.gitignore` 模板：排除 `indexes/`、`cache/`、`logs/`；保留 `manifest.json` 与 `graph/{nodes,edges,ports,events}/`。`init` 时如目标内无 `.gitignore` 则写入；已有则不动。
+
+## 12. 前端可视化（下阶段）
+
+Alpha 之后的下一条工作线。**目的**：让研究者在浏览器里实时看到 Research Graph 与其内部 model 子图，肉眼验证 importer 抓得对不对、experiments / runs / files / lineage 的形状。导入器深挖（torch_export 覆盖度）卡在这一步落地。
+
+### 12.1 第一原则：统一 node-edge-port 渲染器
+
+Simulanka 的数据层已经统一在 node / edge / port 三个原语上。model 内部结构本质上是 Research Graph 的一个子图（root = model 节点），不是另一种东西。
+
+由此推论：
+- **一套渲染器**，只认 `{nodes, edges, ports}` 一种 payload。
+- **一个 endpoint**，model 子图和 RG 全图共用，只是 root 节点不同。
+- 不为 model 单独造"模型可视化"组件；要加新视图，先问能否复用同一个渲染器换 root。
+
+### 12.2 数据契约
+
+前端拉取的 payload：
+
+```jsonc
+{
+  "root": "nod_01HX...",          // 当前视图根
+  "nodes": [
+    { "id", "type", "name", "parent_id?", "attrs", "ports": ["por_..."] }
+  ],
+  "edges": [
+    { "id", "type", "src", "dst", "src_port?", "dst_port?", "attrs" }
+  ],
+  "ports": [
+    { "id", "node_id", "name", "side": "in"|"out", "attrs" }
+  ]
+}
+```
+
+后端按 `root` 与一个 `depth` 参数返回子树 + 其中节点参与的边（含跨边界边，见 §12.4）。**深度懒加载**：双击下钻时再请求下一层；不一次性吐整张图。
+
+### 12.3 交互模型：双击进入子图
+
+所有节点统一为"折叠嵌套 + 双击进入子节点"。没有第二种心智模型。
+
+- 节点是容器（`contains` 出边非空）就允许双击下钻；面包屑回溯。
+- 自由 pan、滚轮缩放，深色主题。
+- 布局算法（hierarchical / DAG）可以按节点类型自动选默认，但**交互入口只此一种**。
+
+### 12.4 跨层连边：边界端口投影
+
+进入子图后，原本指向子图外部的边需要落到某个可见位置。
+
+**做法**：当前下钻视图的边框上画一圈**虚拟端口**；越界边在虚拟端口处收尾，端口上标 `← from ext.X` / `→ to ext.Y`。点击虚拟端口跳到对端所在视图。
+
+**为什么不用 UE5 tunnel 节点**：tunnel 节点会污染图数据（凭空多出来一类只为视觉存在的节点）。边界端口是纯渲染层概念，不进 graph state。
+
+实现要点（开工前再细化）：
+- 进入子图 `S` 时，找所有 `src ∈ S, dst ∉ S` 与 `src ∉ S, dst ∈ S` 的边。
+- 按 dst（或 src）的方向把这些边分配到 `S` 边框的左/右侧；同一外部对端聚合为一个虚拟端口。
+- 虚拟端口的稳定 id = `f"ext:{external_node_id}:{direction}"`，避免重渲染时跳位。
+
+### 12.5 视觉/交互风格：ComfyUI / UE5 Blueprint
+
+直接对标这两套范式：
+- 节点矩形带 title bar（type + name）。
+- 输入端口左、输出端口右。
+- 贝塞尔连线。
+- 深色画布、grid 背景。
+- 缩放时节点细节渐进显示（远缩看 type，近缩看 attrs/ports）。
+
+### 12.6 技术栈
+
+| 层 | 选型 | 理由 |
+|---|---|---|
+| 渲染引擎 | **LiteGraph.js** | ComfyUI 同款底层；canvas 原生；内置子图、端口、连线、双击下钻；不造轮子 |
+| 前端框架 | **SvelteKit** | HUD / 工具栏 / 侧栏；比 React 轻；代码更像配置 |
+| 后端 | **FastAPI** | Python，与 kernel 同栈；不增加技术面 |
+| 实时通道 | **SSE** | 单向推送够用；比 WebSocket 简单 |
+
+LiteGraph 的 quirks（JS 非 TS、API 偏旧）可控。需要的扩展点：自定义节点类型注册、虚拟端口（§12.4）、payload 适配层。
+
+### 12.7 实时通道
+
+- 后端 watch `.simulanka/graph/events/` 的 mtime（或新事件文件追加）。
+- 有新事件就通过 SSE 推一条 `{event_id, affected_nodes, affected_edges}` 给前端。
+- 前端按 `affected_*` 增量重取相关子图，不全量刷新。
+- **不双向写**：MVP 阶段前端只读。编辑/创建仍走 CLI；交互式编辑留待 v2。
+
+### 12.8 MVP 范围（与不做）
+
+**做**：
+- 后端 `GET /graph?root=...&depth=...` + `GET /events`（SSE）。
+- 前端：LiteGraph 渲染 + 双击下钻 + 面包屑 + 跨层边界端口。
+- 节点 / 边的最小信息展示（type、name、关键 attrs）。
+- 接现有 `.simulanka/` 项目就能跑（含 importer 已经导入的 DS_r baseline）。
+
+**不做**（留 v2）：
+- 前端编辑（创建节点、连边、改 attrs）。
+- 节点位置持久化（首版每次进视图重新自动布局即可）。
+- 大图性能优化（>10k 节点的虚拟化渲染）。
+- 主题切换、可访问性、多语言。
+- 鉴权 / 多用户。本来就是单用户本地工具。
