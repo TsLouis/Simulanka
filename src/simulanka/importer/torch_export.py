@@ -33,7 +33,7 @@ if TYPE_CHECKING:  # pragma: no cover
     import torch
     import torch.nn as nn
 
-BuildFn = Callable[[], "tuple[nn.Module, tuple[Any, ...]]"]
+BuildFn = Callable[[], "tuple[nn.Module, tuple[Any, ...] | None]"]
 
 
 class ImportError(RuntimeError):
@@ -64,7 +64,13 @@ def import_model(
     Args:
         layout: target project layout.
         build_fn: callable returning ``(model, example_inputs)``. ``example_inputs``
-            is a tuple suitable as positional args to ``model(*example_inputs)``.
+            is a tuple suitable as positional args to ``model(*example_inputs)``,
+            **or** ``None`` to skip the forward-pass data-flow trace and import
+            the module hierarchy only. Structure-only mode is the escape hatch
+            for top-level models whose ``forward`` consumes hard-to-synthesise
+            inputs (dict batches, video state, pipeline scaffolding). The root
+            ``model`` node is then stamped with ``dataflow_unavailable=true``
+            and zero ``data_flow`` edges are emitted.
         name: name of the root ``model`` node (must not contain ``.`` or ``/``).
         parent: selector for the directory under which the model is placed. If
             ``None``, the model becomes a root-level node.
@@ -90,10 +96,10 @@ def import_model(
             f"got {type(built).__name__}"
         )
     model, example_inputs = built
-    if not isinstance(example_inputs, tuple):
+    if example_inputs is not None and not isinstance(example_inputs, tuple):
         raise ImportError(
-            "example_inputs must be a tuple (positional args). "
-            "Wrap a single tensor as `(tensor,)`."
+            "example_inputs must be a tuple of positional args, or None for "
+            "structure-only import. Wrap a single tensor as `(tensor,)`."
         )
 
     # 1. Hierarchy via named_modules().
@@ -103,17 +109,20 @@ def import_model(
 
     # 2. Commit root model node.
     root_path = _join_path(parent, name)
+    root_attrs: dict[str, Any] = {
+        "class_name": type(model).__name__,
+        "num_params": _count_params(model),
+        "fqn": "",
+    }
+    if example_inputs is None:
+        root_attrs["dataflow_unavailable"] = True
     model_id = _commit_one_node(
         layout,
         CreateNodeOp(
             type="model",
             name=name,
             parent=parent,
-            attrs={
-                "class_name": type(model).__name__,
-                "num_params": _count_params(model),
-                "fqn": "",
-            },
+            attrs=root_attrs,
         ),
         actor=actor,
         note=f"import_model: root {name}",
@@ -149,6 +158,14 @@ def import_model(
         fqn_to_id[fqn] = node_id
         _commit_io_ports(
             layout, _fqn_to_selector(root_path, fqn), actor=actor,
+        )
+
+    # Structure-only mode: no forward pass, no data_flow edges.
+    if example_inputs is None:
+        return ImportResult(
+            model_node_id=model_id,
+            module_node_ids=fqn_to_id,
+            data_flow_edge_ids=[],
         )
 
     # 4. Trace data flow via a real forward pass under hooks.

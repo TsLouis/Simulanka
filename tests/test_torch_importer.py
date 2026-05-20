@@ -204,3 +204,58 @@ def test_functional_bridge_between_modules_captured(tmp_path: Path) -> None:
         for e in iter_edges(layout) if e.type == "data_flow"
     }
     assert (ids["norm"], ids["head"]) in by_endpoints
+
+
+def _build_structure_only() -> tuple[Any, None]:
+    """Build returning ``example_inputs=None`` — the structure-only escape hatch.
+
+    Models whose ``forward`` consumes dict batches / pipeline state can use this
+    to register their full ``named_modules()`` tree without faking inputs.
+    """
+    import torch.nn as nn
+
+    class HardToCall(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.encoder = nn.Linear(8, 8)
+            self.head = nn.Linear(8, 2)
+
+        def forward(self, batch: dict[str, Any]) -> Any:  # not called in this mode
+            return self.head(self.encoder(batch["x"]))
+
+    return HardToCall(), None
+
+
+def test_structure_only_import_skips_dataflow(tmp_path: Path) -> None:
+    """``example_inputs=None`` commits the module tree but no data_flow edges."""
+    from simulanka.storage.entity_store import iter_edges, iter_nodes
+
+    layout = init_project(tmp_path, with_scaffold=False).layout
+    _make_directory(layout, "models")
+    result = import_model(
+        layout, _build_structure_only, name="HardToCall", parent="/models",
+    )
+
+    assert set(result.module_node_ids) == {"", "encoder", "head"}
+    assert result.data_flow_edge_ids == []
+    assert [e for e in iter_edges(layout) if e.type == "data_flow"] == []
+
+    root = next(n for n in iter_nodes(layout) if n.id == result.module_node_ids[""])
+    assert root.attrs.get("dataflow_unavailable") is True
+
+    report = run_doctor(layout)
+    assert report.ok, [i.model_dump() for i in report.issues]
+
+
+def test_structure_only_rejects_non_tuple_non_none(tmp_path: Path) -> None:
+    """A non-tuple, non-None ``example_inputs`` is still a contract violation."""
+    from simulanka.importer import ModelImportError
+
+    def bad_build() -> tuple[Any, Any]:
+        import torch.nn as nn
+        return nn.Linear(4, 4), "not a tuple"
+
+    layout = init_project(tmp_path, with_scaffold=False).layout
+    _make_directory(layout, "models")
+    with pytest.raises(ModelImportError):
+        import_model(layout, bad_build, name="Bad", parent="/models")
