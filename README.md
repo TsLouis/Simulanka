@@ -2,7 +2,7 @@
 
 A semi-automated scientific research system built around a Research Graph Kernel.
 
-This repository is at the **Kernel Alpha** milestone. See `docs/design.md` for the architecture and `researcher-handoff/` for prior-art notes.
+This repository is at the **Kernel Alpha** milestone. See `docs/design.md` for the architecture and `docs/archive/` for prior-art notes.
 
 ## Development
 
@@ -18,6 +18,6 @@ pytest
 ## Layout
 
 - `src/simulanka/` — Python package
+- `tests/` — pytest suite, mirrors `src/`
 - `docs/design.md` — Kernel Alpha design (single source of truth for the architecture)
-- `references/` — Reference projects (DeepScientist, OpenResearch); not built by Simulanka
-- `researcher-handoff/` — Notes carried over from the prior local MVP
+- `docs/archive/` — Pre-Alpha notes (researcher handoff, etc.)
