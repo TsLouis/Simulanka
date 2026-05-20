@@ -89,31 +89,32 @@ def to_model_explorer(layout: ProjectLayout, model_selector: str) -> dict[str, A
         namespace = parent_fqn.replace(".", "/")
         cls = n.attrs.get("class_name", n.type)
         me_id_for[nid] = fqn
+        # `incomingEdges` always present — the Model Explorer frontend expects
+        # the key on every node even when the list is empty.
         me_nodes.append({
             "id": fqn,
             "label": f"{leaf} ({cls})",
             "namespace": namespace,
+            "incomingEdges": [],
         })
 
-    # Attach data_flow edges (restricted to the subtree) as incomingEdges.
-    incoming_for: dict[str, list[dict[str, str]]] = {}
+    me_node_by_id = {n["id"]: n for n in me_nodes}
     for e in iter_edges(layout):
         if e.type != "data_flow":
             continue
         if e.source_id not in me_id_for or e.target_id not in me_id_for:
             continue
-        incoming_for.setdefault(me_id_for[e.target_id], []).append(
+        me_node_by_id[me_id_for[e.target_id]]["incomingEdges"].append(
             {"sourceNodeId": me_id_for[e.source_id]},
         )
-    for entry in me_nodes:
-        if entry["id"] in incoming_for:
-            entry["incomingEdges"] = incoming_for[entry["id"]]
 
+    # Wire form: `{"graphs": [Graph, ...]}` — the only object-shape the
+    # Model Explorer frontend's built-in JSON loader recognises (it wraps
+    # this into a GraphCollection internally, using the filename as label).
     return {
         "graphs": [
             {
                 "id": root.name,
-                "label": root.name,
                 "nodes": me_nodes,
             },
         ],

@@ -51,6 +51,13 @@ def _build_tiny() -> tuple[Any, tuple[Any, ...]]:
     return TinyNet(), (torch.randn(2, 4),)
 
 
+def _only_graph(payload: dict[str, Any]) -> dict[str, Any]:
+    """Extract the single inner Graph from the `{"graphs": [...]}` wire shape."""
+    assert "graphs" in payload
+    assert len(payload["graphs"]) == 1
+    return payload["graphs"][0]  # type: ignore[no-any-return]
+
+
 def test_exports_hierarchy_namespace_and_label(tmp_path: Path) -> None:
     layout = init_project(tmp_path, with_scaffold=False).layout
     _make_directory(layout, "models")
@@ -58,9 +65,7 @@ def test_exports_hierarchy_namespace_and_label(tmp_path: Path) -> None:
 
     payload = to_model_explorer(layout, "/models/TinyNet")
 
-    assert "graphs" in payload
-    assert len(payload["graphs"]) == 1
-    g = payload["graphs"][0]
+    g = _only_graph(payload)
     assert g["id"] == "TinyNet"
     nodes = {n["id"]: n for n in g["nodes"]}
 
@@ -83,18 +88,19 @@ def test_exports_incoming_edges_from_data_flow(tmp_path: Path) -> None:
     import_model(layout, _build_tiny, name="TinyNet", parent="/models")
 
     payload = to_model_explorer(layout, "/models/TinyNet")
-    nodes = {n["id"]: n for n in payload["graphs"][0]["nodes"]}
+    nodes = {n["id"]: n for n in _only_graph(payload)["nodes"]}
 
     # b1.lin → b1.act inside the block; b1 → head at top level.
-    act_incoming = {e["sourceNodeId"] for e in nodes["b1.act"].get("incomingEdges", [])}
-    head_incoming = {e["sourceNodeId"] for e in nodes["head"].get("incomingEdges", [])}
+    act_incoming = {e["sourceNodeId"] for e in nodes["b1.act"]["incomingEdges"]}
+    head_incoming = {e["sourceNodeId"] for e in nodes["head"]["incomingEdges"]}
     assert "b1.lin" in act_incoming
     assert "b1" in head_incoming
 
 
-def test_exports_structure_only_root_has_no_edges(tmp_path: Path) -> None:
-    """A model imported in structure-only mode has no data_flow edges, so
-    every node's incomingEdges should be absent."""
+def test_exports_structure_only_root_has_empty_incoming_edges(tmp_path: Path) -> None:
+    """Structure-only imports produce no data_flow edges, so every node's
+    incomingEdges list is present but empty (Model Explorer's frontend
+    expects the key on every node)."""
     layout = init_project(tmp_path, with_scaffold=False).layout
     _make_directory(layout, "models")
 
@@ -106,8 +112,8 @@ def test_exports_structure_only_root_has_no_edges(tmp_path: Path) -> None:
     )
 
     payload = to_model_explorer(layout, "/models/TinyNetStruct")
-    for n in payload["graphs"][0]["nodes"]:
-        assert "incomingEdges" not in n
+    for n in _only_graph(payload)["nodes"]:
+        assert n["incomingEdges"] == []
 
 
 def test_rejects_non_model_selector(tmp_path: Path) -> None:
