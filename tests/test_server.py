@@ -285,6 +285,58 @@ def test_event_stream_emits_commit_for_new_event(tmp_path: Path) -> None:
     assert len(edges) >= 1
 
 
+def test_positions_round_trip(tmp_path: Path) -> None:
+    """POST a delta for one root, GET sees it; second POST under a different
+    root coexists without overwriting the first."""
+    layout = _seed_project(tmp_path)
+    client = TestClient(create_app(layout))
+
+    # Empty to start.
+    resp = client.get("/ui/positions")
+    assert resp.status_code == 200
+    assert resp.json() == {}
+
+    resp = client.post("/ui/positions/top", json={"nod_one": [120.5, 80]})
+    assert resp.status_code == 200
+
+    resp = client.post(
+        "/ui/positions/nod_root",
+        json={"nod_two": [40, 200], "nod_three": [380, 200]},
+    )
+    assert resp.status_code == 200
+
+    payload = client.get("/ui/positions").json()
+    assert payload == {
+        "top": {"nod_one": [120.5, 80]},
+        "nod_root": {"nod_two": [40, 200], "nod_three": [380, 200]},
+    }
+
+    # Partial update merges, doesn't replace.
+    client.post("/ui/positions/top", json={"nod_one": [10, 10]})
+    payload = client.get("/ui/positions").json()
+    assert payload["top"] == {"nod_one": [10, 10]}
+    assert payload["nod_root"]["nod_two"] == [40, 200]
+
+    # File lives where we expect.
+    assert (layout.dot_dir / "ui" / "positions.json").is_file()
+
+
+def test_positions_reject_malformed(tmp_path: Path) -> None:
+    layout = _seed_project(tmp_path)
+    client = TestClient(create_app(layout))
+
+    for bad in (
+        {"nid": "not-a-list"},
+        {"nid": [1, 2, 3]},
+        {"nid": ["nope", 4]},
+    ):
+        resp = client.post("/ui/positions/top", json=bad)
+        assert resp.status_code == 422, bad
+
+    # No partial write must have happened.
+    assert client.get("/ui/positions").json() == {}
+
+
 def test_cors_allows_dev_origin(tmp_path: Path) -> None:
     layout = _seed_project(tmp_path)
     client = TestClient(create_app(layout))

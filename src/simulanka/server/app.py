@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import os
+import tempfile
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
@@ -23,6 +27,7 @@ DEV_ORIGINS = (
 SSE_POLL_INTERVAL = 0.25  # seconds between event_log polls
 
 
+
 def create_app(layout: ProjectLayout | None = None) -> FastAPI:
     if layout is None:
         layout = ProjectLayout.require()
@@ -31,7 +36,7 @@ def create_app(layout: ProjectLayout | None = None) -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(DEV_ORIGINS),
-        allow_methods=["GET"],
+        allow_methods=["GET", "POST"],
         allow_headers=["*"],
     )
 
@@ -52,6 +57,37 @@ def create_app(layout: ProjectLayout | None = None) -> FastAPI:
                 "X-Accel-Buffering": "no",  # disable proxy buffering
             },
         )
+
+    @app.get("/ui/positions")
+    def get_positions() -> dict[str, dict[str, list[float]]]:
+        return _load_positions(layout)
+
+    @app.post("/ui/positions/{root_key}")
+    def post_positions(
+        root_key: str,
+        body: dict[str, list[float]] = Body(default_factory=dict),
+    ) -> dict[str, str]:
+        # Validate shape: each value must be [x, y] of finite numbers. Reject
+        # everything in one shot so a malformed payload doesn't half-update.
+        cleaned: dict[str, list[float]] = {}
+        for node_id, xy in body.items():
+            if (
+                not isinstance(node_id, str)
+                or not isinstance(xy, list)
+                or len(xy) != 2
+                or not all(isinstance(v, (int, float)) for v in xy)
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"position for {node_id!r} must be [x, y] of numbers",
+                )
+            cleaned[node_id] = [float(xy[0]), float(xy[1])]
+
+        existing = _load_positions(layout)
+        bucket = existing.setdefault(root_key, {})
+        bucket.update(cleaned)
+        _save_positions(layout, existing)
+        return {"status": "ok"}
 
     return app
 
@@ -262,3 +298,39 @@ async def _event_stream(
 
 def _sse(event_name: str, payload: dict[str, Any]) -> bytes:
     return f"event: {event_name}\ndata: {json.dumps(payload)}\n\n".encode()
+
+
+def _positions_path(layout: ProjectLayout) -> Path:
+    return layout.dot_dir / "ui" / "positions.json"
+
+
+def _load_positions(layout: ProjectLayout) -> dict[str, dict[str, list[float]]]:
+    path = _positions_path(layout)
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text("utf-8"))
+    except json.JSONDecodeError:
+        # Corrupt UI state shouldn't take down the API; pretend it's empty so
+        # the next save overwrites cleanly.
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return data
+
+
+def _save_positions(
+    layout: ProjectLayout, positions: dict[str, dict[str, list[float]]]
+) -> None:
+    path = _positions_path(layout)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Atomic write so partial writes can't corrupt the file.
+    fd, tmp = tempfile.mkstemp(prefix="positions-", suffix=".json", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(positions, fh)
+        os.replace(tmp, path)
+    except Exception:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmp)
+        raise

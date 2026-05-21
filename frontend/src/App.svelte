@@ -2,7 +2,7 @@
   import { onDestroy, onMount, tick } from 'svelte'
   import { LGraphCanvas, type LGraphNode } from 'litegraph.js'
   import 'litegraph.js/css/litegraph.css'
-  import { fetchGraph } from './lib/api'
+  import { fetchGraph, fetchPositions, savePositions, type Positions } from './lib/api'
   import { subscribeEvents, type EventSubscription } from './lib/events'
   import { buildLiteGraph } from './lib/litegraph-adapter'
   import NodeInspector from './lib/NodeInspector.svelte'
@@ -33,6 +33,13 @@
   // is relevant to the active view.
   let currentNodeIds = new Set<string>()
 
+  // Position state is loaded once on mount and kept in memory; node-drag-end
+  // mutates this map and POSTs the delta to the backend. positions[rootKey]
+  // is the per-view map; rootKey is "top" for top-level, otherwise the root id.
+  let positions: Positions = {}
+  $: rootKey = currentRootId ?? 'top'
+  $: viewPositions = positions[rootKey] ?? {}
+
   async function load() {
     status = 'loading…'
     try {
@@ -48,12 +55,14 @@
           selectedId = null
           void load()
         },
-      })
+        onNodeMouseUp: (id, x, y) => recordMove(id, x, y),
+      }, viewPositions)
       if (lgcanvas) {
         lgcanvas.setGraph(graph)
       } else {
         lgcanvas = new LGraphCanvas(canvasEl, graph)
         wireSelection(lgcanvas)
+        wireNodeMoved(lgcanvas)
       }
       graph.start()
       nodeCount = payload.nodes.length
@@ -108,6 +117,56 @@
     }
   }
 
+  // Pending position deltas, keyed by rootKey. Flushed to the backend on a
+  // short debounce so a rapid drag spree fans into one POST.
+  let pendingByRoot = new Map<string, Record<string, [number, number]>>()
+  let flushTimer: ReturnType<typeof setTimeout> | null = null
+
+  function wireNodeMoved(canvas: LGraphCanvas) {
+    // Canvas-level onNodeMoved is the primary channel. We also wire per-node
+    // onMouseUp via AdapterCallbacks; some litegraph builds miss firing the
+    // canvas-level hook in subtle drag paths, so the two together cover the
+    // gap without double-counting (recordMove dedupes by id+xy).
+    const c = canvas as unknown as { onNodeMoved?: (n: LGraphNode) => void }
+    c.onNodeMoved = (n: LGraphNode) => {
+      const dto = (n as unknown as { simulanka?: NodeDTO }).simulanka
+      if (!dto) return
+      recordMove(dto.id, Math.round(n.pos[0]), Math.round(n.pos[1]))
+    }
+  }
+
+  function recordMove(nodeId: string, x: number, y: number) {
+    const xy: [number, number] = [x, y]
+    const bucket = positions[rootKey] ?? {}
+    if (bucket[nodeId] && bucket[nodeId][0] === x && bucket[nodeId][1] === y) {
+      // No-op drag (click without movement) — skip the POST.
+      return
+    }
+    bucket[nodeId] = xy
+    positions = { ...positions, [rootKey]: bucket }
+
+    const delta = pendingByRoot.get(rootKey) ?? {}
+    delta[nodeId] = xy
+    pendingByRoot.set(rootKey, delta)
+    if (flushTimer) clearTimeout(flushTimer)
+    flushTimer = setTimeout(flushPositions, 200)
+  }
+
+  async function flushPositions() {
+    flushTimer = null
+    const snapshot = pendingByRoot
+    pendingByRoot = new Map()
+    for (const [rk, delta] of snapshot) {
+      try {
+        await savePositions(rk, delta)
+      } catch (err) {
+        // Best-effort: log and drop. The next drag will retry; in-memory
+        // positions still reflect the user's intent for this session.
+        console.error('savePositions failed', err)
+      }
+    }
+  }
+
   function resizeCanvas() {
     if (!canvasEl) return
     canvasEl.width = canvasEl.clientWidth
@@ -124,7 +183,12 @@
 
   let subscription: EventSubscription | null = null
 
-  onMount(() => {
+  onMount(async () => {
+    try {
+      positions = await fetchPositions()
+    } catch (err) {
+      console.warn('fetchPositions failed; starting with empty layout cache', err)
+    }
     void load()
     subscription = subscribeEvents({
       onReady: gv => {
@@ -147,11 +211,28 @@
       },
     })
     window.addEventListener('resize', resizeCanvas)
+    window.addEventListener('pagehide', beaconFlush)
   })
+
+  function beaconFlush() {
+    // Page unload: an in-flight fetch may be aborted, so dump pending deltas
+    // via sendBeacon which the browser guarantees to dispatch.
+    if (flushTimer) {
+      clearTimeout(flushTimer)
+      flushTimer = null
+    }
+    for (const [rk, delta] of pendingByRoot) {
+      const blob = new Blob([JSON.stringify(delta)], { type: 'application/json' })
+      navigator.sendBeacon(`/ui/positions/${encodeURIComponent(rk)}`, blob)
+    }
+    pendingByRoot = new Map()
+  }
 
   onDestroy(() => {
     subscription?.close()
     window.removeEventListener('resize', resizeCanvas)
+    window.removeEventListener('pagehide', beaconFlush)
+    beaconFlush()
   })
 
   // When the inspector opens/closes the canvas width changes — give the DOM a

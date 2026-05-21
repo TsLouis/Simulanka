@@ -3,6 +3,7 @@
 // §12.4 (boundary-port projection). The adapter is pure rendering: virtual
 // boundary nodes never enter graph state.
 
+import dagre from 'dagre'
 import { LiteGraph, LGraph, type LGraphNode } from 'litegraph.js'
 import type {
   EdgeDTO,
@@ -15,9 +16,17 @@ import type {
 const TYPE_PREFIX = 'simulanka/'
 const BOUNDARY_PREFIX = 'simulanka-boundary/'
 
+// Approximate per-node footprint for dagre layout. Real LiteGraph nodes
+// auto-size to title + slots, but dagre needs a number up front.
+const NODE_W = 200
+const NODE_H = 100
+
 export interface AdapterCallbacks {
   onDrillDown?: (nodeId: string, nodeName: string) => void
   onJumpExternal?: (externalId: string, externalName: string) => void
+  // Fires on real-node mouseup; canvas-level onNodeMoved misses fires in some
+  // litegraph builds, so the adapter wires this per-node as a backup channel.
+  onNodeMouseUp?: (nodeId: string, x: number, y: number) => void
 }
 
 export interface AdapterResult {
@@ -37,25 +46,23 @@ function ensureRegistered(typeName: string, prefix: string = TYPE_PREFIX): strin
 export function buildLiteGraph(
   payload: GraphPayload,
   callbacks: AdapterCallbacks = {},
+  persistedPositions: Record<string, [number, number]> = {},
 ): AdapterResult {
   const graph = new LGraph()
   const portsById = new Map<string, PortDTO>(payload.ports.map(p => [p.id, p]))
 
-  // Per-port slot lookup. LiteGraph keeps inputs and outputs in separate arrays
-  // per node, so each gets its own running index.
   const inSlot = new Map<string, number>()
   const outSlot = new Map<string, number>()
   const byNode = new Map<string, LGraphNode>()
 
-  const cols = Math.max(1, Math.ceil(Math.sqrt(payload.nodes.length)))
-  const gridX = (idx: number) => 80 + (idx % cols) * 260
-  const gridY = (idx: number) => 80 + Math.floor(idx / cols) * 160
+  // Auto-layout: dagre runs over real nodes + their internal data-flow edges.
+  // Persisted positions in persistedPositions override the dagre result, so
+  // user-dragged nodes stick across reloads.
+  const autoPos = computeAutoLayout(payload)
 
-  payload.nodes.forEach((n: NodeDTO, idx: number) => {
+  payload.nodes.forEach((n: NodeDTO) => {
     const isContainer = n.child_count > 0
     const lgnode = LiteGraph.createNode(ensureRegistered(n.type)) as LGraphNode
-    // The leading marker tells the user a node is drillable; cheap visual hint
-    // until we add proper node decoration.
     lgnode.title = isContainer ? `▸ ${n.name}` : n.name
     ;(lgnode as unknown as { simulanka: NodeDTO }).simulanka = n
 
@@ -73,12 +80,20 @@ export function buildLiteGraph(
       }
     }
 
-    lgnode.pos = [gridX(idx), gridY(idx)]
+    const pos = persistedPositions[n.id] ?? autoPos.get(n.id) ?? [80, 80]
+    lgnode.pos = [pos[0], pos[1]]
 
     if (isContainer && callbacks.onDrillDown) {
       const cb = callbacks.onDrillDown
       ;(lgnode as unknown as { onDblClick: () => void }).onDblClick = () => {
         cb(n.id, n.name)
+      }
+    }
+
+    if (callbacks.onNodeMouseUp) {
+      const cb = callbacks.onNodeMouseUp
+      ;(lgnode as unknown as { onMouseUp: () => void }).onMouseUp = () => {
+        cb(n.id, Math.round(lgnode.pos[0]), Math.round(lgnode.pos[1]))
       }
     }
 
@@ -106,7 +121,6 @@ export function buildLiteGraph(
       inSlot,
       outSlot,
       portsById,
-      cols,
       callbacks,
     )
   }
@@ -145,7 +159,6 @@ function injectBoundary(
   inSlot: Map<string, number>,
   outSlot: Map<string, number>,
   portsById: Map<string, PortDTO>,
-  cols: number,
   callbacks: AdapterCallbacks,
 ): void {
   const externalById = new Map<string, ExternalNodeDTO>(
@@ -179,10 +192,18 @@ function injectBoundary(
     bucket.edges.push(e)
   }
 
-  // Lay out boundary nodes in columns hugging the canvas edges. Left column
-  // for inbound (external → internal), right column for outbound.
-  const leftX = -220
-  const rightX = 80 + cols * 260 + 40
+  // Lay out boundary nodes in columns hugging the real-node bounding box.
+  // Left column for inbound (external → internal), right column for outbound.
+  let minX = Infinity
+  let maxX = -Infinity
+  for (const ln of byNode.values()) {
+    const [x] = ln.pos
+    if (x < minX) minX = x
+    if (x > maxX) maxX = x
+  }
+  if (!Number.isFinite(minX)) { minX = 80; maxX = 80 }
+  const leftX = minX - 260
+  const rightX = maxX + NODE_W + 40
   let inboundIdx = 0
   let outboundIdx = 0
 
@@ -248,4 +269,35 @@ function injectBoundary(
       }
     })
   }
+}
+
+// dagre lays out the real nodes left-to-right (LR), driven by data-flow edges.
+// Nodes with no edges fall into their own rank column. Returns absolute (x, y)
+// positions keyed by node id; the caller may override with persisted values.
+function computeAutoLayout(payload: GraphPayload): Map<string, [number, number]> {
+  const g = new dagre.graphlib.Graph()
+  g.setGraph({ rankdir: 'LR', nodesep: 40, ranksep: 90, marginx: 40, marginy: 40 })
+  g.setDefaultEdgeLabel(() => ({}))
+
+  for (const n of payload.nodes) {
+    g.setNode(n.id, { width: NODE_W, height: NODE_H })
+  }
+  // Only real (both-endpoints-in) edges drive layout. Contains/structural edges
+  // are implicit in nesting and shouldn't affect rank.
+  for (const e of payload.edges) {
+    if (e.type !== 'data_flow') continue
+    if (!g.hasNode(e.src) || !g.hasNode(e.dst)) continue
+    g.setEdge(e.src, e.dst)
+  }
+
+  dagre.layout(g)
+
+  const out = new Map<string, [number, number]>()
+  for (const id of g.nodes()) {
+    const node = g.node(id)
+    if (!node) continue
+    // dagre reports the centre; LiteGraph node.pos is the top-left corner.
+    out.set(id, [node.x - NODE_W / 2, node.y - NODE_H / 2])
+  }
+  return out
 }
