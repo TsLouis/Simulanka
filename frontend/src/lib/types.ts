@@ -1,4 +1,4 @@
-// Mirrors docs/design.md §12.2 — the single payload shape the renderer consumes.
+// Mirrors docs/design.md §12.2 / §12.4 — the payload shape the renderer consumes.
 
 export interface PortDTO {
   id: string
@@ -16,6 +16,7 @@ export interface NodeDTO {
   parent_id: string | null
   attrs: Record<string, unknown>
   ports: string[]
+  child_count: number
 }
 
 export interface EdgeDTO {
@@ -28,9 +29,24 @@ export interface EdgeDTO {
   attrs: Record<string, unknown>
 }
 
+export interface ExternalNodeDTO {
+  id: string
+  type: string
+  name: string
+}
+
+export interface AncestorDTO {
+  id: string
+  type: string
+  name: string
+}
+
 export interface GraphPayload {
   root: string | null
   nodes: NodeDTO[]
   edges: EdgeDTO[]
+  boundary_edges: EdgeDTO[]
+  external_nodes: ExternalNodeDTO[]
   ports: PortDTO[]
+  ancestors: AncestorDTO[]
 }

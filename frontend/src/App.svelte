@@ -1,52 +1,195 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
-  import { LGraphCanvas } from 'litegraph.js'
+  import { onDestroy, onMount, tick } from 'svelte'
+  import { LGraphCanvas, type LGraphNode } from 'litegraph.js'
   import 'litegraph.js/css/litegraph.css'
   import { fetchGraph } from './lib/api'
+  import { subscribeEvents, type EventSubscription } from './lib/events'
   import { buildLiteGraph } from './lib/litegraph-adapter'
+  import NodeInspector from './lib/NodeInspector.svelte'
+  import type { NodeDTO, PortDTO } from './lib/types'
 
   let canvasEl: HTMLCanvasElement
-  let rootInput = ''
   let depth = 1
   let status = 'idle'
   let nodeCount = 0
   let edgeCount = 0
+  let boundaryCount = 0
+  let liveVersion = -1
+  let liveOk = false
 
+  // currentRootId is the single source of truth for navigation. crumbs is
+  // derived from payload.ancestors + the active root after each load, so a
+  // drill-down or jump-external just sets this and reloads — the breadcrumb
+  // trail rebuilds itself with full ancestor info from the server.
+  let currentRootId: string | null = null
+  let crumbs: { id: string; name: string }[] = []
   let lgcanvas: LGraphCanvas | null = null
+
+  let selectedId: string | null = null
+  let selectedNode: NodeDTO | null = null
+  let portsById: Map<string, PortDTO> = new Map()
+
+  // Set of node ids currently rendered; used to decide whether an SSE commit
+  // is relevant to the active view.
+  let currentNodeIds = new Set<string>()
 
   async function load() {
     status = 'loading…'
     try {
-      const payload = await fetchGraph(rootInput.trim() || null, depth)
-      const { graph } = buildLiteGraph(payload)
+      const payload = await fetchGraph(currentRootId, depth)
+      const { graph } = buildLiteGraph(payload, {
+        onDrillDown: (id) => {
+          currentRootId = id
+          selectedId = null
+          void load()
+        },
+        onJumpExternal: (id) => {
+          currentRootId = id
+          selectedId = null
+          void load()
+        },
+      })
       if (lgcanvas) {
         lgcanvas.setGraph(graph)
       } else {
         lgcanvas = new LGraphCanvas(canvasEl, graph)
+        wireSelection(lgcanvas)
       }
       graph.start()
       nodeCount = payload.nodes.length
       edgeCount = payload.edges.length
+      boundaryCount = payload.boundary_edges.length
       status = payload.root ? `root=${payload.root}` : 'top-level'
+
+      // Derive breadcrumb from server-provided ancestor chain. The active root
+      // becomes the trailing crumb (resolve its name from payload.nodes, where
+      // it appears as an included node).
+      const activeRoot = payload.root
+        ? payload.nodes.find(n => n.id === payload.root)
+        : null
+      crumbs = activeRoot
+        ? [...payload.ancestors.map(a => ({ id: a.id, name: a.name })),
+           { id: activeRoot.id, name: activeRoot.name }]
+        : []
+
+      portsById = new Map(payload.ports.map(p => [p.id, p]))
+      selectedNode = selectedId
+        ? payload.nodes.find(n => n.id === selectedId) ?? null
+        : null
+      if (!selectedNode) selectedId = null
+
+      currentNodeIds = new Set(payload.nodes.map(n => n.id))
     } catch (err) {
       status = `error: ${(err as Error).message}`
     }
   }
 
+  function wireSelection(canvas: LGraphCanvas) {
+    // LiteGraph's selection hooks aren't typed in @types/litegraph.js, but the
+    // runtime accepts these assignments on LGraphCanvas. Boundary nodes carry
+    // a `simulanka_boundary` stash instead of `simulanka`; skip those.
+    const c = canvas as unknown as {
+      onNodeSelected?: (n: LGraphNode) => void
+      onNodeDeselected?: (n: LGraphNode) => void
+    }
+    c.onNodeSelected = (n: LGraphNode) => {
+      const dto = (n as unknown as { simulanka?: NodeDTO }).simulanka
+      if (!dto) {
+        selectedId = null
+        selectedNode = null
+        return
+      }
+      selectedId = dto.id
+      selectedNode = dto
+    }
+    c.onNodeDeselected = () => {
+      selectedId = null
+      selectedNode = null
+    }
+  }
+
+  function resizeCanvas() {
+    if (!canvasEl) return
+    canvasEl.width = canvasEl.clientWidth
+    canvasEl.height = canvasEl.clientHeight
+    lgcanvas?.draw(true, true)
+  }
+
+  function goTo(idx: number) {
+    // idx = -1 → top-level; otherwise jump to crumbs[idx] as the new root.
+    currentRootId = idx < 0 ? null : crumbs[idx].id
+    selectedId = null
+    void load()
+  }
+
+  let subscription: EventSubscription | null = null
+
   onMount(() => {
     void load()
+    subscription = subscribeEvents({
+      onReady: gv => {
+        liveOk = true
+        liveVersion = gv
+      },
+      onCommit: msg => {
+        liveOk = true
+        liveVersion = msg.graph_version
+        // Skip the reload when the commit doesn't touch the active view. At
+        // top-level we always reload, because parentless CreateNodeOps don't
+        // write a contains edge — msg.nodes would miss them otherwise.
+        const touchesView =
+          currentRootId === null ||
+          msg.nodes.some(id => currentNodeIds.has(id))
+        if (touchesView) void load()
+      },
+      onError: () => {
+        liveOk = false
+      },
+    })
+    window.addEventListener('resize', resizeCanvas)
   })
+
+  onDestroy(() => {
+    subscription?.close()
+    window.removeEventListener('resize', resizeCanvas)
+  })
+
+  // When the inspector opens/closes the canvas width changes — give the DOM a
+  // tick to reflow, then resize the canvas backing buffer to match.
+  $: if (selectedNode !== undefined) void tick().then(resizeCanvas)
 </script>
 
 <header>
   <strong>Simulanka</strong>
-  <label>root <input bind:value={rootInput} placeholder="(top-level)" /></label>
-  <label>depth <input type="number" min="0" max="5" bind:value={depth} /></label>
-  <button on:click={load}>Load</button>
-  <span class="status">{status} · {nodeCount}n / {edgeCount}e</span>
+  <nav class="crumbs">
+    <button class="crumb" on:click={() => goTo(-1)} class:active={crumbs.length === 0}>
+      top
+    </button>
+    {#each crumbs as c, i}
+      <span class="sep">/</span>
+      <button
+        class="crumb"
+        on:click={() => goTo(i)}
+        class:active={i === crumbs.length - 1}
+        title={c.id}
+      >
+        {c.name}
+      </button>
+    {/each}
+  </nav>
+  <label>depth <input type="number" min="0" max="5" bind:value={depth} on:change={load} /></label>
+  <button on:click={load}>Reload</button>
+  <span class="status">
+    <span class="live" class:on={liveOk} title={liveOk ? `live · v${liveVersion}` : 'disconnected'}></span>
+    {status} · {nodeCount}n / {edgeCount}e
+    {#if boundaryCount > 0}/ {boundaryCount}↔{/if}
+  </span>
 </header>
 
-<canvas bind:this={canvasEl} width="1600" height="900"></canvas>
+<main class:with-inspector={selectedNode !== null}>
+  <canvas bind:this={canvasEl}></canvas>
+  <NodeInspector node={selectedNode} {portsById} />
+</main>
 
 <style>
   :global(body, html) {
@@ -86,14 +229,58 @@
   header button:hover {
     background: #444;
   }
+  .crumbs {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .crumb {
+    background: transparent;
+    border: none;
+    color: #aaa;
+    padding: 2px 6px;
+    cursor: pointer;
+    font: inherit;
+  }
+  .crumb:hover {
+    color: #ddd;
+    background: #333;
+  }
+  .crumb.active {
+    color: #fff;
+    font-weight: 600;
+  }
+  .sep {
+    color: #555;
+  }
   .status {
     margin-left: auto;
     color: #999;
     font-family: ui-monospace, monospace;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .live {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #555;
+    transition: background 0.2s;
+  }
+  .live.on {
+    background: #4ade80;
+    box-shadow: 0 0 4px #4ade80;
+  }
+  main {
+    display: flex;
+    width: 100vw;
+    height: calc(100vh - 41px);
   }
   canvas {
     display: block;
-    width: 100vw;
-    height: calc(100vh - 41px);
+    flex: 1;
+    min-width: 0;
+    height: 100%;
   }
 </style>

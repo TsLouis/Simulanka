@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -98,6 +99,8 @@ def test_get_graph_no_root_returns_top_level(tmp_path: Path) -> None:
     types = {n["type"] for n in payload["nodes"]}
     assert types == {"directory"}
     assert all(n["parent_id"] is None for n in payload["nodes"])
+    # No root → no ancestor chain.
+    assert payload["ancestors"] == []
 
 
 def test_get_graph_root_depth_1_includes_children(tmp_path: Path) -> None:
@@ -125,12 +128,161 @@ def test_get_graph_root_depth_1_includes_children(tmp_path: Path) -> None:
     sides = sorted(p["side"] for p in payload["ports"])
     assert sides == ["in", "out"]
 
+    # child_count is the direct-children count; Net has enc+dec, enc/dec are leaves.
+    by_name = {n["name"]: n for n in payload["nodes"]}
+    assert by_name["Net"]["child_count"] == 2
+    assert by_name["enc"]["child_count"] == 0
+    assert by_name["dec"]["child_count"] == 0
+
+    # Inbound containment from baselines → Net counts as cross-boundary; data
+    # flows between enc and dec are internal.
+    assert len(payload["boundary_edges"]) == 1
+    incoming = payload["boundary_edges"][0]
+    assert incoming["type"] == "contains"
+    assert incoming["dst"] == net_id
+    assert {x["name"] for x in payload["external_nodes"]} == {"baselines"}
+
+
+def test_get_graph_ancestors_chain_from_root(tmp_path: Path) -> None:
+    """root=enc returns the parent chain `baselines/Net` (top-down). The
+    frontend uses this to rebuild crumbs after jump-external or deep-link
+    loads with an arbitrary root."""
+    layout = _seed_project(tmp_path)
+    enc_id = next(n.id for n in iter_nodes(layout) if n.name == "enc")
+    net_id = next(n.id for n in iter_nodes(layout) if n.name == "Net" and n.type == "model")
+    baselines_id = next(n.id for n in iter_nodes(layout) if n.name == "baselines")
+
+    client = TestClient(create_app(layout))
+    resp = client.get("/graph", params={"root": enc_id, "depth": 0})
+    payload = resp.json()
+
+    names = [a["name"] for a in payload["ancestors"]]
+    ids = [a["id"] for a in payload["ancestors"]]
+    assert names == ["baselines", "Net"]  # top-down order
+    assert ids == [baselines_id, net_id]
+
+
+def test_get_graph_root_at_leaf_module_exposes_boundary_edge(tmp_path: Path) -> None:
+    """root=enc, depth=0 → only enc is included. Two edges cross the boundary:
+    the data_flow enc→dec (out to a sibling) and the contains Net→enc (in from
+    the parent). Frontend §12.4 then decides which to project as boundary
+    ports — only port-bearing edges qualify."""
+    layout = _seed_project(tmp_path)
+    enc_id = next(n.id for n in iter_nodes(layout) if n.name == "enc")
+    dec_id = next(n.id for n in iter_nodes(layout) if n.name == "dec")
+    net_id = next(n.id for n in iter_nodes(layout) if n.name == "Net" and n.type == "model")
+
+    client = TestClient(create_app(layout))
+    resp = client.get("/graph", params={"root": enc_id, "depth": 0})
+    assert resp.status_code == 200
+    payload = resp.json()
+
+    assert payload["root"] == enc_id
+    assert [n["name"] for n in payload["nodes"]] == ["enc"]
+    assert payload["edges"] == []
+
+    by_type = {e["type"]: e for e in payload["boundary_edges"]}
+    assert set(by_type) == {"data_flow", "contains"}
+
+    flow = by_type["data_flow"]
+    assert flow["src"] == enc_id and flow["dst"] == dec_id
+    assert flow["src_port"] is not None and flow["dst_port"] is not None
+
+    contains = by_type["contains"]
+    assert contains["src"] == net_id and contains["dst"] == enc_id
+
+    ext_names = {x["name"] for x in payload["external_nodes"]}
+    assert ext_names == {"dec", "Net"}
+
+
+def test_get_graph_top_level_has_no_boundary_edges(tmp_path: Path) -> None:
+    """At top-level there is no outside, so boundary_edges must stay empty
+    even if cross-cutting edges exist elsewhere."""
+    layout = _seed_project(tmp_path)
+    client = TestClient(create_app(layout))
+    resp = client.get("/graph", params={"depth": 0})
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["root"] is None
+    assert payload["boundary_edges"] == []
+    assert payload["external_nodes"] == []
+
 
 def test_get_graph_unknown_root_404(tmp_path: Path) -> None:
     layout = _seed_project(tmp_path)
     client = TestClient(create_app(layout))
     resp = client.get("/graph", params={"root": "nod_does_not_exist"})
     assert resp.status_code == 404
+
+
+def test_event_stream_emits_commit_for_new_event(tmp_path: Path) -> None:
+    """Drive _event_stream directly: snapshot graph_version, apply_patch, then
+    pull the next commit frame. Verifies _affected() extraction (event_id +
+    affected nodes/edges) without the HTTP transport's buffering quirks."""
+    import asyncio
+    import contextlib
+    import json as _json
+    from typing import cast
+
+    from simulanka.server.app import _event_stream
+
+    layout = _seed_project(tmp_path)
+    baselines = next(n for n in iter_nodes(layout) if n.name == "baselines")
+
+    class FakeRequest:
+        def __init__(self) -> None:
+            self.disconnect = False
+
+        async def is_disconnected(self) -> bool:
+            return self.disconnect
+
+    async def drive() -> tuple[dict[str, object], dict[str, object]]:
+        req = FakeRequest()
+        # Cast: _event_stream expects fastapi.Request; the only attribute it
+        # touches is is_disconnected, which FakeRequest implements.
+        gen = _event_stream(layout, cast(Any, req))
+        ready_raw = await gen.__anext__()
+        # apply_patch synchronously between yields; the poll loop will pick it
+        # up on its next tick.
+        apply_patch(
+            layout,
+            PatchIntent(
+                ops=[CreateNodeOp(type="model", name="Net2", parent=baselines.id, attrs={})],
+                actor="test",
+                base_graph_version=load_manifest(layout).graph_version,
+            ),
+        )
+        commit_raw = await asyncio.wait_for(gen.__anext__(), timeout=2.0)
+        req.disconnect = True
+        # Drain to let the generator return cleanly.
+        with contextlib.suppress(StopAsyncIteration, asyncio.TimeoutError):
+            await asyncio.wait_for(gen.__anext__(), timeout=1.0)
+        return _parse_sse(ready_raw), _parse_sse(commit_raw)
+
+    def _parse_sse(raw: bytes) -> dict[str, object]:
+        out: dict[str, object] = {}
+        for line in raw.decode("utf-8").splitlines():
+            if line.startswith("event: "):
+                out["_name"] = line[len("event: "):]
+            elif line.startswith("data: "):
+                out.update(_json.loads(line[len("data: "):]))
+        return out
+
+    ready, commit = asyncio.run(drive())
+    assert ready["_name"] == "ready"
+    assert isinstance(ready["graph_version"], int)
+
+    assert commit["_name"] == "commit"
+    assert commit["actor"] == "test"
+    assert isinstance(commit["event_id"], str)
+    # CreateNodeOp dual-writes a contains edge: the new node id and its parent
+    # both appear in affected nodes, plus one edge.
+    nodes = cast(list[str], commit["nodes"])
+    edges = cast(list[str], commit["edges"])
+    new_net2 = next(n.id for n in iter_nodes(layout) if n.name == "Net2")
+    assert new_net2 in nodes
+    assert baselines.id in nodes
+    assert len(edges) >= 1
 
 
 def test_cors_allows_dev_origin(tmp_path: Path) -> None:

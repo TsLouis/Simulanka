@@ -6,6 +6,12 @@ export default defineConfig({
   server: {
     proxy: {
       '/graph': 'http://127.0.0.1:8765',
+      '/events': {
+        target: 'http://127.0.0.1:8765',
+        changeOrigin: true,
+        // SSE: keep the upstream connection open and don't buffer.
+        ws: false,
+      },
     },
   },
 })
