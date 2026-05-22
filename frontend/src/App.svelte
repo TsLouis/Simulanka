@@ -55,7 +55,6 @@
           selectedId = null
           void load()
         },
-        onNodeMouseUp: (id, x, y) => recordMove(id, x, y),
       }, viewPositions)
       if (lgcanvas) {
         lgcanvas.setGraph(graph)
@@ -123,10 +122,12 @@
   let flushTimer: ReturnType<typeof setTimeout> | null = null
 
   function wireNodeMoved(canvas: LGraphCanvas) {
-    // Canvas-level onNodeMoved is the primary channel. We also wire per-node
-    // onMouseUp via AdapterCallbacks; some litegraph builds miss firing the
-    // canvas-level hook in subtle drag paths, so the two together cover the
-    // gap without double-counting (recordMove dedupes by id+xy).
+    // Canvas-level onNodeMoved is the sole capture channel for drags. In
+    // litegraph 0.7.18 processMouseUp, a node-drag-release runs the
+    // `else if (node_dragged)` branch (which calls onNodeMoved) and never the
+    // `else` branch that would call node.onMouseUp — so a per-node onMouseUp
+    // backup can't fire on drags (it only fires on a no-move click). Set once
+    // on the canvas; it survives setGraph() across reloads.
     const c = canvas as unknown as { onNodeMoved?: (n: LGraphNode) => void }
     c.onNodeMoved = (n: LGraphNode) => {
       const dto = (n as unknown as { simulanka?: NodeDTO }).simulanka
@@ -212,7 +213,15 @@
     })
     window.addEventListener('resize', resizeCanvas)
     window.addEventListener('pagehide', beaconFlush)
+    document.addEventListener('visibilitychange', flushIfHidden)
   })
+
+  function flushIfHidden() {
+    // pagehide is unreliable across browsers; visibilitychange→hidden is the
+    // recommended signal to persist before the tab is backgrounded/closed,
+    // catching deltas still inside the 200ms debounce window.
+    if (document.visibilityState === 'hidden') beaconFlush()
+  }
 
   function beaconFlush() {
     // Page unload: an in-flight fetch may be aborted, so dump pending deltas
@@ -232,6 +241,7 @@
     subscription?.close()
     window.removeEventListener('resize', resizeCanvas)
     window.removeEventListener('pagehide', beaconFlush)
+    document.removeEventListener('visibilitychange', flushIfHidden)
     beaconFlush()
   })
 

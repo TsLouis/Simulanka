@@ -24,9 +24,6 @@ const NODE_H = 100
 export interface AdapterCallbacks {
   onDrillDown?: (nodeId: string, nodeName: string) => void
   onJumpExternal?: (externalId: string, externalName: string) => void
-  // Fires on real-node mouseup; canvas-level onNodeMoved misses fires in some
-  // litegraph builds, so the adapter wires this per-node as a backup channel.
-  onNodeMouseUp?: (nodeId: string, x: number, y: number) => void
 }
 
 export interface AdapterResult {
@@ -87,13 +84,6 @@ export function buildLiteGraph(
       const cb = callbacks.onDrillDown
       ;(lgnode as unknown as { onDblClick: () => void }).onDblClick = () => {
         cb(n.id, n.name)
-      }
-    }
-
-    if (callbacks.onNodeMouseUp) {
-      const cb = callbacks.onNodeMouseUp
-      ;(lgnode as unknown as { onMouseUp: () => void }).onMouseUp = () => {
-        cb(n.id, Math.round(lgnode.pos[0]), Math.round(lgnode.pos[1]))
       }
     }
 

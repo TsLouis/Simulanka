@@ -127,10 +127,10 @@ EDGE_TYPES: dict[str, EdgeTypeSpec]   # needs_ports, source_types, target_types,
 
 **CLI**：`simulanka import torch --build pkg.mod:fn --name N [--parent /dir]`
 
-#### 待加（Alpha 收尾前两项）
+#### 收尾两项（均已落地）
 
-1. **`example_inputs=None` 走 structure-only 路径**。顶层模型如 `SAM2Base` 的 forward 是跟踪 pipeline，构造合法 example_inputs 代价大；这种情况下允许"只走 `named_modules`、跳过 data flow trace"。落地一个 `model` + 一组 `module` 节点 + 一个 `dataflow_unavailable=true` 属性。这是 top-level import 约定的兜底 —— 没了它，约定只是嘴上说说。
-2. **导出 [Google Model Explorer](https://github.com/google-ai-edge/model-explorer) 兼容格式**。schema 极简（`namespace` 分层 + `incomingEdges`），与我们的 module 树 + data_flow 边天然对应。一个 `to_model_explorer()` 函数 ≈ 50 行，换来浏览器里的交互式可视化前端（折叠/展开/搜索/选中显示属性）—— 用户验证图结构的主要工具。
+1. ✅ **`example_inputs=None` 走 structure-only 路径**（2026-05-20）。顶层模型如 `SAM2Base` 的 forward 是跟踪 pipeline，构造合法 example_inputs 代价大；这种情况下只走 `named_modules`、跳过 data flow trace，落地一个 `model` + 一组 `module` 节点 + `dataflow_unavailable=true` 属性。配套 `simulanka import baseline <dir>` 读 `manifest.yaml`，`lint_manifest` 强制 `set(children)==named_children()` 做机制级防漏。
+2. ✅ **导出 [Google Model Explorer](https://github.com/google-ai-edge/model-explorer) 兼容格式**（2026-05-21）。`src/simulanka/exporter/model_explorer.py::to_model_explorer` + CLI `simulanka export`。schema 即 `namespace` 分层 + 每节点 `incomingEdges`，换来浏览器里折叠/展开/搜索的交互式可视化。
 
 #### 调研结论（2026-05-19）
 
@@ -369,7 +369,7 @@ simulanka graph index rebuild
 13. ✅ `run agent --detach`（detached 模式下也跑 workspace diff，见 §5.5）。
 14. ✅ TaskContract + 第一等 `task` 节点（goal + allowed_outputs + budget + acceptance，见 §5.6）。
 
-下一步候选：前端 canvas。视具体研究流程触发。多 attempt 比较等约定层议题落到 agent 工程，不进 kernel。
+下一步：前端 canvas 可视化 MVP **已落地**（§12，2026-05-20/21 六轮迭代，见 `frontend/` + `src/simulanka/server/`）。多 attempt 比较等约定层议题落到 agent 工程，不进 kernel。
 
 仍在 Alpha 范围外：artifact store、前端 canvas、file binding 的 snapshot/generated 模式。`fs_path` 类 attrs 留给后续 `attrs_model` 扩展。
 
@@ -396,9 +396,11 @@ FileRegistry 当前刻意保持简单，存在两处已被识别的限制，留�
 3. 项目定位：默认 `$PWD` 向上找 `.simulanka/`；`SIMULANKA_PROJECT` 环境变量覆盖。不加 `--project` 开关，YAGNI。
 4. `.gitignore` 模板：排除 `indexes/`、`cache/`、`logs/`；保留 `manifest.json` 与 `graph/{nodes,edges,ports,events}/`。`init` 时如目标内无 `.gitignore` 则写入；已有则不动。
 
-## 12. 前端可视化（下阶段）
+## 12. 前端可视化
 
-Alpha 之后的下一条工作线。**目的**：让研究者在浏览器里实时看到 Research Graph 与其内部 model 子图，肉眼验证 importer 抓得对不对、experiments / runs / files / lineage 的形状。导入器深挖（torch_export 覆盖度）卡在这一步落地。
+> **状态（2026-05-22）**：MVP 已落地（六轮迭代，见 `frontend/` + `src/simulanka/server/`）。§12.1–12.7 是当时遵循的设计原则，保留作 rationale；§12.8 的"做/不做"清单已按实际落地情况更新。
+
+**目的**：让研究者在浏览器里实时看到 Research Graph 与其内部 model 子图，肉眼验证 importer 抓得对不对、experiments / runs / files / lineage 的形状。导入器深挖（torch_export 覆盖度）等这一步落地后再继续——该前提现已满足。
 
 ### 12.1 第一原则：统一 node-edge-port 渲染器
 
@@ -480,15 +482,15 @@ LiteGraph 的 quirks（JS 非 TS、API 偏旧）可控。需要的扩展点：�
 
 ### 12.8 MVP 范围（与不做）
 
-**做**：
-- 后端 `GET /graph?root=...&depth=...` + `GET /events`（SSE）。
-- 前端：LiteGraph 渲染 + 双击下钻 + 面包屑 + 跨层边界端口。
-- 节点 / 边的最小信息展示（type、name、关键 attrs）。
+**已做**：
+- 后端 `GET /graph?root=...&depth=...` + `GET /events`（SSE）+ `GET/POST /ui/positions`。
+- 前端：LiteGraph 渲染 + 双击下钻 + 面包屑（祖先链重建）+ 跨层边界端口 + 节点属性侧栏（NodeInspector）。
+- dagre 自动布局 + 按视图持久化节点位置（落 `.simulanka/ui/positions.json`）。
+- SSE 增量刷新（按 affected 节点交集判断是否 reload）。
 - 接现有 `.simulanka/` 项目就能跑（含 importer 已经导入的 DS_r baseline）。
 
 **不做**（留 v2）：
 - 前端编辑（创建节点、连边、改 attrs）。
-- 节点位置持久化（首版每次进视图重新自动布局即可）。
 - 大图性能优化（>10k 节点的虚拟化渲染）。
 - 主题切换、可访问性、多语言。
 - 鉴权 / 多用户。本来就是单用户本地工具。
