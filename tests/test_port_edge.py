@@ -352,6 +352,27 @@ def test_delete_edge_refuses_contains(tmp_path: Path) -> None:
     assert edge_exists(layout, contains.id)  # untouched
 
 
+def test_create_edge_unknown_endpoint_is_validation_error(tmp_path: Path) -> None:
+    """A CreateEdgeOp pointing at a non-existent port surfaces as a
+    ValidationError, not an uncaught ValueError from the resolver."""
+    layout = init_project(tmp_path, with_scaffold=False).layout
+    _seed_two_modules(layout)
+    with pytest.raises(ValidationError) as ei:
+        apply_patch(
+            layout,
+            PatchIntent(
+                ops=[CreateEdgeOp(
+                    type="data_flow",
+                    source="prt_does_not_exist",
+                    target="prt_also_missing",
+                )],
+                actor="user",
+                base_graph_version=layout.load_manifest().graph_version,
+            ),
+        )
+    assert "source" in str(ei.value)
+
+
 def test_delete_edge_missing_id_rejected(tmp_path: Path) -> None:
     layout = init_project(tmp_path, with_scaffold=False).layout
     _seed_two_modules(layout)

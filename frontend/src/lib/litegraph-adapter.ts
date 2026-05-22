@@ -232,15 +232,23 @@ const VERIFIED_COLOR = '#5ad15a'
 const INFERRED_COLOR = '#9a9a9a'
 
 // Build the LiteGraph slot `extra_info`: a display `label` (semantic name +
-// observed shape) and a confidence-coded dot colour. Returns the structural
-// name unchanged when no attrs are present, so non-importer ports are untouched.
+// observed shape) and a confidence-coded dot colour. A port that declares no
+// `confidence` keeps LiteGraph's default dot — we never paint it green, since
+// green means "verified" and §13.3.1 forbids implying we observed a port we
+// didn't (non-importer ports created via CLI/agent fall here).
 function slotExtra(p: PortDTO): Record<string, unknown> {
   const label = typeof p.attrs.label === 'string' ? p.attrs.label : null
   const shape = Array.isArray(p.attrs.shape) ? (p.attrs.shape as number[]).join('×') : null
-  const inferred = p.attrs.confidence === 'inferred'
   const display = [label ?? p.name, shape ? `(${shape})` : null].filter(Boolean).join(' ')
-  const color = inferred ? INFERRED_COLOR : VERIFIED_COLOR
-  return { label: display, color_on: color, color_off: color }
+  const extra: Record<string, unknown> = { label: display }
+  if (p.attrs.confidence === 'verified') {
+    extra.color_on = VERIFIED_COLOR
+    extra.color_off = VERIFIED_COLOR
+  } else if (p.attrs.confidence === 'inferred') {
+    extra.color_on = INFERRED_COLOR
+    extra.color_off = INFERRED_COLOR
+  }
+  return extra
 }
 
 function connectViaPorts(

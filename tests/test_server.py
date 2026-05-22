@@ -401,6 +401,16 @@ def test_create_user_edge_missing_fields_422(tmp_path: Path) -> None:
     assert resp.status_code == 422
 
 
+def test_create_user_edge_unknown_port_422(tmp_path: Path) -> None:
+    """A stale client referencing a vanished port id gets a clean 422, not a
+    500 from an uncaught resolver ValueError."""
+    layout = _seed_project(tmp_path)
+    client = TestClient(create_app(layout))
+    _, dec_in = _port_ids(layout)
+    resp = client.post("/edge", json={"src_port": "prt_gone", "dst_port": dec_in})
+    assert resp.status_code == 422
+
+
 def test_delete_edge_endpoint(tmp_path: Path) -> None:
     layout = _seed_project(tmp_path)
     edge = next(e for e in iter_edges(layout) if e.type == "data_flow")

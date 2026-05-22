@@ -302,8 +302,18 @@ def _handle_create_edge(
     *,
     prefix: str,
 ) -> list[str]:
-    source_node, source_port = _resolve_endpoint(layout, op.source)
-    target_node, target_port = _resolve_endpoint(layout, op.target)
+    # Unresolvable endpoints are a validation error, not a crash: a caller (or
+    # a stale client) can reference a node/port that no longer exists. Surface
+    # it the way the other handlers do, so apply_patch raises ValidationError
+    # rather than letting resolve_*'s ValueError escape uncaught.
+    try:
+        source_node, source_port = _resolve_endpoint(layout, op.source)
+    except ValueError as exc:
+        return [f"{prefix}: source: {exc}"]
+    try:
+        target_node, target_port = _resolve_endpoint(layout, op.target)
+    except ValueError as exc:
+        return [f"{prefix}: target: {exc}"]
 
     edge = Edge(
         id=new_id("edg"),
