@@ -1,5 +1,9 @@
 // Mirrors docs/design.md §12.2 / §12.4 — the payload shape the renderer consumes.
 
+// Draw-time shape verdict for a user-drawn edge (§13.5.2). `match`/`mismatch`
+// only when both endpoints are verified with shapes; `unknown` otherwise.
+export type ShapeCheck = 'match' | 'mismatch' | 'unknown'
+
 export interface PortDTO {
   id: string
   node_id: string

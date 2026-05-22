@@ -21,13 +21,21 @@ the model:
 from __future__ import annotations
 
 import importlib
+import inspect
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from simulanka.kernel.apply import apply_patch
-from simulanka.kernel.intent import CreateEdgeOp, CreateNodeOp, CreatePortOp, PatchIntent
+from simulanka.kernel.intent import (
+    CreateEdgeOp,
+    CreateNodeOp,
+    CreatePortOp,
+    IntentOp,
+    PatchIntent,
+)
 from simulanka.layout.project import ProjectLayout
+from simulanka.registry.types import PortDirection
 
 if TYPE_CHECKING:  # pragma: no cover
     import torch
@@ -45,6 +53,24 @@ class ImportResult:
     model_node_id: str
     module_node_ids: dict[str, str]  # fqn ("" for root) → node id
     data_flow_edge_ids: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class _PortSpec:
+    """One observed/inferred port slot. ``label`` is the semantic name (param /
+    kwarg key / dict key); ``shape`` is set only when the slot is a single
+    tensor observed in a forward pass."""
+
+    label: str | None
+    shape: list[int] | None = None
+
+
+@dataclass(frozen=True)
+class _ObservedIO:
+    """Per-module input/output slots seen in one real forward pass."""
+
+    inputs: list[_PortSpec]
+    outputs: list[_PortSpec]
 
 
 # ---------------------------------------------------------------------------
@@ -102,12 +128,25 @@ def import_model(
             "structure-only import. Wrap a single tensor as `(tensor,)`."
         )
 
-    # 1. Hierarchy via named_modules().
+    # 1. Forward-pass trace up front. Pure in-memory work — no graph writes
+    # yet — yielding both the leaf data-flow edges and the per-module observed
+    # IO that the ports below are derived from.
+    leaf_edges: set[tuple[str, str]]
+    observed_io: dict[str, _ObservedIO]
+    if example_inputs is not None:
+        try:
+            leaf_edges, observed_io = _run_forward_trace(model, example_inputs)
+        except Exception as exc:  # noqa: BLE001 — surface forward-pass failures
+            raise ImportError(f"forward-hook trace failed: {exc!r}") from exc
+    else:
+        leaf_edges, observed_io = set(), {}
+
+    # 2. Hierarchy via named_modules().
     named = list(model.named_modules())
     # Build a map fqn → module for attrs.
     by_fqn = {fqn: mod for fqn, mod in named}
 
-    # 2. Commit root model node.
+    # 3. Commit root model node + its ports.
     root_path = _join_path(parent, name)
     root_attrs: dict[str, Any] = {
         "class_name": type(model).__name__,
@@ -127,11 +166,11 @@ def import_model(
         actor=actor,
         note=f"import_model: root {name}",
     )
-    _commit_io_ports(layout, root_path, actor=actor)
+    _commit_ports(layout, root_path, model, observed_io.get(""), actor=actor)
 
     fqn_to_id: dict[str, str] = {"": model_id}
 
-    # 3. Commit submodule nodes in BFS order (depth ascending) so parents
+    # 4. Commit submodule nodes in BFS order (depth ascending) so parents
     # are already on disk when their children resolve.
     submodule_fqns = sorted(
         (fqn for fqn, _ in named if fqn != ""),
@@ -156,11 +195,12 @@ def import_model(
             note=f"import_model: {fqn}",
         )
         fqn_to_id[fqn] = node_id
-        _commit_io_ports(
-            layout, _fqn_to_selector(root_path, fqn), actor=actor,
+        _commit_ports(
+            layout, _fqn_to_selector(root_path, fqn), mod,
+            observed_io.get(fqn), actor=actor,
         )
 
-    # Structure-only mode: no forward pass, no data_flow edges.
+    # 5. Structure-only mode: no forward pass, no data_flow edges.
     if example_inputs is None:
         return ImportResult(
             model_node_id=model_id,
@@ -168,13 +208,7 @@ def import_model(
             data_flow_edge_ids=[],
         )
 
-    # 4. Trace data flow via a real forward pass under hooks.
-    try:
-        leaf_edges = _collect_leaf_edges(model, example_inputs)
-    except Exception as exc:  # noqa: BLE001 — surface forward-pass failures
-        raise ImportError(f"forward-hook trace failed: {exc!r}") from exc
-
-    # 5. Roll up to diverging-ancestor pairs and dedupe.
+    # 6. Roll up leaf edges to diverging-ancestor pairs and dedupe.
     peer_edges: set[tuple[str, str]] = set()
     for src_fqn, tgt_fqn in leaf_edges:
         if src_fqn not in fqn_to_id or tgt_fqn not in fqn_to_id:
@@ -183,8 +217,10 @@ def import_model(
         if pair is not None:
             peer_edges.add(pair)
 
-    # 6. Commit data_flow edges. One patch per edge keeps the event log
-    # informative; volume is O(#peer-relations), typically small.
+    # 7. Commit data_flow edges, each marked source="trace" — machine-observed,
+    # to be distinguished from the user-drawn / agent-verified edges of §13. One
+    # patch per edge keeps the event log informative; volume is
+    # O(#peer-relations), typically small.
     edge_ids: list[str] = []
     for src, tgt in sorted(peer_edges):
         receipt = apply_patch(
@@ -195,6 +231,7 @@ def import_model(
                         type="data_flow",
                         source=_fqn_to_selector(root_path, src) + ".out",
                         target=_fqn_to_selector(root_path, tgt) + ".in",
+                        attrs={"source": "trace"},
                     ),
                 ],
                 actor=actor,
@@ -293,31 +330,169 @@ def _commit_one_node(
     return receipt.nodes[0]
 
 
-def _commit_io_ports(layout: ProjectLayout, node_selector: str, *, actor: str) -> None:
-    """Create one ``in`` and one ``out`` port on the given (already-saved) node."""
+def _commit_ports(
+    layout: ProjectLayout,
+    node_selector: str,
+    module: Any,
+    io: _ObservedIO | None,
+    *,
+    actor: str,
+) -> None:
+    """Create the in/out ports of one (already-saved) node.
+
+    ``in``/``out`` are always present as the structural primary slots that
+    ``data_flow`` edges attach to; extra observed slots become ``in1``/``out1``/…
+    Each port's ``attrs["confidence"]`` is the honest tier (§13.3.1):
+
+    * ``verified`` — the slot was seen in the real forward pass (``io`` given).
+      ``shape`` is recorded for single-tensor slots; ``label`` for the param /
+      kwarg / dict key when it differs from the structural name.
+    * ``inferred`` — no forward observation for this module (it was never hit,
+      or the import was structure-only). Inputs come from the ``forward``
+      signature; the single output slot is a placeholder. No shapes.
+    """
+    if io is not None:
+        in_specs = list(io.inputs)
+        out_specs = list(io.outputs)
+        confidence = "verified"
+    else:
+        in_specs = [_PortSpec(label) for label in _signature_input_labels(module)]
+        out_specs = []
+        confidence = "inferred"
+
+    # Pad so the structural primary ports always exist.
+    if not in_specs:
+        in_specs = [_PortSpec(None)]
+    if not out_specs:
+        out_specs = [_PortSpec(None)]
+
+    ops: list[IntentOp] = []
+    for i, spec in enumerate(in_specs):
+        ops.append(_port_op(node_selector, i, "in", spec, confidence))
+    for i, spec in enumerate(out_specs):
+        ops.append(_port_op(node_selector, i, "out", spec, confidence))
+
     apply_patch(
         layout,
         PatchIntent(
-            ops=[
-                CreatePortOp(
-                    node=node_selector, name="in", direction="in", port_type="tensor",
-                ),
-                CreatePortOp(
-                    node=node_selector, name="out", direction="out", port_type="tensor",
-                ),
-            ],
+            ops=ops,
             actor=actor,
             base_graph_version=layout.load_manifest().graph_version,
-            note=f"import_model: io ports on {node_selector}",
+            note=f"import_model: ports on {node_selector}",
         ),
     )
 
 
-def _collect_leaf_edges(
+def _port_op(
+    node_selector: str,
+    index: int,
+    direction: PortDirection,
+    spec: _PortSpec,
+    confidence: str,
+) -> CreatePortOp:
+    """One ``CreatePortOp``. Slot 0 keeps the bare ``in``/``out`` name; later
+    slots are suffixed (``in1``, ``out1``, …). Semantics live in ``attrs``."""
+    name = direction if index == 0 else f"{direction}{index}"
+    attrs: dict[str, Any] = {"confidence": confidence}
+    if spec.label and spec.label != name:
+        attrs["label"] = spec.label
+    if spec.shape is not None:
+        attrs["shape"] = spec.shape
+    return CreatePortOp(
+        node=node_selector,
+        name=name,
+        direction=direction,
+        port_type="tensor",
+        attrs=attrs,
+    )
+
+
+def _signature_input_labels(module: Any) -> list[str]:
+    """Forward-signature parameter names (minus ``self``, ``*args``, ``**kwargs``).
+
+    Used only on the inferred path, where no real forward pass labelled the
+    inputs. Best-effort: a C-implemented or unintrospectable ``forward`` yields
+    an empty list and the caller pads a single placeholder ``in`` port.
+    """
+    try:
+        params = list(inspect.signature(type(module).forward).parameters.values())
+    except (ValueError, TypeError):
+        return []
+    skip = (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+    return [p.name for p in params[1:] if p.kind not in skip]
+
+
+def _input_specs(module: Any, args: Any, kwargs: Any) -> list[_PortSpec]:
+    """Tensor-bearing input slots of one observed call, labelled by the forward
+    signature (positional) and kwarg keys."""
+    import torch
+
+    try:
+        params = list(inspect.signature(type(module).forward).parameters.values())[1:]
+    except (ValueError, TypeError):
+        params = []
+    positional = (
+        inspect.Parameter.POSITIONAL_ONLY,
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+    )
+    pos_names = [p.name for p in params if p.kind in positional]
+
+    specs: list[_PortSpec] = []
+    for i, a in enumerate(args):
+        if not _has_tensor(a):
+            continue
+        label = pos_names[i] if i < len(pos_names) else None
+        shape = list(a.shape) if isinstance(a, torch.Tensor) else None
+        specs.append(_PortSpec(label, shape))
+    for key, value in kwargs.items():
+        if not _has_tensor(value):
+            continue
+        shape = list(value.shape) if isinstance(value, torch.Tensor) else None
+        specs.append(_PortSpec(str(key), shape))
+    return specs
+
+
+def _output_specs(output: Any) -> list[_PortSpec]:
+    """Tensor-bearing output slots of one observed call. A bare tensor is one
+    unlabelled slot; tuples/lists keep positional order; dict keys become labels."""
+    import torch
+
+    if isinstance(output, torch.Tensor):
+        return [_PortSpec(None, list(output.shape))]
+    if isinstance(output, (tuple, list)):
+        specs: list[_PortSpec] = []
+        for x in output:
+            if not _has_tensor(x):
+                continue
+            shape = list(x.shape) if isinstance(x, torch.Tensor) else None
+            specs.append(_PortSpec(None, shape))
+        return specs
+    if isinstance(output, dict):
+        dict_specs: list[_PortSpec] = []
+        for key, value in output.items():
+            if not _has_tensor(value):
+                continue
+            shape = list(value.shape) if isinstance(value, torch.Tensor) else None
+            dict_specs.append(_PortSpec(str(key), shape))
+        return dict_specs
+    return []
+
+
+def _has_tensor(obj: Any) -> bool:
+    for _ in _iter_tensors(obj):
+        return True
+    return False
+
+
+def _run_forward_trace(
     model: Any, example_inputs: tuple[Any, ...],
-) -> set[tuple[str, str]]:
-    """Run model under forward hooks + ``TorchDispatchMode``; return leaf
-    ``(src_fqn, tgt_fqn)`` data-flow edges.
+) -> tuple[set[tuple[str, str]], dict[str, _ObservedIO]]:
+    """Run *model* once under forward hooks + ``TorchDispatchMode``.
+
+    Returns ``(edges, io)`` where *edges* are leaf ``(src_fqn, tgt_fqn)``
+    data-flow relations and *io* maps each fqn ("" for root) to the input/output
+    slots **first** observed for that module (a module called more than once
+    keeps its first call's arity/shapes).
 
     The producer map is keyed by ``id(tensor)``. CPython recycles memory
     addresses immediately after GC, so intermediate aten outputs that go out
@@ -333,6 +508,8 @@ def _collect_leaf_edges(
 
     producer: dict[int, set[str]] = {}
     edges: set[tuple[str, str]] = set()
+    io_inputs: dict[str, list[_PortSpec]] = {}
+    io_outputs: dict[str, list[_PortSpec]] = {}
 
     def _drop(tid: int) -> None:
         producer.pop(tid, None)
@@ -354,6 +531,8 @@ def _collect_leaf_edges(
 
     def make_pre_hook(fqn: str) -> Callable[..., None]:
         def pre_hook(module: Any, args: Any, kwargs: Any) -> None:
+            if fqn not in io_inputs:
+                io_inputs[fqn] = _input_specs(module, args, kwargs)
             for t in _iter_tensors(args):
                 _emit_for(t, fqn)
             for t in _iter_tensors(kwargs):
@@ -362,6 +541,8 @@ def _collect_leaf_edges(
 
     def make_post_hook(fqn: str) -> Callable[..., None]:
         def post_hook(module: Any, args: Any, output: Any) -> None:
+            if fqn not in io_outputs:
+                io_outputs[fqn] = _output_specs(output)
             for t in _iter_tensors(output):
                 _stamp(t, {fqn})
         return post_hook
@@ -404,12 +585,23 @@ def _collect_leaf_edges(
             handles.append(mod.register_forward_hook(make_post_hook(fqn)))
 
         with torch.no_grad(), _LineageMode():
-            model(*example_inputs)
+            output = model(*example_inputs)
     finally:
         for h in handles:
             h.remove()
 
-    return edges
+    # Hooks fire only on submodules; capture the root's IO from the call itself.
+    io_inputs[""] = _input_specs(model, example_inputs, {})
+    io_outputs[""] = _output_specs(output)
+
+    io = {
+        fqn: _ObservedIO(
+            inputs=io_inputs.get(fqn, []),
+            outputs=io_outputs.get(fqn, []),
+        )
+        for fqn in set(io_inputs) | set(io_outputs)
+    }
+    return edges, io
 
 
 def _iter_tensors(obj: Any) -> Iterator[torch.Tensor]:

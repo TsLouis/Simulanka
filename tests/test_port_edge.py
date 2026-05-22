@@ -7,12 +7,25 @@ from typer.testing import CliRunner
 
 from simulanka.cli.app import app
 from simulanka.kernel.apply import apply_patch
-from simulanka.kernel.intent import CreateEdgeOp, CreateNodeOp, CreatePortOp, PatchIntent
+from simulanka.kernel.doctor import run_doctor
+from simulanka.kernel.intent import (
+    CreateEdgeOp,
+    CreateNodeOp,
+    CreatePortOp,
+    DeleteEdgeOp,
+    PatchIntent,
+)
 from simulanka.kernel.resolver import resolve_port
 from simulanka.kernel.validator import ValidationError
 from simulanka.layout.project import ProjectLayout, init_project
 from simulanka.registry.types import PortDirection
-from simulanka.storage.entity_store import find_port, iter_edges, list_ports_of, load_edge
+from simulanka.storage.entity_store import (
+    edge_exists,
+    find_port,
+    iter_edges,
+    list_ports_of,
+    load_edge,
+)
 
 
 def _seed_two_modules(layout: ProjectLayout) -> None:
@@ -265,6 +278,93 @@ def test_cli_full_acceptance_flow(tmp_path: Path) -> None:
     edges = list(iter_edges(_layout(project)))
     assert sum(1 for e in edges if e.type == "contains") == 3
     assert sum(1 for e in edges if e.type == "data_flow") == 1
+
+
+def _seed_data_flow_edge(layout: ProjectLayout) -> str:
+    """conv1.out → bn1.in data_flow edge under a seeded TinyNet; returns its id."""
+    _seed_two_modules(layout)
+    endpoints: list[tuple[str, PortDirection]] = [
+        ("/models/TinyNet/conv1", "out"),
+        ("/models/TinyNet/bn1", "in"),
+    ]
+    for selector, direction in endpoints:
+        apply_patch(
+            layout,
+            PatchIntent(
+                ops=[CreatePortOp(
+                    node=selector, name=direction, direction=direction, port_type="tensor",
+                )],
+                actor="user",
+                base_graph_version=layout.load_manifest().graph_version,
+            ),
+        )
+    receipt = apply_patch(
+        layout,
+        PatchIntent(
+            ops=[CreateEdgeOp(
+                type="data_flow",
+                source="/models/TinyNet/conv1.out",
+                target="/models/TinyNet/bn1.in",
+            )],
+            actor="user",
+            base_graph_version=layout.load_manifest().graph_version,
+        ),
+    )
+    return receipt.edges[0]
+
+
+def test_delete_data_flow_edge(tmp_path: Path) -> None:
+    layout = init_project(tmp_path, with_scaffold=False).layout
+    edge_id = _seed_data_flow_edge(layout)
+    assert edge_exists(layout, edge_id)
+
+    before = layout.load_manifest().graph_version
+    receipt = apply_patch(
+        layout,
+        PatchIntent(
+            ops=[DeleteEdgeOp(edge=edge_id)],
+            actor="user",
+            base_graph_version=before,
+        ),
+    )
+    assert receipt.deleted_edges == [edge_id]
+    assert receipt.graph_version == before + 1
+    assert not edge_exists(layout, edge_id)
+    assert all(e.id != edge_id for e in iter_edges(layout))
+    # The endpoint nodes and ports are untouched; graph stays healthy.
+    assert run_doctor(layout).ok
+
+
+def test_delete_edge_refuses_contains(tmp_path: Path) -> None:
+    layout = init_project(tmp_path, with_scaffold=False).layout
+    _seed_two_modules(layout)
+    contains = next(e for e in iter_edges(layout) if e.type == "contains")
+    with pytest.raises(ValidationError) as ei:
+        apply_patch(
+            layout,
+            PatchIntent(
+                ops=[DeleteEdgeOp(edge=contains.id)],
+                actor="user",
+                base_graph_version=layout.load_manifest().graph_version,
+            ),
+        )
+    assert "contains" in str(ei.value)
+    assert edge_exists(layout, contains.id)  # untouched
+
+
+def test_delete_edge_missing_id_rejected(tmp_path: Path) -> None:
+    layout = init_project(tmp_path, with_scaffold=False).layout
+    _seed_two_modules(layout)
+    with pytest.raises(ValidationError) as ei:
+        apply_patch(
+            layout,
+            PatchIntent(
+                ops=[DeleteEdgeOp(edge="edg_doesnotexist")],
+                actor="user",
+                base_graph_version=layout.load_manifest().graph_version,
+            ),
+        )
+    assert "not found" in str(ei.value)
 
 
 def _layout(project: Path) -> ProjectLayout:

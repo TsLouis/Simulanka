@@ -7,6 +7,13 @@
   $: ports = node ? node.ports.map(id => portsById.get(id)).filter(Boolean) as PortDTO[] : []
   $: attrEntries = node ? Object.entries(node.attrs) : []
 
+  const portLabel = (p: PortDTO): string | null =>
+    typeof p.attrs.label === 'string' ? p.attrs.label : null
+  const portShape = (p: PortDTO): string | null =>
+    Array.isArray(p.attrs.shape) ? (p.attrs.shape as number[]).join('×') : null
+  const portConfidence = (p: PortDTO): string | null =>
+    typeof p.attrs.confidence === 'string' ? p.attrs.confidence : null
+
   function formatVal(v: unknown): string {
     if (typeof v === 'string') return v
     if (v === null || v === undefined) return String(v)
@@ -50,8 +57,14 @@
           {#each ports as p (p.id)}
             <li>
               <span class="side side-{p.side}">{p.side}</span>
-              <span class="name">{p.name}</span>
-              <span class="muted">{p.port_type}</span>
+              <span class="name">
+                {portLabel(p) ?? p.name}
+                {#if portLabel(p)}<span class="slotname">{p.name}</span>{/if}
+              </span>
+              {#if portShape(p)}<span class="shape">{portShape(p)}</span>{/if}
+              {#if portConfidence(p)}
+                <span class="conf conf-{portConfidence(p)}">{portConfidence(p)}</span>
+              {/if}
             </li>
           {/each}
         </ul>
@@ -159,6 +172,34 @@
   }
   .name {
     flex: 1;
+  }
+  .slotname {
+    color: #666;
+    font-family: ui-monospace, monospace;
+    font-size: 10px;
+  }
+  .shape {
+    font-family: ui-monospace, monospace;
+    font-size: 10px;
+    color: #cde;
+    background: #243044;
+    border-radius: 2px;
+    padding: 1px 5px;
+  }
+  .conf {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border-radius: 2px;
+    padding: 1px 5px;
+  }
+  .conf-verified {
+    background: #1f3a1f;
+    color: #8fe08f;
+  }
+  .conf-inferred {
+    background: #3a331f;
+    color: #e0cf8f;
   }
   .attrs {
     margin: 0;

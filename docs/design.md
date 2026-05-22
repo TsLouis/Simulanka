@@ -494,3 +494,86 @@ LiteGraph 的 quirks（JS 非 TS、API 偏旧）可控。需要的扩展点：�
 - 大图性能优化（>10k 节点的虚拟化渲染）。
 - 主题切换、可访问性、多语言。
 - 鉴权 / 多用户。本来就是单用户本地工具。
+
+## 13. 提案：人画连线 + agent 核对（2026-05-22，未实现）
+
+> **状态**：设计讨论，**尚未实现**。下午继续把它落成 §13.5 的具体方案。本节先固化动机、洞见、约束，避免下次重新推导。
+
+### 13.1 触发动机：前端可视化审计暴露的三个顶层问题
+
+2026-05-22 用前端肉眼验 DS_r（SAM2，`/tmp/sim_ds_r`），发现三件事，全是当前 import 策略的直接后果，不是 bug：
+
+1. **3 个 traced model（image_encoder / memory_attention / sam_mask_decoder）之间 0 条边**。它们是 3 次独立 forward，各抓各的内部；顶层编排（谁喂谁）只存在于 `SAM2VideoPredictor.forward`，而顶层走 structure-only（`example_inputs=None`），从没被 trace → 三座孤岛。
+2. **sam_prompt_encoder / memory_encoder 在 dataflow 视角“消失”**。它们只是 structure-only 顶层树里的 module 节点，被 manifest `skip`，没提升为有数据流的 sibling。
+3. **端口零语义**：`_commit_io_ports` 给每个节点写死 1 个 `in` + 1 个 `out`，多输入全挤进一个口。
+
+根因（#1+#2 同源）：策略是「完整结构导一次（每个 module 都是节点）+ 对手挑子集各跑独立 forward，commit 成独立 sibling」，于是**结构与数据流是两套不相交表示**，数据流是手挑出来的稀疏孤岛。
+
+**固有天花板**：跨组件数据流藏在有状态的顶层 forward（视频循环 + memory bank）里，torch.export / fx 都抓不全（data-dependent 控制流 2026 仍未解）。「一张完全自动、完全连通的完整数据流图」不可达，硬追等于重造 torch.fx（已否决，见 §5 importer 设计）。
+
+### 13.2 核心洞见：沿“确定性 vs 理解”劈开
+
+> 机器只做它能 100% 确定的事（**结构 + 端口**）；需要“理解”的事（**连线**）交给**人画、agent 核对**。
+
+三点理由：
+- **绕开天花板而非硬撞**：不让机器去 trace 抓不到的顶层 forward；抓不到的连线由人补。
+- **对齐使命**：Simulanka 的目的是让研究者**理解 baseline**，不是产出一张图。人自己把线画出来 = 被迫理解架构（生成效应，动手建构比读图记得牢）。一张完美自动图反而没达成这个目的。
+- **agent 核对补上 tracer 的盲区**：tracer 抓不了的有状态顶层 forward，恰恰是 agent **读源码**最容易看懂的。人画线 + agent 读 `forward()` 核对，正好覆盖自动 trace 的死角。
+
+### 13.3 三个必须先解决的约束（真问题，非捧场）
+
+1. **“端口全自动 + 绝对准确”没那么免费。**
+   - 结构那半已免费且成立：`named_modules()` + structure-only 顶层 + manifest lint → **每个模块都有节点、层次天然正确**，纯自动、零 AI。
+   - 端口这半静态做不到“绝对准确”：一个模块输出几个张量、叫什么，**不跑 forward 不知道**（签名常是 `x` / `*args`，返回可能 tuple/dict）；而“不跑 forward”正是顶层模块的处境，又绕回 trace。
+   - **解法：端口精度匹配要玩的层级**。深层（block 内部）不关心 → 顶层组件用**粗端口**（模块整体进/出，可靠拿到），只在真能跑 forward 处给**细端口**。并给端口标**置信度**：“真跑出来的（可信）” vs “签名推断的（未验证）”。
+   - **唯一真风险**：端口标错 → 用户对着错棋盘画线、agent 拿错答案核对 → **自信地学错**。地基必须诚实标注可信度。
+
+2. **agent 拿什么当标准答案？** 两个来源分工：
+   - 能 trace 的子模块 → 用隐藏的自动 trace 当答案键（tracer 从“显示的图”降级为“判分依据”，既有工作不浪费）。
+   - 不能 trace 的顶层 → agent **读 `forward()` 源码**推断（能处理控制流/状态，比 trace 强）。
+
+3. **突破只读红线**：现前端是只读 MVP（§12.7，编辑留 v2）。用户画 edge → 前端变写方（画线 → `apply_patch(CreateEdgeOp)`）。kernel 本就支持该 op，但把 v2 编辑能力提前了。配套：边加来源标记 `source: trace | user | agent`，三种线在图上要可区分。
+
+### 13.4 待用户拍板的判断
+
+- **值不值取决于目标**：若目标是“用户理解 baseline”（用户明示），手动成本就是价值，值得；若哪天只想要那张图，别玩游戏，直接让 agent 读源码画完最省。
+- **UX 旋钮（松紧）**：用户从零画 → agent 判分（学得最狠、最费力）；或 agent 先读源码提一版 → 用户改（轻一些，改的过程也在理解）。
+
+> **决定（2026-05-22）**：**「人从 0 画」为默认**。理由：本项目本就允许人与 agent 沟通，想让 agent 先画直接说一句即可；「agent 先提一版」推迟到后续 agent 工程慢慢做，甚至可做成一个 skill。先把一条路做透（lean），不做可切换的双模式。
+
+### 13.5 落地方案与状态
+
+#### 13.5.1 端口生成 —— **已落地**（importer，仅 `torch_export.py` + 测试，schema/kernel/registry 零改动）
+
+地基是端口里那半确定、半不确定的部分。落法：
+
+- **端口 `name` 是结构槽位、保持稳定**：主端口永远是 `in`/`out`；多输入/输出再加 `in1`/`in2`…、`out1`…。`data_flow` 边（registry 要求 out→in 端口）继续挂主 `.out`/`.in`，现有 trace 边、前端、选择器零破坏。
+- **语义信息全进 `port.attrs`**（Port schema 已有 attrs，不动 schema）：
+  - `confidence`：**两档**。`verified` = 一次真实 forward 里观测到的（arity / 形状可信）；`inferred` = 没跑到、只从 `forward()` 签名推断（拿到名字，但未验证）。这就是 §13.3.1 的「诚实标注可信度」——唯一真风险是端口标错让用户自信地学错，所以宁可标 inferred 也不假装 verified。
+  - `label`：语义名。verified 来自 forward 实参 slot（位置参数取签名形参名、kwarg 取键名、输出 tuple 取下标 / dict 取键）；inferred 来自签名形参名。
+  - `shape`：仅 verified 且该槽位是单张量时记观测形状，供画线时辨认（`[B,256,64,64]` vs `[B,77,768]`）。
+- **抓取免费**：forward 那趟 hook 本就看得到 `args/kwargs`（pre-hook）和 `output`（post-hook）。trace 提前到建节点之前跑一次，顺带返回每个 fqn 的「首次观测 IO」；建端口时有观测用 verified、没观测（结构-only 顶层、未执行分支）退签名推断 inferred。每个 module 的端口要么整组 verified、要么整组 inferred（forward 同时给了进和出）。
+- **边来源标记**：trace 边写 `attrs.source="trace"`，为 §13.5.2 的 `user` 边、§13.5.3 的 `agent` 边铺路；三种线前端要可区分。
+
+#### 13.5.2 前端连线游戏交互 —— **已落地**（kernel `delete_edge` + `POST/DELETE /edge` + 前端连/拆 + 形状确认）
+
+落地清单：kernel 加 `DeleteEdgeOp`（拒 `contains`，`Receipt.deleted_edges`）；server `POST /edge`（落 `source="user"` + `shape_check`，端口 id 直接当 selector）与 `DELETE /edge/{id}`，SSE `_affected` 已认 `delete_edge`；前端接管 LiteGraph `onConnectionsChange`（仅 INPUT 侧处理一次、`building` 标志屏蔽建图期自连），连线本地算 `shape_check`、`mismatch` 走 `window.confirm`（取消则撤销画布连线）、确认后 POST，拆线按链上 stash 的 edge id 走 DELETE，落库后靠 SSE 重载刷新。下方设计要点：
+
+
+
+突破只读红线：在现有下钻视图里，逐层画 children 之间的边；写回走 `CreateEdgeOp(type=data_flow)`，边带 `attrs.source="user"`，端口级（port→port）精确连线。trace 边是粗的 module 粒度、user 边才是精确的，二者按 `attrs.source` 上色区分。
+
+**边因此有了双重语义**：两端 verified 形状相等 = 纯数据流（原样传递）；相等之外（用户确认后仍连）= 这条边自带一个 reshape/transform。**不新增边类型**，语义全进 `attrs`。
+
+**校验 = 画线当场的本地提示，不是硬拦**（决策依据见 §13.4 之外的讨论结论）：
+- 形状可比是可靠的——同一次 forward、同一个 batch 跑出来的两个端口，维度本就同源；我曾错以为 batch 维会引入噪声，实则不会（噪声只存在于跨次运行）。
+- 但**形状不等 ≠ 连错**：模块间常夹一个改变形状的函数操作（reshape/flatten/pool/`window_partition`），这正是 importer 专门捕捉的边。典型如 CNN 主干 `[B,512,7,7]` → flatten → 分类头 `[B,25088]`，是完全正确的边。所以硬拦会误杀；闷声放过又回到"没提示"。
+- 落点：**连线的当下在前端本地算**（两端 `attrs.shape` 都在 payload 里），verified↔verified 给 `match`/`mismatch`，含 inferred 端口给 `unknown`。`mismatch` 弹确认（提示"中间若有 reshape 则正常，否则可能连错，仍要连？"），确认后才落库，边记 `attrs.shape_check` 与两端形状。
+- **最终把关仍是人 + agent**（§13.5.3），系统只给提示。
+- kernel 的 out→in 方向约束（`validate_edge`）是唯一的硬约束，已存在，免费拦住 in→in 这类结构错误。
+
+**删边一并做**：画布上"连"和"拆"是同一交互的两半——只接管连、不接管拆，则用户拆掉一根线刷新又回来，是骗人的。故本步同时处理 connect→建边 / disconnect→删边。删边需 kernel 新增 `delete_edge` op（当前只有 create/update/rename，无任何删除语义）——这是本步唯一的 kernel 改动，先于前端交互落地并单测。
+
+#### 13.5.3 agent 核对 —— 待做
+
+两条路：能 trace 的子模块用隐藏的自动 trace 当答案键；不能 trace 的顶层 agent 读 `forward()` 源码推断。核对结果呈现为标对 / 错 / 存疑。

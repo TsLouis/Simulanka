@@ -1,4 +1,4 @@
-import type { GraphPayload } from './types'
+import type { GraphPayload, ShapeCheck } from './types'
 
 export async function fetchGraph(
   root: string | null,
@@ -12,6 +12,30 @@ export async function fetchGraph(
     throw new Error(`GET /graph failed: ${resp.status} ${await resp.text()}`)
   }
   return (await resp.json()) as GraphPayload
+}
+
+// Persist a user-drawn data_flow edge (§13.5.2). Returns the new edge id.
+export async function createEdge(
+  srcPort: string,
+  dstPort: string,
+  shapeCheck: ShapeCheck,
+): Promise<string> {
+  const resp = await fetch('/edge', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ src_port: srcPort, dst_port: dstPort, shape_check: shapeCheck }),
+  })
+  if (!resp.ok) {
+    throw new Error(`POST /edge failed: ${resp.status} ${await resp.text()}`)
+  }
+  return (await resp.json()).edge_id as string
+}
+
+export async function deleteEdge(edgeId: string): Promise<void> {
+  const resp = await fetch(`/edge/${encodeURIComponent(edgeId)}`, { method: 'DELETE' })
+  if (!resp.ok) {
+    throw new Error(`DELETE /edge failed: ${resp.status} ${await resp.text()}`)
+  }
 }
 
 // Per-view-root maps of node id → [x, y]. "top" is the top-level view key.

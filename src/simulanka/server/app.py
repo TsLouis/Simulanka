@@ -13,8 +13,11 @@ from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
+from simulanka.kernel.apply import apply_patch_now
 from simulanka.kernel.events import Event, iter_events
+from simulanka.kernel.intent import CreateEdgeOp, DeleteEdgeOp
 from simulanka.kernel.manifest import load_manifest
+from simulanka.kernel.validator import ValidationError
 from simulanka.layout.project import ProjectLayout
 from simulanka.schema.entities import Edge
 from simulanka.storage.entity_store import iter_edges, iter_nodes, iter_ports
@@ -88,6 +91,61 @@ def create_app(layout: ProjectLayout | None = None) -> FastAPI:
         bucket.update(cleaned)
         _save_positions(layout, existing)
         return {"status": "ok"}
+
+    @app.post("/edge")
+    def create_edge(
+        body: dict[str, Any] = Body(default_factory=dict),
+    ) -> dict[str, Any]:
+        """Persist a user-drawn ``data_flow`` edge (§13.5.2).
+
+        Body: ``{src_port, dst_port, shape_check?}`` where the port fields are
+        port ids (valid edge selectors). The edge is stamped ``source="user"``;
+        ``shape_check`` (the frontend's draw-time verdict — match / mismatch /
+        unknown) is recorded so the human's confirmed intent ("yes, there's a
+        reshape here") survives. The kernel's out→in direction check is the only
+        hard gate; a violation surfaces as 422.
+        """
+        src_port = body.get("src_port")
+        dst_port = body.get("dst_port")
+        if not isinstance(src_port, str) or not isinstance(dst_port, str):
+            raise HTTPException(
+                status_code=422,
+                detail="src_port and dst_port (port ids) are required",
+            )
+        attrs: dict[str, Any] = {"source": "user"}
+        shape_check = body.get("shape_check")
+        if shape_check in ("match", "mismatch", "unknown"):
+            attrs["shape_check"] = shape_check
+        try:
+            receipt = apply_patch_now(
+                layout,
+                ops=[CreateEdgeOp(
+                    type="data_flow", source=src_port, target=dst_port, attrs=attrs,
+                )],
+                actor="user",
+                note="frontend: draw edge",
+            )
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"edge_id": receipt.edges[0], "graph_version": receipt.graph_version}
+
+    @app.delete("/edge/{edge_id}")
+    def delete_edge(edge_id: str) -> dict[str, Any]:
+        """Remove an edge by id (§13.5.2 disconnect). 422 if it doesn't exist or
+        is a structural ``contains`` edge the kernel refuses to drop."""
+        try:
+            receipt = apply_patch_now(
+                layout,
+                ops=[DeleteEdgeOp(edge=edge_id)],
+                actor="user",
+                note="frontend: remove edge",
+            )
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {
+            "deleted": receipt.deleted_edges,
+            "graph_version": receipt.graph_version,
+        }
 
     return app
 
@@ -239,7 +297,7 @@ def _affected(event: Event) -> dict[str, list[str]]:
             continue
         if kind == "create_node" or kind == "update_attrs" or kind == "rename_node":
             nodes[eid] = None
-        elif kind == "create_edge":
+        elif kind == "create_edge" or kind == "delete_edge":
             edges[eid] = None
             for k in ("source_id", "target_id"):
                 v = op.get(k)

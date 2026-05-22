@@ -10,6 +10,7 @@ from simulanka.kernel.intent import (
     CreateEdgeOp,
     CreateNodeOp,
     CreatePortOp,
+    DeleteEdgeOp,
     IntentOp,
     PatchIntent,
     Receipt,
@@ -28,7 +29,9 @@ from simulanka.kernel.validator import (
 from simulanka.layout.project import ProjectLayout
 from simulanka.schema.entities import Edge, Node, Port
 from simulanka.storage.entity_store import (
+    delete_edge,
     list_ports_of,
+    load_edge,
     save_edge,
     save_node,
     save_port,
@@ -46,6 +49,7 @@ class _Pending:
     ports: list[Port]
     updated_nodes: list[Node]
     canonical_ops: list[dict[str, Any]]
+    deleted_edges: list[Edge]
 
 
 def apply_patch_now(
@@ -87,6 +91,7 @@ def apply_patch(layout: ProjectLayout, intent: PatchIntent) -> Receipt:
     now = datetime.now(timezone.utc)
     pending = _Pending(
         nodes=[], edges=[], ports=[], updated_nodes=[], canonical_ops=[],
+        deleted_edges=[],
     )
     errors: list[str] = []
 
@@ -104,6 +109,8 @@ def apply_patch(layout: ProjectLayout, intent: PatchIntent) -> Receipt:
         save_edge(layout, edge)
     for node in pending.updated_nodes:
         save_node(layout, node)
+    for edge in pending.deleted_edges:
+        delete_edge(layout, edge.id)
 
     new_version = manifest.graph_version + 1
     event = Event(
@@ -133,6 +140,7 @@ def apply_patch(layout: ProjectLayout, intent: PatchIntent) -> Receipt:
         edges=[e.id for e in pending.edges],
         ports=[p.id for p in pending.ports],
         updated_nodes=[n.id for n in pending.updated_nodes],
+        deleted_edges=[e.id for e in pending.deleted_edges],
     )
 
 
@@ -156,6 +164,8 @@ def _apply_op(
         return _handle_update_attrs(layout, op, pending, prefix=prefix)
     if isinstance(op, RenameNodeOp):
         return _handle_rename_node(layout, op, pending, prefix=prefix)
+    if isinstance(op, DeleteEdgeOp):
+        return _handle_delete_edge(layout, op, pending, prefix=prefix)
     raise NotImplementedError(f"Unsupported op: {op!r}")  # pragma: no cover
 
 
@@ -416,6 +426,39 @@ def _handle_rename_node(
             "entity_id": existing.id,
             "old_name": old_name,
             "new_name": op.new_name,
+        }
+    )
+    return []
+
+
+def _handle_delete_edge(
+    layout: ProjectLayout,
+    op: DeleteEdgeOp,
+    pending: _Pending,
+    *,
+    prefix: str,
+) -> list[str]:
+    from simulanka.storage.entity_store import edge_exists
+
+    if not edge_exists(layout, op.edge):
+        return [f"{prefix}: edge `{op.edge}` not found."]
+    if any(e.id == op.edge for e in pending.deleted_edges):
+        return []  # idempotent within a single patch
+    edge = load_edge(layout, op.edge)
+    if edge.type == "contains":
+        return [
+            f"{prefix}: refusing to delete structural `contains` edge "
+            f"`{op.edge}` — it backs the node hierarchy."
+        ]
+
+    pending.deleted_edges.append(edge)
+    pending.canonical_ops.append(
+        {
+            "kind": "delete_edge",
+            "entity_id": edge.id,
+            "type": edge.type,
+            "source_id": edge.source_id,
+            "target_id": edge.target_id,
         }
     )
     return []

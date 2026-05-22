@@ -68,8 +68,31 @@ class RenameNodeOp(BaseModel):
     new_name: str
 
 
+class DeleteEdgeOp(BaseModel):
+    """Remove one edge by id. The only deletion op in the kernel (Alpha).
+
+    Refuses structural ``contains`` edges: they are dual-written with their
+    child node and back the denormalised ``parent_id`` cache, so dropping one
+    in isolation would orphan the hierarchy. Non-structural relations
+    (``data_flow`` and the like) are free to delete — nothing holds a foreign
+    key to an edge. Intended for the §13 draw/undo loop (remove a user-drawn
+    or agent-rejected ``data_flow`` edge); the kernel keeps the primitive
+    general and leaves "which edges a UI offers to remove" policy to callers.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["delete_edge"] = "delete_edge"
+    edge: str  # edge id (e.g. "edg_…")
+
+
 IntentOp = Annotated[
-    CreateNodeOp | CreatePortOp | CreateEdgeOp | UpdateAttrsOp | RenameNodeOp,
+    CreateNodeOp
+    | CreatePortOp
+    | CreateEdgeOp
+    | UpdateAttrsOp
+    | RenameNodeOp
+    | DeleteEdgeOp,
     Field(discriminator="kind"),
 ]
 
@@ -90,3 +113,4 @@ class Receipt(BaseModel):
     edges: list[str] = Field(default_factory=list)
     ports: list[str] = Field(default_factory=list)
     updated_nodes: list[str] = Field(default_factory=list)
+    deleted_edges: list[str] = Field(default_factory=list)

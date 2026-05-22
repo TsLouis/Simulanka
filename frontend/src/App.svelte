@@ -2,7 +2,14 @@
   import { onDestroy, onMount, tick } from 'svelte'
   import { LGraphCanvas, type LGraphNode } from 'litegraph.js'
   import 'litegraph.js/css/litegraph.css'
-  import { fetchGraph, fetchPositions, savePositions, type Positions } from './lib/api'
+  import {
+    createEdge,
+    deleteEdge,
+    fetchGraph,
+    fetchPositions,
+    savePositions,
+    type Positions,
+  } from './lib/api'
   import { subscribeEvents, type EventSubscription } from './lib/events'
   import { buildLiteGraph } from './lib/litegraph-adapter'
   import NodeInspector from './lib/NodeInspector.svelte'
@@ -54,6 +61,29 @@
           currentRootId = id
           selectedId = null
           void load()
+        },
+        onCreateEdge: async (srcPort, dstPort, shapeCheck) => {
+          // System only hints; the human (and later the agent) adjudicate. A
+          // shape mismatch is fine when a reshape/flatten/pool sits between the
+          // modules — so confirm rather than block.
+          if (shapeCheck === 'mismatch') {
+            const ok = window.confirm(
+              '两端形状对不上 —— 若中间有 reshape/flatten/pool 则正常，否则可能连错。仍要连接吗？',
+            )
+            if (!ok) return false
+          }
+          try {
+            await createEdge(srcPort, dstPort, shapeCheck)
+            return true // SSE commit will reload the view with the persisted edge.
+          } catch (err) {
+            status = `create edge failed: ${(err as Error).message}`
+            return false
+          }
+        },
+        onDeleteEdge: (edgeId) => {
+          void deleteEdge(edgeId).catch(err => {
+            status = `delete edge failed: ${(err as Error).message}`
+          })
         },
       }, viewPositions)
       if (lgcanvas) {

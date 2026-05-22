@@ -15,13 +15,20 @@ from simulanka.kernel.intent import (
     CreateEdgeOp,
     CreateNodeOp,
     CreatePortOp,
+    DeleteEdgeOp,
     PatchIntent,
 )
 from simulanka.kernel.manifest import load_manifest
 from simulanka.layout import init_project
 from simulanka.layout.project import ProjectLayout
 from simulanka.server.app import create_app
-from simulanka.storage.entity_store import find_port, iter_nodes
+from simulanka.storage.entity_store import (
+    edge_exists,
+    find_port,
+    iter_edges,
+    iter_nodes,
+    load_edge,
+)
 
 
 def _seed_project(tmp_path: Path) -> ProjectLayout:
@@ -335,6 +342,83 @@ def test_positions_reject_malformed(tmp_path: Path) -> None:
 
     # No partial write must have happened.
     assert client.get("/ui/positions").json() == {}
+
+
+def _port_ids(layout: ProjectLayout) -> tuple[str, str]:
+    """(enc.out0, dec.in0) port ids of the seeded project."""
+    enc_id = next(n.id for n in iter_nodes(layout) if n.name == "enc")
+    dec_id = next(n.id for n in iter_nodes(layout) if n.name == "dec")
+    enc_out = find_port(layout, enc_id, "out0")
+    dec_in = find_port(layout, dec_id, "in0")
+    assert enc_out is not None and dec_in is not None
+    return enc_out.id, dec_in.id
+
+
+def test_create_user_edge(tmp_path: Path) -> None:
+    """POST /edge persists a data_flow edge stamped source=user with the
+    draw-time shape verdict."""
+    layout = _seed_project(tmp_path)
+    # Drop the seeded edge first so we can re-draw it cleanly via the API.
+    seeded = next(e for e in iter_edges(layout) if e.type == "data_flow")
+    apply_patch(
+        layout,
+        PatchIntent(
+            ops=[DeleteEdgeOp(edge=seeded.id)],
+            actor="test",
+            base_graph_version=load_manifest(layout).graph_version,
+        ),
+    )
+    client = TestClient(create_app(layout))
+    enc_out, dec_in = _port_ids(layout)
+
+    resp = client.post(
+        "/edge",
+        json={"src_port": enc_out, "dst_port": dec_in, "shape_check": "mismatch"},
+    )
+    assert resp.status_code == 200, resp.text
+    edge_id = resp.json()["edge_id"]
+    edge = load_edge(layout, edge_id)
+    assert edge.type == "data_flow"
+    assert edge.attrs == {"source": "user", "shape_check": "mismatch"}
+    assert edge.source_port_id == enc_out
+    assert edge.target_port_id == dec_in
+
+
+def test_create_user_edge_wrong_direction_422(tmp_path: Path) -> None:
+    """out→in is the only hard gate; feeding two same-direction ports is 422."""
+    layout = _seed_project(tmp_path)
+    client = TestClient(create_app(layout))
+    enc_out, _ = _port_ids(layout)
+    # enc.out0 → enc.out0 violates the data_flow direction rule.
+    resp = client.post("/edge", json={"src_port": enc_out, "dst_port": enc_out})
+    assert resp.status_code == 422
+
+
+def test_create_user_edge_missing_fields_422(tmp_path: Path) -> None:
+    layout = _seed_project(tmp_path)
+    client = TestClient(create_app(layout))
+    resp = client.post("/edge", json={"src_port": "prt_x"})
+    assert resp.status_code == 422
+
+
+def test_delete_edge_endpoint(tmp_path: Path) -> None:
+    layout = _seed_project(tmp_path)
+    edge = next(e for e in iter_edges(layout) if e.type == "data_flow")
+    client = TestClient(create_app(layout))
+
+    resp = client.delete(f"/edge/{edge.id}")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["deleted"] == [edge.id]
+    assert not edge_exists(layout, edge.id)
+
+
+def test_delete_edge_endpoint_refuses_contains_422(tmp_path: Path) -> None:
+    layout = _seed_project(tmp_path)
+    contains = next(e for e in iter_edges(layout) if e.type == "contains")
+    client = TestClient(create_app(layout))
+    resp = client.delete(f"/edge/{contains.id}")
+    assert resp.status_code == 422
+    assert edge_exists(layout, contains.id)
 
 
 def test_cors_allows_dev_origin(tmp_path: Path) -> None:

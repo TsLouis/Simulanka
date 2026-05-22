@@ -87,10 +87,25 @@ def test_imports_module_hierarchy_and_data_flow(tmp_path: Path) -> None:
             f"node {node_id} should have both io ports"
         )
 
+    # §13.5.1: every slot of a fully-traced model is labelled `verified`, and
+    # single-tensor slots carry an observed shape.
+    ports = list(iter_ports(layout))
+    assert all(p.attrs.get("confidence") == "verified" for p in ports), (
+        "all ports of a fully-traced model should be verified"
+    )
+    head_in = next(
+        p for p in ports
+        if p.node_id == result.module_node_ids["head"] and p.name == "in"
+    )
+    assert head_in.attrs.get("shape") == [2, 8]
+
     # Peer-level data_flow edges:
     #   b1 → b2, b2 → head (top level)
     #   within b1 and b2:  *.lin → *.act
     data_flow = [e for e in iter_edges(layout) if e.type == "data_flow"]
+    assert all(e.attrs.get("source") == "trace" for e in data_flow), (
+        "machine-observed edges must be marked source=trace"
+    )
     by_endpoints = {(e.source_id, e.target_id) for e in data_flow}
 
     ids = result.module_node_ids
@@ -242,6 +257,68 @@ def test_structure_only_import_skips_dataflow(tmp_path: Path) -> None:
 
     root = next(n for n in iter_nodes(layout) if n.id == result.module_node_ids[""])
     assert root.attrs.get("dataflow_unavailable") is True
+
+    # §13.5.1: with no forward pass, ports are honestly labelled `inferred` and
+    # carry no observed shape. Inputs are still named from the forward signature.
+    ports = list(iter_ports(layout))
+    assert ports
+    assert all(p.attrs.get("confidence") == "inferred" for p in ports)
+    assert all("shape" not in p.attrs for p in ports)
+    encoder_in = next(
+        p for p in ports
+        if p.node_id == result.module_node_ids["encoder"] and p.name == "in"
+    )
+    assert encoder_in.attrs.get("label") == "input"  # nn.Linear.forward(self, input)
+
+    report = run_doctor(layout)
+    assert report.ok, [i.model_dump() for i in report.issues]
+
+
+def _build_multi_io_net() -> tuple[Any, tuple[Any, ...]]:
+    """A submodule with two tensor inputs and a two-tensor tuple output."""
+    import torch.nn as nn
+
+    class Fork(nn.Module):
+        def __init__(self, d: int) -> None:
+            super().__init__()
+            self.lin = nn.Linear(d, d)
+
+        def forward(self, a: Any, b: Any) -> Any:
+            return self.lin(a) + b, self.lin(b)
+
+    class MultiNet(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.split = nn.Linear(4, 4)
+            self.fork = Fork(4)
+            self.head = nn.Linear(4, 2)
+
+        def forward(self, x: Any) -> Any:
+            h = self.split(x)
+            y, z = self.fork(h, x)
+            return self.head(y + z)
+
+    return MultiNet(), (torch.randn(2, 4),)
+
+
+def test_multi_io_ports(tmp_path: Path) -> None:
+    """Multi-input / multi-output modules get suffixed slots; `in`/`out` stay
+    as the structural primaries, and the semantic names land in attrs."""
+    layout = init_project(tmp_path, with_scaffold=False).layout
+    _make_directory(layout, "models")
+    result = import_model(layout, _build_multi_io_net, name="MultiNet", parent="/models")
+
+    fork_id = result.module_node_ids["fork"]
+    fork_ports = {p.name: p for p in iter_ports(layout) if p.node_id == fork_id}
+    assert set(fork_ports) == {"in", "in1", "out", "out1"}
+
+    # Two tensor inputs `a`, `b` → primary `in` (labelled a) + `in1` (labelled b).
+    assert fork_ports["in"].attrs.get("label") == "a"
+    assert fork_ports["in"].attrs.get("shape") == [2, 4]
+    assert fork_ports["in1"].attrs.get("label") == "b"
+    # Tuple output → two out slots; positional, so no label.
+    assert fork_ports["out"].attrs.get("shape") == [2, 4]
+    assert "label" not in fork_ports["out1"].attrs
 
     report = run_doctor(layout)
     assert report.ok, [i.model_dump() for i in report.issues]

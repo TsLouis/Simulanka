@@ -11,7 +11,29 @@ import type {
   GraphPayload,
   NodeDTO,
   PortDTO,
+  ShapeCheck,
 } from './types'
+
+// LiteGraph link object (untyped in @types). We stash our edge id on it so a
+// later disconnect knows which persisted edge to delete.
+interface LiteLink {
+  id: number
+  origin_id: number
+  origin_slot: number
+  target_id: number
+  target_slot: number
+  simulanka_edge_id?: string
+  color?: string
+}
+
+// Link colour by edge provenance (§13.5.2): machine-traced vs human-drawn vs
+// agent-asserted, so the three read apart at a glance. LiteGraph honours
+// `link.color` in renderLink.
+const EDGE_COLORS: Record<string, string> = {
+  trace: '#5a7fd1', // blue — machine-observed
+  user: '#e0a23a', // amber — human-drawn
+  agent: '#a05ad1', // purple — agent-asserted
+}
 
 const TYPE_PREFIX = 'simulanka/'
 const BOUNDARY_PREFIX = 'simulanka-boundary/'
@@ -24,6 +46,16 @@ const NODE_H = 100
 export interface AdapterCallbacks {
   onDrillDown?: (nodeId: string, nodeName: string) => void
   onJumpExternal?: (externalId: string, externalName: string) => void
+  // User drew a connection (§13.5.2). Resolve true to keep it (it will be
+  // persisted), false to undo the canvas link (e.g. the user cancelled a
+  // shape-mismatch confirm).
+  onCreateEdge?: (
+    srcPortId: string,
+    dstPortId: string,
+    shapeCheck: ShapeCheck,
+  ) => Promise<boolean>
+  // User removed a connection that maps to a persisted edge.
+  onDeleteEdge?: (edgeId: string) => void
 }
 
 export interface AdapterResult {
@@ -52,6 +84,46 @@ export function buildLiteGraph(
   const outSlot = new Map<string, number>()
   const byNode = new Map<string, LGraphNode>()
 
+  // While the adapter wires up the payload's own edges, LiteGraph fires
+  // onConnectionsChange too — suppress handling until the initial build is done
+  // so only genuinely user-drawn connections reach the callbacks.
+  let building = true
+  const INPUT = (LiteGraph as unknown as { INPUT: number }).INPUT
+
+  // Installed on every real node. Acts only from the target (INPUT) side so a
+  // connection is handled exactly once. Connect → ask the host to persist
+  // (undo on a rejected confirm); disconnect → delete the mapped edge.
+  function onConnectionsChange(
+    this: LGraphNode,
+    type: number,
+    slot: number,
+    connected: boolean,
+    link: LiteLink | undefined,
+  ): void {
+    if (building || type !== INPUT || !link) return
+    const target = this
+    if (connected) {
+      const g = graph as unknown as { getNodeById: (id: number) => LGraphNode | null }
+      const srcNode = g.getNodeById(link.origin_id)
+      const srcPortId = srcNode
+        ? (srcNode as unknown as { simulanka_out_ports?: string[] })
+            .simulanka_out_ports?.[link.origin_slot]
+        : undefined
+      const dstPortId = (target as unknown as { simulanka_in_ports?: string[] })
+        .simulanka_in_ports?.[slot]
+      const create = callbacks.onCreateEdge
+      if (!srcPortId || !dstPortId || !create) return
+      const sc = computeShapeCheck(portsById.get(srcPortId), portsById.get(dstPortId))
+      void create(srcPortId, dstPortId, sc).then(keep => {
+        if (!keep) {
+          (target as unknown as { disconnectInput: (s: number) => void }).disconnectInput(slot)
+        }
+      })
+    } else if (link.simulanka_edge_id && callbacks.onDeleteEdge) {
+      callbacks.onDeleteEdge(link.simulanka_edge_id)
+    }
+  }
+
   // Auto-layout: dagre runs over real nodes + their internal data-flow edges.
   // Persisted positions in persistedPositions override the dagre result, so
   // user-dragged nodes stick across reloads.
@@ -65,17 +137,34 @@ export function buildLiteGraph(
 
     let inI = 0
     let outI = 0
+    // Slot-index → port-id, in slot order, so the connection handler can map a
+    // LiteGraph link back to our port ids.
+    const inPorts: string[] = []
+    const outPorts: string[] = []
     for (const portId of n.ports) {
       const p = portsById.get(portId)
       if (!p) continue
+      // Display the semantic label (param/kwarg/dict key) over the structural
+      // slot name when present, with the observed shape appended. Colour the
+      // slot dot by confidence so `inferred` (unverified) ports read as muted —
+      // the honest-labelling guarantee of §13.3.1 made visible.
+      const extra = slotExtra(p)
       if (p.side === 'in') {
-        lgnode.addInput(p.name, p.port_type || '*')
-        inSlot.set(portId, inI++)
+        lgnode.addInput(p.name, p.port_type || '*', extra)
+        inSlot.set(portId, inI)
+        inPorts[inI] = portId
+        inI++
       } else {
-        lgnode.addOutput(p.name, p.port_type || '*')
-        outSlot.set(portId, outI++)
+        lgnode.addOutput(p.name, p.port_type || '*', extra)
+        outSlot.set(portId, outI)
+        outPorts[outI] = portId
+        outI++
       }
     }
+    ;(lgnode as unknown as { simulanka_in_ports: string[] }).simulanka_in_ports = inPorts
+    ;(lgnode as unknown as { simulanka_out_ports: string[] }).simulanka_out_ports = outPorts
+    ;(lgnode as unknown as { onConnectionsChange: typeof onConnectionsChange })
+      .onConnectionsChange = onConnectionsChange
 
     const pos = persistedPositions[n.id] ?? autoPos.get(n.id) ?? [80, 80]
     lgnode.pos = [pos[0], pos[1]]
@@ -96,7 +185,12 @@ export function buildLiteGraph(
   // like `contains` are implicit in the subgraph nesting and intentionally
   // not drawn (see §12.3).
   for (const e of payload.edges) {
-    connectViaPorts(e, byNode, inSlot, outSlot)
+    const link = connectViaPorts(e, byNode, inSlot, outSlot)
+    if (link) {
+      link.simulanka_edge_id = e.id
+      const src = typeof e.attrs.source === 'string' ? e.attrs.source : null
+      if (src && EDGE_COLORS[src]) link.color = EDGE_COLORS[src]
+    }
   }
 
   // Cross-boundary edges → virtual boundary nodes (§12.4). One boundary node
@@ -115,7 +209,38 @@ export function buildLiteGraph(
     )
   }
 
+  building = false
   return { graph, byNode }
+}
+
+// Draw-time shape verdict (§13.5.2). Only verified↔verified ports with shapes
+// get a definite match/mismatch; anything inferred or shapeless is `unknown`.
+function computeShapeCheck(src?: PortDTO, dst?: PortDTO): ShapeCheck {
+  if (!src || !dst) return 'unknown'
+  const ss = Array.isArray(src.attrs.shape) ? (src.attrs.shape as number[]) : null
+  const ds = Array.isArray(dst.attrs.shape) ? (dst.attrs.shape as number[]) : null
+  if (!ss || !ds || src.attrs.confidence !== 'verified' || dst.attrs.confidence !== 'verified') {
+    return 'unknown'
+  }
+  return ss.length === ds.length && ss.every((v, i) => v === ds[i]) ? 'match' : 'mismatch'
+}
+
+// Confidence palette: verified slots read as live (green), inferred as muted
+// grey. Shared with the inspector's intent, kept local since LiteGraph wants
+// the colours inline on the slot.
+const VERIFIED_COLOR = '#5ad15a'
+const INFERRED_COLOR = '#9a9a9a'
+
+// Build the LiteGraph slot `extra_info`: a display `label` (semantic name +
+// observed shape) and a confidence-coded dot colour. Returns the structural
+// name unchanged when no attrs are present, so non-importer ports are untouched.
+function slotExtra(p: PortDTO): Record<string, unknown> {
+  const label = typeof p.attrs.label === 'string' ? p.attrs.label : null
+  const shape = Array.isArray(p.attrs.shape) ? (p.attrs.shape as number[]).join('×') : null
+  const inferred = p.attrs.confidence === 'inferred'
+  const display = [label ?? p.name, shape ? `(${shape})` : null].filter(Boolean).join(' ')
+  const color = inferred ? INFERRED_COLOR : VERIFIED_COLOR
+  return { label: display, color_on: color, color_off: color }
 }
 
 function connectViaPorts(
@@ -123,15 +248,15 @@ function connectViaPorts(
   byNode: Map<string, LGraphNode>,
   inSlot: Map<string, number>,
   outSlot: Map<string, number>,
-): void {
-  if (!e.src_port || !e.dst_port) return
+): LiteLink | null {
+  if (!e.src_port || !e.dst_port) return null
   const srcNode = byNode.get(e.src)
   const dstNode = byNode.get(e.dst)
-  if (!srcNode || !dstNode) return
+  if (!srcNode || !dstNode) return null
   const out = outSlot.get(e.src_port)
   const inp = inSlot.get(e.dst_port)
-  if (out === undefined || inp === undefined) return
-  srcNode.connect(out, dstNode, inp)
+  if (out === undefined || inp === undefined) return null
+  return srcNode.connect(out, dstNode, inp) as unknown as LiteLink | null
 }
 
 interface BoundaryBucket {

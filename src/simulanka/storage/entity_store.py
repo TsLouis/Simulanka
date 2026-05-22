@@ -45,8 +45,16 @@ def load_port(layout: ProjectLayout, port_id: str) -> Port:
     return Port.model_validate_json(port_path(layout, port_id).read_text("utf-8"))
 
 
+def delete_edge(layout: ProjectLayout, edge_id: str) -> None:
+    edge_path(layout, edge_id).unlink(missing_ok=True)
+
+
 def node_exists(layout: ProjectLayout, node_id: str) -> bool:
     return node_path(layout, node_id).is_file()
+
+
+def edge_exists(layout: ProjectLayout, edge_id: str) -> bool:
+    return edge_path(layout, edge_id).is_file()
 
 
 def port_exists(layout: ProjectLayout, port_id: str) -> bool:
