@@ -40,7 +40,7 @@ PatchIntent (含 selector)
 
 事务边界：上述四步全成功才落盘（临时目录 + 原子 rename）。失败 → 整体回滚。
 
-`PatchIntent.ops` 支持：`create_node` / `create_edge` / `create_port` / `update_attrs`（同 patch 内可级联，浅 merge 语义） / `delete` / `move`（后两者 Alpha 未实现）。实现节奏见 §9。
+`PatchIntent.ops` 支持：`create_node` / `create_edge` / `create_port` / `update_attrs`（同 patch 内可级联，浅 merge 语义） / `rename_node` / `delete_edge`（§13.5.2 加，唯一删除语义，拒 `contains`）。节点 `delete` / `move` 仍未实现（无真实用例驱动）。实现节奏见 §9。
 
 乐观锁：intent 携带 `base_graph_version`；与 manifest 不符则拒绝并提示重读。
 
@@ -495,9 +495,9 @@ LiteGraph 的 quirks（JS 非 TS、API 偏旧）可控。需要的扩展点：�
 - 主题切换、可访问性、多语言。
 - 鉴权 / 多用户。本来就是单用户本地工具。
 
-## 13. 提案：人画连线 + agent 核对（2026-05-22，未实现）
+## 13. 人画连线 + agent 核对（2026-05-22 提出；§13.5.1/2 + §13.5.3 task B 已落地）
 
-> **状态**：设计讨论，**尚未实现**。下午继续把它落成 §13.5 的具体方案。本节先固化动机、洞见、约束，避免下次重新推导。
+> **状态**：§13.1–§13.4 是 2026-05-22 的设计讨论存档（动机/洞见/约束），保留推导过程避免重复论证；落地方案与进度见 §13.5——§13.5.1（端口）、§13.5.2（连/拆边）、§13.5.3 task B（agent 提议 ghost 边）均已落地，核对-讨论交互与真实 SAM2 实跑仍推迟。
 
 ### 13.1 触发动机：前端可视化审计暴露的三个顶层问题
 
@@ -531,10 +531,11 @@ LiteGraph 的 quirks（JS 非 TS、API 偏旧）可控。需要的扩展点：�
 2. **agent 拿什么当标准答案？** 两个来源分工：
    - 能 trace 的子模块 → 用隐藏的自动 trace 当答案键（tracer 从“显示的图”降级为“判分依据”，既有工作不浪费）。
    - 不能 trace 的顶层 → agent **读 `forward()` 源码**推断（能处理控制流/状态，比 trace 强）。
+   - *⚠️ 2026-05-24 pivot：此“答案键/判分”框架被 §13.5.3 的 verdict 模型取代——agent 提议为主线、trace 降为“只确认不否定”的附议者。下面这段的分工方向仍对，但谁主谁副反过来了。*
 
 3. **突破只读红线**：现前端是只读 MVP（§12.7，编辑留 v2）。用户画 edge → 前端变写方（画线 → `apply_patch(CreateEdgeOp)`）。kernel 本就支持该 op，但把 v2 编辑能力提前了。配套：边加来源标记 `source: trace | user | agent`，三种线在图上要可区分。
 
-### 13.4 待用户拍板的判断
+### 13.4 用户拍板的判断（已决定，下方"默认从 0 画"已被 2026-05-24 pivot 取代）
 
 - **值不值取决于目标**：若目标是“用户理解 baseline”（用户明示），手动成本就是价值，值得；若哪天只想要那张图，别玩游戏，直接让 agent 读源码画完最省。
 - **UX 旋钮（松紧）**：用户从零画 → agent 判分（学得最狠、最费力）；或 agent 先读源码提一版 → 用户改（轻一些，改的过程也在理解）。
@@ -560,8 +561,6 @@ LiteGraph 的 quirks（JS 非 TS、API 偏旧）可控。需要的扩展点：�
 #### 13.5.2 前端连线游戏交互 —— **已落地**（kernel `delete_edge` + `POST/DELETE /edge` + 前端连/拆 + 形状确认）
 
 落地清单：kernel 加 `DeleteEdgeOp`（拒 `contains`，`Receipt.deleted_edges`）；server `POST /edge`（落 `source="user"` + `shape_check`，端口 id 直接当 selector）与 `DELETE /edge/{id}`，SSE `_affected` 已认 `delete_edge`；前端接管 LiteGraph `onConnectionsChange`（仅 INPUT 侧处理一次、`building` 标志屏蔽建图期自连），连线本地算 `shape_check`、`mismatch` 走 `window.confirm`（取消则撤销画布连线）、确认后 POST，拆线按链上 stash 的 edge id 走 DELETE，落库后靠 SSE 重载刷新。下方设计要点：
-
-
 
 突破只读红线：在现有下钻视图里，逐层画 children 之间的边；写回走 `CreateEdgeOp(type=data_flow)`，边带 `attrs.source="user"`，端口级（port→port）精确连线。trace 边是粗的 module 粒度、user 边才是精确的，二者按 `attrs.source` 上色区分。
 
