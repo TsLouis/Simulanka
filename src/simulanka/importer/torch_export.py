@@ -148,11 +148,15 @@ def import_model(
 
     # 3. Commit root model node + its ports.
     root_path = _join_path(parent, name)
+    root_class_module, root_source_file = _source_location(type(model))
     root_attrs: dict[str, Any] = {
         "class_name": type(model).__name__,
+        "class_module": root_class_module,
         "num_params": _count_params(model),
         "fqn": "",
     }
+    if root_source_file is not None:
+        root_attrs["source_file"] = root_source_file
     if example_inputs is None:
         root_attrs["dataflow_unavailable"] = True
     model_id = _commit_one_node(
@@ -179,17 +183,22 @@ def import_model(
     for fqn in submodule_fqns:
         mod = by_fqn[fqn]
         parent_fqn, leaf = _split_fqn(fqn)
+        class_module, source_file = _source_location(type(mod))
+        attrs: dict[str, Any] = {
+            "class_name": type(mod).__name__,
+            "class_module": class_module,
+            "num_params": _count_params(mod, recurse=False),
+            "fqn": fqn,
+        }
+        if source_file is not None:
+            attrs["source_file"] = source_file
         node_id = _commit_one_node(
             layout,
             CreateNodeOp(
                 type="module",
                 name=leaf,
                 parent=_fqn_to_selector(root_path, parent_fqn),
-                attrs={
-                    "class_name": type(mod).__name__,
-                    "num_params": _count_params(mod, recurse=False),
-                    "fqn": fqn,
-                },
+                attrs=attrs,
             ),
             actor=actor,
             note=f"import_model: {fqn}",
@@ -264,6 +273,22 @@ def _require_torch() -> Any:
 
 def _count_params(module: Any, *, recurse: bool = True) -> int:
     return sum(p.numel() for p in module.parameters(recurse=recurse))
+
+
+def _source_location(cls: type) -> tuple[str, str | None]:
+    """Where a module class is defined: dotted module path + source file.
+
+    This is the §13.5.3 foundation — the agent reads a node's ``forward`` from
+    here to propose ghost edges. Kept as bare locators (not the source text) so
+    it stays decoupled from how the agent prompt is built. ``source_file`` is
+    ``None`` for C-implemented / builtin modules that have no Python source.
+    """
+    module = getattr(cls, "__module__", None) or ""
+    try:
+        source_file = inspect.getsourcefile(cls)
+    except (TypeError, OSError):
+        source_file = None
+    return module, source_file
 
 
 def _split_fqn(fqn: str) -> tuple[str, str]:

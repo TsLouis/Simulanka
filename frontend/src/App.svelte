@@ -92,6 +92,7 @@
         lgcanvas = new LGraphCanvas(canvasEl, graph)
         wireSelection(lgcanvas)
         wireNodeMoved(lgcanvas)
+        wireGhostLinks(lgcanvas)
       }
       graph.start()
       nodeCount = payload.nodes.length
@@ -120,6 +121,25 @@
     } catch (err) {
       status = `error: ${(err as Error).message}`
     }
+  }
+
+  // §13.5.3: render ghost links (agent proposals, status="proposed") dashed.
+  // LiteGraph has no per-link dash, so shadow the instance renderLink: set a
+  // canvas line-dash around the original draw when the link is flagged ghost.
+  // Set once on the canvas; survives setGraph() across reloads.
+  function wireGhostLinks(canvas: LGraphCanvas) {
+    const proto = (LGraphCanvas.prototype as unknown as {
+      renderLink: (...a: unknown[]) => void
+    }).renderLink
+    ;(canvas as unknown as { renderLink: (...a: unknown[]) => void }).renderLink =
+      function (this: unknown, ...args: unknown[]): void {
+        const ctx = args[0] as CanvasRenderingContext2D
+        const link = args[3] as { simulanka_ghost?: boolean } | undefined
+        const ghost = !!link?.simulanka_ghost
+        if (ghost) ctx.setLineDash([6, 4])
+        proto.apply(this, args)
+        if (ghost) ctx.setLineDash([])
+      }
   }
 
   function wireSelection(canvas: LGraphCanvas) {

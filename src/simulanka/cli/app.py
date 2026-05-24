@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Annotated
 
 import typer
 
@@ -12,6 +13,8 @@ from simulanka.cli.run import run_app
 from simulanka.cli.serve import serve_app
 from simulanka.cli.task import task_app
 from simulanka.layout import init_project
+from simulanka.layout.project import ProjectLayout
+from simulanka.propose import DEFAULT_MODEL, ProposeError, propose_edges
 
 app = typer.Typer(help="Simulanka — research graph kernel CLI", no_args_is_help=True)
 app.add_typer(graph_app, name="graph")
@@ -26,6 +29,39 @@ app.add_typer(serve_app, name="serve")
 def version() -> None:
     """Print kernel version."""
     typer.echo(__version__)
+
+
+@app.command("propose")
+def propose_cmd(
+    model_selector: Annotated[
+        str,
+        typer.Argument(help="Selector for the imported `model` node (id, /path, or name)."),
+    ],
+    model: Annotated[
+        str,
+        typer.Option("--model", "-m", help="opencode provider/model to ask."),
+    ] = DEFAULT_MODEL,
+) -> None:
+    """§13.5.3: ask an agent to read a model's forward() and propose ghost edges.
+
+    Lays down cited `data_flow` edges as `source=agent, status=proposed,
+    verdict=unconfirmed` for the human to confirm. Uncited guesses are skipped.
+    """
+    layout = ProjectLayout.require()
+    try:
+        result = propose_edges(layout, model_selector, model=model)
+    except ProposeError as exc:
+        typer.echo(f"Propose failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(f"Proposed {len(result.edge_ids)} ghost edge(s) on {result.model_node_id}:")
+    for g in result.proposed:
+        typer.echo(f"  {g.src} → {g.dst}    [{g.citation}]")
+    if result.skipped:
+        typer.echo(f"Skipped {len(result.skipped)}:", err=True)
+        for g, reason in result.skipped:
+            typer.echo(f"  {g.src} → {g.dst}: {reason}", err=True)
+    typer.echo(f"graph_version={layout.load_manifest().graph_version}")
 
 
 @app.command("init")

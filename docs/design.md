@@ -540,6 +540,8 @@ LiteGraph 的 quirks（JS 非 TS、API 偏旧）可控。需要的扩展点：�
 - **UX 旋钮（松紧）**：用户从零画 → agent 判分（学得最狠、最费力）；或 agent 先读源码提一版 → 用户改（轻一些，改的过程也在理解）。
 
 > **决定（2026-05-22）**：**「人从 0 画」为默认**。理由：本项目本就允许人与 agent 沟通，想让 agent 先画直接说一句即可；「agent 先提一版」推迟到后续 agent 工程慢慢做，甚至可做成一个 skill。先把一条路做透（lean），不做可切换的双模式。
+>
+> **⚠️ 已被取代（2026-05-24）**：用户行使了上面那句"想让 agent 先画直接说一句即可"的后门，把「agent 先提一版」从备选升级为**默认主线**。理由是经验证（见 §13.5.3 的 GitNexus 实测）：用户注意力集中在浅层框架，而浅层恰是 trace 盲区，确定性工具也搭不上——agent 提议是问题形状决定的必然。定稿见 §13.5.3。
 
 ### 13.5 落地方案与状态
 
@@ -574,6 +576,55 @@ LiteGraph 的 quirks（JS 非 TS、API 偏旧）可控。需要的扩展点：�
 
 **删边一并做**：画布上"连"和"拆"是同一交互的两半——只接管连、不接管拆，则用户拆掉一根线刷新又回来，是骗人的。故本步同时处理 connect→建边 / disconnect→删边。删边需 kernel 新增 `delete_edge` op（当前只有 create/update/rename，无任何删除语义）——这是本步唯一的 kernel 改动，先于前端交互落地并单测。
 
-#### 13.5.3 agent 核对 —— 待做
+#### 13.5.3 agent 提议 + trace 附议 —— 设计定稿（2026-05-24，grill 讨论后 pivot）
 
-两条路：能 trace 的子模块用隐藏的自动 trace 当答案键；不能 trace 的顶层 agent 读 `forward()` 源码推断。核对结果呈现为标对 / 错 / 存疑。
+> 本节是一轮 grill 式设计讨论的产物（Q1–Q7），取代了上午先写的"端口置信度当路由器 / 路 A 程序化判分为主"的初稿。核心转向：**agent 提议为主线，trace 退为附议**。
+
+**为什么转向（GitNexus 实测，记此免得以后重试）**
+转向前先验证了"能否用确定性静态工具承担浅层框架接线"。结论是**不能**，实测三连（在已索引的真实 SAM2 baseline `DS_r` 上）：
+1. GitNexus schema 只有 `CALLS / ACCESSES / IMPORTS / EXTENDS / …`，**没有数据流边**——给不出"A 的输出流进 B"。
+2. 顶层**方法**编排抓得准（`forward → forward_image → track_step → _track_step → _encode_memory_in_output`）。
+3. 但 `image_encoder / memory_attention / sam_mask_decoder / sam_prompt_encoder` 这些**子模块全仓 0 次当被调方**——`self.image_encoder(x)` 是 `nn.Module.__call__` 间接调用，静态分析解析不出。而这正是要画进图的边。
+
+→ 加上自建 torch-aware AST def-use 也会**恰好在 SAM2 变复杂处（视频循环 / 条件 / 跨 pass）崩**、且仍需 agent 兜底。**浅层框架躲不开 agent，是问题形状决定的，不是没选好工具。** §13.2"顶层要靠语义阅读"由此被三方坐实。
+
+**新架构（主线 = agent 提议，附议 = trace）**
+- import 后，agent **读顶层 `forward()` 源码**，产出**保守的 ghost 草稿框架**（灰虚线，不落成实边，不阻塞用户）。
+- 用户审：选中一个 port 时浮出该处的 ghost 建议，**同意就连上、画得不一样就是分歧**。
+- 点"核对"批量提交分歧 → agent 与用户**讨论解决**（这一步本身就是学习——为自己的判断辩护或被说服）。
+- **trace 退为深层 verified 区的确定性附议者**，只盖 `correct`。
+
+**verdict 模型（Q1–Q3 定稿）**：单标量进 `edge.attrs`（经 `_edge_dict` 直达前端，schema/kernel 零改动）：
+- `verdict ∈ {unconfirmed, correct, wrong, uncertain, disputed}`
+- `verdict_by ∈ {trace, agent}`
+- `verdict_note`：理由（`disputed` 时**必须写清**）
+
+状态机：
+- 画下 / trace 没命中 → `unconfirmed`（**显式存**，不靠"字段缺失"表达；agent 据此找待裁的边）。
+- trace 命中（node 对级，trace 边无 port 精度）→ `correct`（`by=trace`）。
+- agent 裁 `unconfirmed` → `correct` / `wrong` / `uncertain`（`by=agent`）。
+- agent 对一条 trace-`correct` **提异议** → `disputed`（`by=agent`，理由进 note）。
+
+两条铁律：
+1. **trace 不对称：只确认、绝不否定。** trace（`TorchDispatchMode` + producer-set）只看 tensor 谱系，对 Python 标量/列表、有状态属性（memory bank）、非张量返回、控制流**全盲**——即使同一 pass 内也会漏真实边。所以 trace 边在 → `correct` 可靠；trace 边不在 ≠ 错（可能只是没看见）。**唯一灾难是"自信地学错"（§13.3.1），假 `wrong` 正是它**，故 trace 无权说 `wrong`，只有读源码的 agent 有。
+2. **agent 可对 trace 提异议（`disputed`）。** 永远无法保证不犯错，能在工作中发现并改正才是关键；`disputed` = "两台仪器打架、快来人看"，是最该被看见的状态，不被静默覆盖。
+
+**agent 性格（Q6 定稿，行为契约）**：**少而准**。
+- 只画能从源码**直接指出依据**的边（附上那行 `feats = self.image_encoder(x); … self.memory_attention(feats)`），**每条 ghost 必带源码出处**。
+- 凡要靠猜控制流/状态的，**不画，只标缺口**"agent 拿不准，你来定"——把"宁可漏不可错"的纪律从 trace 复制到 agent。
+- 好处：生成效应保住（难的边还是人画）、agent 不自信断言错边、接受 ghost 是学一个被指认的事实而非给猜测盖章。
+- *prompt 怎么写、出处怎么格式化、agent 怎么自评——属实现细节，留给 agent 工程阶段（见 [[project-deferred-agent-work]]，§13.4 早有此意）。这里只锁行为契约。*
+
+**落地状态（Q7：B = 最小端到端尝鲜 —— ✅ 已落地 2026-05-24）**
+- ✅ **地基**：importer 给 module/model 节点加**源码定位**（`class_module` + `source_file`），用 `inspect.getsourcefile`，C 实现/无源码的模块 `source_file` 缺省。agent 读 `forward()` 的前提，与 prompt 细节解耦。（`importer/torch_export.py::_source_location`）
+- ✅ **ghost 生成**：新模块 `simulanka/propose.py`（**不**走 `agent/wrapper.py`——那层只抓 workspace diff、不解析输出；这里要把回复解析成边）。流程：`resolve_node` → ast 从 `source_file` 抠出 `forward` 源码（无需 import 模型）→ 列直接子模块当合法端点词表 → opencode 单发 → 解析 JSON → 用现成 `CreateEdgeOp(attrs={source:"agent",status:"proposed",verdict:"unconfirmed",citation})` 落边。**无需新 kernel op。** 两条纪律落在代码里而非 prompt：只连词表内的子模块、**只落带 `citation` 的边**（无出处=猜测=skip，少而准）。CLI：`simulanka propose <model>`。
+- ⚠️ **opencode 调用坑**：`opencode run` 不带 `--print-logs` 在非 TTY 管道里会**永久挂起**（渲 TUI spinner）。必须加 `--print-logs`——日志走 stderr，stdout 即纯回复。
+- ✅ **前端 ghost 渲染**：`status="proposed"` 的边渲**灰虚线**（`GHOST_COLOR` + `App.svelte` 实例级包 `renderLink` 加 `setLineDash`，LiteGraph 无 per-link 虚线），与确认后的实线 agent 紫区分。
+- ✅ **命门验证通过**：本地合成 TinySAM（`image_encoder→(flatten)→memory_attention(+state buffer)→mask_decoder`，含 trace 盲的 functional glue + 状态）。免费模型 `deepseek-v4-flash-free` 准确吐出两条边、各带源码行、零幻觉模块、零 skip。证实"浅层框架接线靠 agent 读源码"可行。
+- **明确推迟**：agent 工程（prompt/出处/自评）、核对-讨论交互细节、edge-attr 更新 op（重核/异议回写时再加）、`/verify` 批量、真实 SAM2 `DS_r` 实跑验证。
+
+**已知小问题（high-effort code review 标记，spike 可接受，待修）**
+- **解析鲁棒性两处已修**（2026-05-24 review）：① `parse_response` 旧版 `find('[')…rfind(']')` 遇 citation 里的 `]`（`x[0]`）或 prose 括号会静默吞边 → 改成 string-aware 平衡括号扫描、逐候选取第一个能解出真实边的；② CLI typo 模型名时 `resolve_node` 抛 `ResolveError` 漏过 CLI 的 `except ProposeError` → 现在 `propose_edges` 把它包成 `ProposeError`。
+- **待修 #3**：前端 ghost 虚线——`App.svelte` 包 `renderLink` 时 `setLineDash([6,4])`→draw→`setLineDash([])` 无 try/finally，原 `renderLink` 抛异常会漏掉 reset，虚线泄漏到本帧后续所有连线。修法：try/finally 包 draw。
+- **待修 #4**：重复跑 `simulanka propose` 累积重复 ghost 边——dedup 只在单次回复内（`seen` 集），不查图中已存在的边，kernel 也不去重 `data_flow`。修法：建边前查同 (src_port,tgt_port,source=agent) 是否已存在，或在 edge-attr 更新 op 落地时做"重提即更新"。
+- **待修 #5**：`_extract_forward_source` 同名类取第一个匹配——文件里若有两个同名 class（重定义/嵌套同名 helper）会喂错 `forward`。修法：用 `class_module` 限定，或按 qualname/顶层优先。

@@ -125,6 +125,26 @@ def test_imports_module_hierarchy_and_data_flow(tmp_path: Path) -> None:
     assert report.ok, [i.model_dump() for i in report.issues]
 
 
+def test_nodes_carry_source_location(tmp_path: Path) -> None:
+    """§13.5.3 foundation: every node records where its class is defined, so the
+    agent can read the module's ``forward`` to propose ghost edges."""
+    layout = init_project(tmp_path, with_scaffold=False).layout
+    _make_directory(layout, "models")
+    result = import_model(layout, _build_tiny_mlp, name="TinyMLP", parent="/models")
+
+    by_id = {n.id: n for n in iter_nodes(layout)}
+
+    # Root model: class defined in this test module, source_file points here.
+    root = by_id[result.model_node_id]
+    assert "test_torch_importer" in root.attrs.get("class_module", "")
+    assert str(root.attrs.get("source_file", "")).endswith("test_torch_importer.py")
+
+    # A leaf submodule (nn.Linear) carries torch's own location, not the model's.
+    head = by_id[result.module_node_ids["head"]]
+    assert head.attrs.get("class_module", "").startswith("torch.nn")
+    assert head.attrs.get("source_file")  # torch ships Python source
+
+
 def test_invalid_name_rejected(tmp_path: Path) -> None:
     from simulanka.importer import ModelImportError
 

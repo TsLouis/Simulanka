@@ -23,6 +23,9 @@ interface LiteLink {
   target_id: number
   target_slot: number
   simulanka_edge_id?: string
+  // §13.5.3 ghost: an agent proposal not yet confirmed. Rendered gray + dashed
+  // so a draft never reads as a committed edge (App.svelte dashes these).
+  simulanka_ghost?: boolean
   color?: string
 }
 
@@ -34,6 +37,11 @@ const EDGE_COLORS: Record<string, string> = {
   user: '#e0a23a', // amber — human-drawn
   agent: '#a05ad1', // purple — agent-asserted
 }
+
+// §13.5.3: an unconfirmed agent proposal (status="proposed") reads as a muted
+// gray dashed line — visibly a draft, distinct from the solid purple of a
+// confirmed agent edge. Provenance colour is overridden by this until verified.
+const GHOST_COLOR = '#8a8a8a'
 
 const TYPE_PREFIX = 'simulanka/'
 const BOUNDARY_PREFIX = 'simulanka-boundary/'
@@ -189,7 +197,12 @@ export function buildLiteGraph(
     if (link) {
       link.simulanka_edge_id = e.id
       const src = typeof e.attrs.source === 'string' ? e.attrs.source : null
-      if (src && EDGE_COLORS[src]) link.color = EDGE_COLORS[src]
+      if (e.attrs.status === 'proposed') {
+        link.simulanka_ghost = true
+        link.color = GHOST_COLOR
+      } else if (src && EDGE_COLORS[src]) {
+        link.color = EDGE_COLORS[src]
+      }
     }
   }
 
