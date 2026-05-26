@@ -620,10 +620,30 @@ LiteGraph 的 quirks（JS 非 TS、API 偏旧）可控。需要的扩展点：�
 - ⚠️ **opencode 调用坑**：`opencode run` 不带 `--print-logs` 在非 TTY 管道里会**永久挂起**（渲 TUI spinner）。必须加 `--print-logs`——日志走 stderr，stdout 即纯回复。
 - ✅ **前端 ghost 渲染**：`status="proposed"` 的边渲**灰虚线**（`GHOST_COLOR` + `App.svelte` 实例级包 `renderLink` 加 `setLineDash`，LiteGraph 无 per-link 虚线），与确认后的实线 agent 紫区分。
 - ✅ **命门验证通过**：本地合成 TinySAM（`image_encoder→(flatten)→memory_attention(+state buffer)→mask_decoder`，含 trace 盲的 functional glue + 状态）。免费模型 `deepseek-v4-flash-free` 准确吐出两条边、各带源码行、零幻觉模块、零 skip。证实"浅层框架接线靠 agent 读源码"可行。
-- **明确推迟**：agent 工程（prompt/出处/自评）、核对-讨论交互细节、edge-attr 更新 op（重核/异议回写时再加）、`/verify` 批量、真实 SAM2 `DS_r` 实跑验证。
+- **明确推迟**：agent 工程（prompt/出处/自评）、核对-讨论交互细节、edge-attr 更新 op（重核/异议回写时再加）、`/verify` 批量。
+- ⚠️ **真实 SAM2 `DS_r` 实测已做（2026-05-26），证伪了本节的「读 `forward()`」机制 → 见 §13.5.4。** 本节 spike 的命门只覆盖了「forward 本地定义、数据流全在 forward 内」的简单模型；SAM2 这类 forward 继承/编排在非 forward 方法的模型族不成立。
 
-**已知小问题（high-effort code review 标记，spike 可接受，待修）**
+**已知小问题（high-effort code review 标记，spike 可接受）—— #1–#5 均已修**
 - **解析鲁棒性两处已修**（2026-05-24 review）：① `parse_response` 旧版 `find('[')…rfind(']')` 遇 citation 里的 `]`（`x[0]`）或 prose 括号会静默吞边 → 改成 string-aware 平衡括号扫描、逐候选取第一个能解出真实边的；② CLI typo 模型名时 `resolve_node` 抛 `ResolveError` 漏过 CLI 的 `except ProposeError` → 现在 `propose_edges` 把它包成 `ProposeError`。
-- **待修 #3**：前端 ghost 虚线——`App.svelte` 包 `renderLink` 时 `setLineDash([6,4])`→draw→`setLineDash([])` 无 try/finally，原 `renderLink` 抛异常会漏掉 reset，虚线泄漏到本帧后续所有连线。修法：try/finally 包 draw。
-- **待修 #4**：重复跑 `simulanka propose` 累积重复 ghost 边——dedup 只在单次回复内（`seen` 集），不查图中已存在的边，kernel 也不去重 `data_flow`。修法：建边前查同 (src_port,tgt_port,source=agent) 是否已存在，或在 edge-attr 更新 op 落地时做"重提即更新"。
-- **待修 #5**：`_extract_forward_source` 同名类取第一个匹配——文件里若有两个同名 class（重定义/嵌套同名 helper）会喂错 `forward`。修法：用 `class_module` 限定，或按 qualname/顶层优先。
+- **#3 已修**（2026-05-26）：前端 ghost 虚线——`App.svelte` 包 `renderLink` 的 `setLineDash([6,4])`→draw→`setLineDash([])` 改成 try/finally 包 draw，原 `renderLink` 抛异常时也保证 reset，虚线不再泄漏到本帧后续连线。
+- **#4 已修**（2026-05-26）：重复跑 `simulanka propose` 不再累积重复 ghost 边——`propose_edges` 建边前先扫图，按 `(source_id, target_id)`（= 拥有端口的两节点，见 `apply.py`）过滤已存在的 `source=agent` `data_flow` 边；kernel 仍不去重 data_flow，dedup 落在 propose 这层。重提→更新的语义留到 edge-attr 更新 op 落地时再做。
+- **#5 已修**（2026-05-26）：`_extract_forward_source` 不再盲取第一个同名 class——优先取**顶层** class（`nn.Module` 必在模块顶层），同名重定义取**最后一个**（与 Python 名字绑定一致），无顶层匹配才回退到首个嵌套定义；同名嵌套 helper 不再喂错 `forward`。
+
+#### 13.5.4 真实 DS_r 实测 → 入口方法重设计（2026-05-26，grill 后定稿）
+
+> §13.5.3 的 spike 在合成 TinyMLP/TinySAM 上过了命门，但真实 SAM2（DS_r baseline）实测把它的核心假设「agent 读顶层 model 的 `forward()`」打穿了。本节记录证伪 + 重设计；**取代** §13.5.3 的「读 forward」机制（验证/出处/少而准/verdict 等其余决策不变）。
+
+**实测发现（源码级，未建模；DS_r 已备完整 `simulanka_builds/manifest.yaml`）**——两层都崩，合成玩具结构上抓不到（它们 `forward` 本地定义、数据流全在 `forward` 内）：
+1. **extractor 非 MRO-aware**：`SAM2VideoPredictor`（manifest 顶层模型）自己文件里**不定义 `forward`**（自有方法是 `init_state`/`add_new_points_or_box`/`propagate_in_video`…），`forward` 继承自**另一文件**的 `SAM2Base` → `_extract_forward_source` 返回 `None` → propose 直接抛 `ProposeError("no forward found")`，根本到不了 agent。
+2. **`forward` 是错入口**：即便 MRO 解析到，`SAM2Base.forward` 只是 `raise NotImplementedError("用 SAM2VideoPredictor 的对应方法")` 桩。真正编排在 `track_step → _track_step → {_prepare_memory_conditioned_features(→memory_attention), _forward_sam_heads(→sam_mask_decoder/sam_prompt_encoder/obj_ptr_proj), _use_mask_as_output}` + `forward_image(→image_encoder)` + `_encode_new_memory(→memory_encoder)`：8 个子模块各调一次，**摊在 SAM2Base 的 5 个私有方法、约 600 行、跨两文件**。**子模块之间的边**（image_encoder→memory_attention→sam_mask_decoder）不在任何单一方法里——是 `track_step` 用返回值 + 每帧状态（memory bank）串起来的。
+   - 旁证：GitNexus 当初**抓得准方法调用图**（`track_step→_track_step→…`，§13.5.3 finding #2），抓不到的恰是 `self.<submodule>(...)` 间接调用与张量数据流。这条「静态拿方法图、语义读数据流」的天然分工，下面被用上。
+
+**重设计决策（grill 2026-05-26）**：
+1. **agent 提议覆盖 smeared 顶层**：读多深是 **agent 自己决定**（越深越好），深度/导航策略推迟到 agent 工程。覆盖 spike 的隐含「只读 forward」。
+2. **证据局部性 = 分级出处**（verdict/values 决策）：单跳同方法引用 vs 跨方法 + 跨状态引用**不是同等可信**——深/跨态的 cited 边天生更可疑，`核对` 按局部性加权。理由：§13.3.1 唯一灾难是「自信学错」，而**带似是而非 citation 的错边比没 citation 的错边更危险**（SAM2 实例：`memory_encoder→memory_attention` 是真边但靠跨帧 memory bank 状态中介，agent 能就 `self.memory_attention(..., memory=...)` 给出看似直连的出处）。少而准的 cite-or-skip 挡不住这种——agent 确实能 cite，只是跨了状态边界。**verdict 枚举不变**，`evidence_locality`（如 `in_method | cross_method | cross_state`）是 `citation` 旁的附加 attr。
+3. **propose 改形（工程）**：从「AST 抠 `forward` 字符串 → 单发」改为「把 agent 指向 model 类 + 仓库，让它按需导航到任意深度」。一举化解 MRO/跨文件 + 错入口两问题（agent 自己跨文件读、自己找真编排）。**§13.5.3 的 parse / 校验 / dedup（含 #4）全保留**；`_extract_forward_source`（#5 修过的）降级为简单模型的提示/fallback。
+4. **局部性谁算（工程）**：propose 从 citation 指向的位置推**结构跨度**（同方法 vs 跨方法，可核查）；**跨状态由 agent 显式标注**（只有它读了码）。
+5. **推迟到 agent 工程**：导航/prompt 策略；验证 opencode `run` 能在 CWD=仓库时读文件导航；可选「静态方法调用图当导航辅助」（GitNexus 唯一抓准的东西）。
+6. **推迟到将来**：消费 `evidence_locality` 的 `核对` 交互。
+
+**未做 live import**：本地 `.venv` 缺 numpy/hydra/omegaconf/iopath；propose 结局已被源码实测 + 代码逻辑证实，无需建模。importer 侧（`simulanka import baseline DS_r --check` 在真 SAM2 上）**尚未实跑验证**，待补。
