@@ -51,6 +51,41 @@ def test_extract_forward_source_missing() -> None:
     assert _extract_forward_source("def x(): pass\n", "Foo") is None
 
 
+def test_extract_forward_prefers_last_top_level_class() -> None:
+    # On a same-name redefinition Python binds the *last* class; the extractor
+    # must follow suit. The old first-match scan fed the shadowed forward.
+    src = (
+        "class Net:\n"
+        "    def forward(self, x):\n"
+        "        return self.old(x)\n"
+        "\n"
+        "class Net:\n"
+        "    def forward(self, x):\n"
+        "        return self.new(x)\n"
+    )
+    out = _extract_forward_source(src, "Net")
+    assert out is not None
+    assert "self.new(x)" in out and "self.old(x)" not in out
+
+
+def test_extract_forward_ignores_nested_same_name_class() -> None:
+    # A nested helper sharing the class name must not shadow the real top-level
+    # module class.
+    src = (
+        "class Outer:\n"
+        "    class Net:\n"
+        "        def forward(self, x):\n"
+        "            return self.nested(x)\n"
+        "\n"
+        "class Net:\n"
+        "    def forward(self, x):\n"
+        "        return self.real(x)\n"
+    )
+    out = _extract_forward_source(src, "Net")
+    assert out is not None
+    assert "self.real(x)" in out and "self.nested(x)" not in out
+
+
 # --- pure: reply parsing -----------------------------------------------------
 
 def test_parse_fenced_block() -> None:
@@ -189,3 +224,37 @@ def test_propose_edges_end_to_end(tmp_path: Path) -> None:
         assert e.attrs["status"] == "proposed"
         assert e.attrs["verdict"] == "unconfirmed"
         assert e.attrs["citation"]
+
+
+def test_propose_edges_dedups_across_runs(tmp_path: Path) -> None:
+    # Re-running `propose` on the same graph must not pile up duplicate ghosts;
+    # dedup is in propose (the kernel doesn't dedup data_flow).
+    pytest.importorskip("torch")
+    from simulanka.importer import import_model
+    from simulanka.kernel.apply import apply_patch
+    from simulanka.kernel.intent import CreateNodeOp, PatchIntent
+    from simulanka.layout.project import init_project
+    from simulanka.storage.entity_store import iter_edges
+
+    layout = init_project(tmp_path, with_scaffold=False).layout
+    apply_patch(
+        layout,
+        PatchIntent(
+            ops=[CreateNodeOp(type="directory", name="models")],
+            actor="test",
+            base_graph_version=layout.load_manifest().graph_version,
+        ),
+    )
+    import_model(layout, _build_tiny_mlp, name="TinyMLP", parent="/models")
+
+    def runner(_p: str, _m: str) -> str:
+        return '[{"src": "b1", "dst": "b2", "citation": "h = self.b2(h)"}]'
+
+    first = propose_edges(layout, "TinyMLP", runner=runner)
+    assert len(first.edge_ids) == 1
+
+    second = propose_edges(layout, "TinyMLP", runner=runner)
+    assert second.edge_ids == []
+    assert any("already" in reason for _g, reason in second.skipped)
+    agent_edges = [e for e in iter_edges(layout) if e.attrs.get("source") == "agent"]
+    assert len(agent_edges) == 1

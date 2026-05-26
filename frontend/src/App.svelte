@@ -137,8 +137,13 @@
         const link = args[3] as { simulanka_ghost?: boolean } | undefined
         const ghost = !!link?.simulanka_ghost
         if (ghost) ctx.setLineDash([6, 4])
-        proto.apply(this, args)
-        if (ghost) ctx.setLineDash([])
+        // try/finally: if the original renderLink throws, the dash must still be
+        // reset, or it leaks onto every later link drawn this frame.
+        try {
+          proto.apply(this, args)
+        } finally {
+          if (ghost) ctx.setLineDash([])
+        }
       }
   }
 

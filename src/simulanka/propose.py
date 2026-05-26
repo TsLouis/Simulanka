@@ -36,7 +36,7 @@ from simulanka.kernel.apply import apply_patch_now
 from simulanka.kernel.intent import CreateEdgeOp, IntentOp
 from simulanka.kernel.resolver import ResolveError, resolve_node
 from simulanka.layout.project import ProjectLayout
-from simulanka.storage.entity_store import iter_nodes
+from simulanka.storage.entity_store import iter_edges, iter_nodes
 
 DEFAULT_MODEL = "opencode/deepseek-v4-flash-free"
 DEFAULT_TIMEOUT = 180.0
@@ -120,6 +120,16 @@ def propose_edges(
         raw = _run_opencode(prompt, model, timeout=timeout)
     ghosts = parse_response(raw)
 
+    # Ghost edges already laid down by a prior `propose` run on this graph, keyed
+    # by (source_id, target_id) — re-running must update/skip, not pile up dupes.
+    # The kernel doesn't dedup `data_flow`, so we do it here. (source_id is the
+    # node owning the source port, see apply.py.)
+    existing: set[tuple[str, str]] = {
+        (e.source_id, e.target_id)
+        for e in iter_edges(layout)
+        if e.type == "data_flow" and e.attrs.get("source") == "agent"
+    }
+
     ops: list[IntentOp] = []
     applied: list[GhostEdge] = []
     skipped: list[tuple[GhostEdge, str]] = []
@@ -139,6 +149,9 @@ def propose_edges(
             continue
         if (g.src, g.dst) in seen:
             skipped.append((g, "duplicate"))
+            continue
+        if (children[g.src], children[g.dst]) in existing:
+            skipped.append((g, "already a ghost edge from a previous run"))
             continue
         seen.add((g.src, g.dst))
         ops.append(
@@ -181,21 +194,34 @@ def propose_edges(
 
 def _extract_forward_source(source_text: str, class_name: str) -> str | None:
     """Return the source of ``class_name``'s ``forward`` method, read from the
-    file on disk (no import needed). First matching class wins."""
+    file on disk (no import needed).
+
+    An ``nn.Module`` is defined at module top level, so a top-level class wins
+    over a nested same-named helper, and on a top-level redefinition the *last*
+    one wins — matching Python's own name binding. Only when no top-level class
+    matches do we fall back to the first nested definition. (The old plain
+    first-``ast.walk``-match could feed a shadowed/nested class's forward.)"""
     try:
         tree = ast.parse(source_text)
     except SyntaxError:
         return None
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ClassDef) and node.name == class_name:
-            for item in node.body:
-                if (
-                    isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
-                    and item.name == "forward"
-                ):
-                    segment = ast.get_source_segment(source_text, item)
-                    if segment is not None:
-                        return segment
+    top_level = [
+        n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == class_name
+    ]
+    cls = top_level[-1] if top_level else next(
+        (n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == class_name),
+        None,
+    )
+    if cls is None:
+        return None
+    for item in cls.body:
+        if (
+            isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and item.name == "forward"
+        ):
+            segment = ast.get_source_segment(source_text, item)
+            if segment is not None:
+                return segment
     return None
 
 
