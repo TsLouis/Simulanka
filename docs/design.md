@@ -647,3 +647,27 @@ LiteGraph 的 quirks（JS 非 TS、API 偏旧）可控。需要的扩展点：�
 6. **推迟到将来**：消费 `evidence_locality` 的 `核对` 交互。
 
 **未做 live import**：本地 `.venv` 缺 numpy/hydra/omegaconf/iopath；propose 结局已被源码实测 + 代码逻辑证实，无需建模。importer 侧（`simulanka import baseline DS_r --check` 在真 SAM2 上）**尚未实跑验证**，待补。
+
+#### 13.5.5 命门 B 实测验证（2026-05-27，shim 修复后 opencode 真跑）
+
+§13.5.4 的重设计此前只纸面定稿 + 源码推断；本节是它的真跑验证。先解掉一个环境前置——远端 shim 把 `node` 也转发，导致挂载目录下本地 node 基础设施（hook/MCP）全被发往远端而死，已修（详见全局 `~/.claude/CLAUDE.md`）——再用 opencode 1.15.7 + 免费 `deepseek-v4-flash-free` 跑 propose 的新形态。
+
+**Setup**：本地复制 DS_r 的 `sam2/` 源码到 `/tmp`（隔离 sshfs 延迟与 shim 噪声，干净测「模型能力」而非环境）；prompt = 指向 `SAM2VideoPredictor` 类 + 8 个直接子模块词表，要求 cite-or-skip + 给每条边标 `evidence_locality`（in_method/cross_method/cross_state）。这正是决策 #3「指向 model 类 + 仓库自由导航」的形态。
+
+**命门 B 通过（n=2 一致）**：
+- **导航过桩**：完全跳过 line-199 的 `forward` 桩，自己找到 `track_step`/`_prepare_memory_conditioned_features`/`_forward_sam_heads` 里的真编排——这正是 §13.5.3「读 forward」机制做不到、§13.5.4 重设计要解的。
+- **产出准**：10 条顶层边，引用逐行核对全部属实，零幻觉模块。
+- **cross_state 命门边正确**：`memory_encoder → memory_attention`（经跨帧 memory bank）两轮都标 `cross_state`、没伪装成直连——§13.5.4 决策 #2 最怕的「带似是而非 citation 的自信学错」**没发生**。证实 `evidence_locality` 可由免费模型准确产出。
+- **一致性**：两次独立运行边集 + locality 标签完全一致（第三次因 opencode 权限门挂起作废，见下）。
+
+**但机制不穷尽——人核对当场生效**：用户凭领域知识两轮逼出模型漏的真边 `image_encoder → sam_mask_decoder` 直边——① 浅层高分辨率特征 `current_vision_feats[:-1]` → `high_res_features` → decoder 做掩码上采样细化（`_track_step` 806-809/844，**无条件每帧走**）；② `no_mem_embed` 首帧分支（713）。模型只留了「深层 `[-1]` → memory_attention → decoder 经记忆」那条。漏点集中在**控制流分支 + 多尺度直连**；模型选择 omit 而非 fabricate，"宁可漏不可错"纪律守住。**这实时演示了「agent 提议、人处置」的价值——验证通过 = 机制产出准确诚实的边，≠ 穷尽。**
+
+**🔑 表示层发现（reshape 前要定，比 prompt/导航更靠地基）**：image_encoder 的多尺度输出（深层 `[-1]` → memory_attention、浅层 `[:-1]` → decoder）意味着模块有**多个不同输出**。propose 现在把边端点写成单一 `模块.out`（`f"{child}.out"`），会把 `image_encoder.out→memory_attention` 与 `image_encoder.out→decoder` 从同一 `.out` 引出、抹平分流语义。→ 边端点须落到模块的**具体输出端口**，接 §13.5.1 的多输出端口（`out1`/`out2`…）。
+
+**两个 opencode harness 坑（操作层，留 agent 工程）**：
+1. **`opencode run` 非交互下会卡在权限门**：第三次运行随机走了更 agentic 的路（派 `@explore` subagent + `bash`），触到 opencode `external_directory=ask` 权限门，非 TTY 下无人批准 → 永久挂起。real propose 必须把 agent **限制在仓库目录 + 预置权限**，否则死锁（§13.5.3 `--print-logs` 坑的同类）。
+2. **导航策略 run 间随机**：2/3 在进程内读文件、1/3 派 subagent + shell 出去越界。佐证决策 #5「导航/prompt 策略推迟 agent 工程」。
+
+**决策 #5 进度**：其中「验证 opencode run 能在 CWD=仓库时读文件导航」一项今天**已验通过**；其余导航/prompt 策略仍按原计划推迟。
+
+**仍未做**：importer 侧 live import（命门 C，`simulanka import baseline DS_r --check` 在真 SAM2 上）仍未实跑——本次 propose 用的是**手工提供的子模块词表**，非从导入图取，importer→图→propose 的端到端串联待补。
