@@ -134,7 +134,14 @@
     ;(canvas as unknown as { renderLink: (...a: unknown[]) => void }).renderLink =
       function (this: unknown, ...args: unknown[]): void {
         const ctx = args[0] as CanvasRenderingContext2D
-        const link = args[3] as { simulanka_ghost?: boolean } | undefined
+        const link = args[3] as
+          | {
+              simulanka_ghost?: boolean
+              simulanka_slice?: string
+              _pos?: [number, number]
+              color?: string
+            }
+          | undefined
         const ghost = !!link?.simulanka_ghost
         if (ghost) ctx.setLineDash([6, 4])
         // try/finally: if the original renderLink throws, the dash must still be
@@ -144,7 +151,37 @@
         } finally {
           if (ghost) ctx.setLineDash([])
         }
+        // §13.5.6: after the line (dash already reset), tag the slice this edge
+        // carries at the link centre — renderLink populated link._pos. Two edges
+        // from one output port then read apart by their slice, not just target.
+        const slice = link?.simulanka_slice
+        if (slice && link?._pos) {
+          drawSliceLabel(ctx, link._pos, slice, link.color ?? '#a05ad1')
+        }
       }
+  }
+
+  // A small chip at the link centre carrying the output-slice (§13.5.6). Drawn
+  // in graph coordinates (the renderLink ctx is already canvas-transformed).
+  function drawSliceLabel(
+    ctx: CanvasRenderingContext2D,
+    pos: [number, number],
+    text: string,
+    color: string,
+  ) {
+    ctx.save()
+    ctx.font = '10px monospace'
+    const w = ctx.measureText(text).width
+    const padX = 4
+    const h = 13
+    const x = pos[0] - w / 2 - padX
+    const y = pos[1] - h / 2
+    ctx.fillStyle = 'rgba(20,20,20,0.78)'
+    ctx.fillRect(x, y, w + padX * 2, h)
+    ctx.fillStyle = color
+    ctx.textBaseline = 'middle'
+    ctx.fillText(text, pos[0] - w / 2, pos[1])
+    ctx.restore()
   }
 
   function wireSelection(canvas: LGraphCanvas) {

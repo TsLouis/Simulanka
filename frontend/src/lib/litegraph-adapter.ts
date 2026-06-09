@@ -26,6 +26,10 @@ interface LiteLink {
   // §13.5.3 ghost: an agent proposal not yet confirmed. Rendered gray + dashed
   // so a draft never reads as a committed edge (App.svelte dashes these).
   simulanka_ghost?: boolean
+  // §13.5.6: the sub-slice this edge carries out of its source port (`[-1]` /
+  // `[:-1]`). When a module sends different outputs to different consumers from
+  // one port, the label is what tells the two edges apart (App.svelte draws it).
+  simulanka_slice?: string
   color?: string
 }
 
@@ -202,6 +206,11 @@ export function buildLiteGraph(
         link.color = GHOST_COLOR
       } else if (src && EDGE_COLORS[src]) {
         link.color = EDGE_COLORS[src]
+      }
+      // §13.5.6: carry the output-slice onto the link so two edges leaving the
+      // same port (e.g. image_encoder `[-1]` vs `[:-1]`) render distinguishably.
+      if (typeof e.attrs.output_slice === 'string') {
+        link.simulanka_slice = e.attrs.output_slice
       }
     }
   }

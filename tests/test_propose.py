@@ -130,6 +130,27 @@ def test_parse_drops_malformed_entries() -> None:
     assert parse_response('[{"src": "a", "dst": "b"}]')[0].citation == ""
 
 
+def test_parse_response_captures_out_port_and_slice() -> None:
+    # §13.5.6: the model may name which output an edge leaves (`out_port`) and the
+    # sub-slice it carries (`slice`). Both optional; absent → None.
+    raw = (
+        '[{"src": "image_encoder", "dst": "memory_attention", "out_port": "out2", '
+        '"slice": "[-1]", "citation": "feats = backbone_out[-1]"}]'
+    )
+    assert parse_response(raw) == [
+        GhostEdge(
+            "image_encoder",
+            "memory_attention",
+            "feats = backbone_out[-1]",
+            out_port="out2",
+            out_slice="[-1]",
+        )
+    ]
+    # Empty strings are normalised to None, not kept as "".
+    blanks = '[{"src": "a", "dst": "b", "citation": "c", "out_port": "", "slice": ""}]'
+    assert parse_response(blanks) == [GhostEdge("a", "b", "c")]
+
+
 def test_propose_bad_selector_raises_proposeerror(tmp_path: Path) -> None:
     # A typo'd / unresolvable selector must surface as ProposeError (which the
     # CLI catches), not a raw ResolveError traceback.
@@ -258,3 +279,96 @@ def test_propose_edges_dedups_across_runs(tmp_path: Path) -> None:
     assert any("already" in reason for _g, reason in second.skipped)
     agent_edges = [e for e in iter_edges(layout) if e.attrs.get("source") == "agent"]
     assert len(agent_edges) == 1
+
+
+def _build_multi_out() -> tuple[Any, tuple[Any, ...]]:
+    """A model whose `encoder` child returns a 2-tuple, so the importer gives it
+    two structural output ports (`out`, `out1`). The top forward routes each
+    output to a different head — the §13.5.6 multi-output shape, in miniature."""
+    import torch
+    import torch.nn as nn
+
+    class Encoder(nn.Module):
+        def __init__(self, d: int) -> None:
+            super().__init__()
+            self.deep = nn.Linear(d, d)
+            self.shallow = nn.Linear(d, d)
+
+        def forward(self, x: Any) -> Any:
+            return self.deep(x), self.shallow(x)
+
+    class TopModel(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.encoder = Encoder(8)
+            self.head_deep = nn.Linear(8, 2)
+            self.head_shallow = nn.Linear(8, 2)
+
+        def forward(self, x: Any) -> Any:
+            deep, shallow = self.encoder(x)
+            return self.head_deep(deep) + self.head_shallow(shallow)
+
+    return TopModel(), (torch.randn(2, 8),)
+
+
+def test_propose_edges_multi_output_ports(tmp_path: Path) -> None:
+    # §13.5.6: an edge leaves a *specific* structural output port (resolved from
+    # the model's `out_port`), and a sub-slice rides the edge as `output_slice` —
+    # so `encoder`'s two outputs to two heads stay distinct, not smeared onto one.
+    pytest.importorskip("torch")
+    from simulanka.importer import import_model
+    from simulanka.kernel.apply import apply_patch
+    from simulanka.kernel.intent import CreateNodeOp, PatchIntent
+    from simulanka.layout.project import init_project
+    from simulanka.storage.entity_store import iter_edges, iter_nodes, iter_ports
+
+    layout = init_project(tmp_path, with_scaffold=False).layout
+    apply_patch(
+        layout,
+        PatchIntent(
+            ops=[CreateNodeOp(type="directory", name="models")],
+            actor="test",
+            base_graph_version=layout.load_manifest().graph_version,
+        ),
+    )
+    import_model(layout, _build_multi_out, name="TopModel", parent="/models")
+
+    # Sanity: the importer really gave `encoder` two output ports.
+    enc_id = next(n.id for n in iter_nodes(layout) if n.name == "encoder")
+    enc_out = sorted(
+        p.name for p in iter_ports(layout) if p.node_id == enc_id and p.direction == "out"
+    )
+    assert enc_out == ["out", "out1"]
+
+    def fake_runner(_p: str, _m: str) -> str:
+        return (
+            '[{"src": "encoder", "dst": "head_deep", "out_port": "out", '
+            '"citation": "deep, shallow = self.encoder(x)"},'
+            '{"src": "encoder", "dst": "head_shallow", "out_port": "out1", '
+            '"slice": "shallow", "citation": "self.head_shallow(shallow)"}]'
+        )
+
+    result = propose_edges(layout, "TopModel", runner=fake_runner)
+    assert len(result.edge_ids) == 2
+
+    port_name = {p.id: p.name for p in iter_ports(layout)}
+    by_target = {
+        e.target_id: e
+        for e in iter_edges(layout)
+        if e.attrs.get("source") == "agent"
+    }
+    head_deep_id = next(n.id for n in iter_nodes(layout) if n.name == "head_deep")
+    head_shallow_id = next(n.id for n in iter_nodes(layout) if n.name == "head_shallow")
+
+    # The deep edge leaves encoder.out, the shallow edge leaves encoder.out1 —
+    # they are NOT both smeared onto `out`.
+    deep_edge = by_target[head_deep_id]
+    shallow_edge = by_target[head_shallow_id]
+    deep_port, shallow_port = deep_edge.source_port_id, shallow_edge.source_port_id
+    assert deep_port is not None and shallow_port is not None
+    assert deep_edge.source_id == enc_id and shallow_edge.source_id == enc_id
+    assert port_name[deep_port] == "out"
+    assert port_name[shallow_port] == "out1"
+    # The sub-slice rides the edge; the deep edge has none.
+    assert shallow_edge.attrs.get("output_slice") == "shallow"
+    assert "output_slice" not in deep_edge.attrs
