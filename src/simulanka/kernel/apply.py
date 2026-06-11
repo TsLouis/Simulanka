@@ -48,6 +48,7 @@ class _Pending:
     edges: list[Edge]
     ports: list[Port]
     updated_nodes: list[Node]
+    updated_edges: list[Edge]
     canonical_ops: list[dict[str, Any]]
     deleted_edges: list[Edge]
 
@@ -90,8 +91,8 @@ def apply_patch(layout: ProjectLayout, intent: PatchIntent) -> Receipt:
 
     now = datetime.now(timezone.utc)
     pending = _Pending(
-        nodes=[], edges=[], ports=[], updated_nodes=[], canonical_ops=[],
-        deleted_edges=[],
+        nodes=[], edges=[], ports=[], updated_nodes=[], updated_edges=[],
+        canonical_ops=[], deleted_edges=[],
     )
     errors: list[str] = []
 
@@ -109,6 +110,8 @@ def apply_patch(layout: ProjectLayout, intent: PatchIntent) -> Receipt:
         save_edge(layout, edge)
     for node in pending.updated_nodes:
         save_node(layout, node)
+    for edge in pending.updated_edges:
+        save_edge(layout, edge)
     for edge in pending.deleted_edges:
         delete_edge(layout, edge.id)
 
@@ -140,6 +143,7 @@ def apply_patch(layout: ProjectLayout, intent: PatchIntent) -> Receipt:
         edges=[e.id for e in pending.edges],
         ports=[p.id for p in pending.ports],
         updated_nodes=[n.id for n in pending.updated_nodes],
+        updated_edges=[e.id for e in pending.updated_edges],
         deleted_edges=[e.id for e in pending.deleted_edges],
     )
 
@@ -358,6 +362,8 @@ def _handle_update_attrs(
     *,
     prefix: str,
 ) -> list[str]:
+    if op.target.startswith("edg_"):
+        return _handle_update_edge_attrs(layout, op, pending, prefix=prefix)
     try:
         existing = resolve_node(layout, op.target)
     except ValueError as exc:
@@ -382,6 +388,46 @@ def _handle_update_attrs(
             "kind": "update_attrs",
             "entity_id": existing.id,
             "changed_keys": sorted(op.attrs.keys()),
+        }
+    )
+    return []
+
+
+def _handle_update_edge_attrs(
+    layout: ProjectLayout,
+    op: UpdateAttrsOp,
+    pending: _Pending,
+    *,
+    prefix: str,
+) -> list[str]:
+    from simulanka.storage.entity_store import edge_exists
+
+    if not edge_exists(layout, op.target):
+        return [f"{prefix}: edge `{op.target}` not found."]
+    if any(e.id == op.target for e in pending.deleted_edges):
+        return [f"{prefix}: edge `{op.target}` is deleted earlier in this patch."]
+
+    existing = load_edge(layout, op.target)
+    for staged in pending.updated_edges:
+        if staged.id == existing.id:
+            existing = staged
+            break
+
+    merged = {**existing.attrs, **op.attrs}
+    updated = existing.model_copy(update={"attrs": merged})
+
+    pending.updated_edges = [e for e in pending.updated_edges if e.id != existing.id]
+    pending.updated_edges.append(updated)
+
+    # source_id/target_id ride along so event consumers (SSE _affected) can
+    # refresh the endpoint nodes without re-loading the edge.
+    pending.canonical_ops.append(
+        {
+            "kind": "update_attrs",
+            "entity_id": existing.id,
+            "changed_keys": sorted(op.attrs.keys()),
+            "source_id": existing.source_id,
+            "target_id": existing.target_id,
         }
     )
     return []

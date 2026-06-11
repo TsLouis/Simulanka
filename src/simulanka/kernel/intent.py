@@ -39,17 +39,21 @@ class CreateEdgeOp(BaseModel):
 
 
 class UpdateAttrsOp(BaseModel):
-    """Shallow-merge ``attrs`` into an existing node's ``attrs`` dict.
+    """Shallow-merge ``attrs`` into an existing node's or edge's ``attrs`` dict.
 
     Keys present in ``attrs`` overwrite existing keys; keys not mentioned are
     preserved. There is no delete semantics in this op — to remove a key, use
     a future ``delete_attr`` op (not in Alpha).
+
+    Edges are addressed by id only (``edg_…``) — they have no path selectors.
+    Added for the §13.6 verify-discuss loop (verdict/note write-back onto
+    ``data_flow`` edges); the kernel keeps it general for any edge attrs.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     kind: Literal["update_attrs"] = "update_attrs"
-    target: str           # node selector
+    target: str           # node selector, or edge id ("edg_…")
     attrs: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -113,4 +117,5 @@ class Receipt(BaseModel):
     edges: list[str] = Field(default_factory=list)
     ports: list[str] = Field(default_factory=list)
     updated_nodes: list[str] = Field(default_factory=list)
+    updated_edges: list[str] = Field(default_factory=list)
     deleted_edges: list[str] = Field(default_factory=list)

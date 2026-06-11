@@ -295,7 +295,13 @@ def _affected(event: Event) -> dict[str, list[str]]:
         eid = op.get("entity_id")
         if not isinstance(eid, str):
             continue
-        if kind == "create_node" or kind == "update_attrs" or kind == "rename_node":
+        if kind == "update_attrs" and eid.startswith("edg_"):
+            edges[eid] = None
+            for k in ("source_id", "target_id"):
+                v = op.get(k)
+                if isinstance(v, str):
+                    nodes[v] = None
+        elif kind == "create_node" or kind == "update_attrs" or kind == "rename_node":
             nodes[eid] = None
         elif kind == "create_edge" or kind == "delete_edge":
             edges[eid] = None
