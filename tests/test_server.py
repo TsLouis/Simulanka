@@ -441,3 +441,161 @@ def test_cors_allows_dev_origin(tmp_path: Path) -> None:
     )
     assert resp.status_code == 200
     assert resp.headers.get("access-control-allow-origin") == "http://localhost:5173"
+
+
+# --- §13.6 verify-discuss endpoints ----------------------------------------
+
+
+def _seed_ghost_edge(layout: ProjectLayout) -> str:
+    """Lay a second out-port + ghost data_flow edge (dec.out → enc has no in,
+    so reuse enc_out → dec_in pair via fresh ports) and return its edge id."""
+    enc_id = next(n.id for n in iter_nodes(layout) if n.name == "enc")
+    dec_id = next(n.id for n in iter_nodes(layout) if n.name == "dec")
+    apply_patch(
+        layout,
+        PatchIntent(
+            ops=[
+                CreatePortOp(node=enc_id, name="out1", direction="out", port_type="tensor"),
+                CreatePortOp(node=dec_id, name="in1", direction="in", port_type="tensor"),
+            ],
+            actor="test",
+            base_graph_version=load_manifest(layout).graph_version,
+        ),
+    )
+    enc_out = find_port(layout, enc_id, "out1")
+    dec_in = find_port(layout, dec_id, "in1")
+    assert enc_out is not None and dec_in is not None
+    receipt = apply_patch(
+        layout,
+        PatchIntent(
+            ops=[
+                CreateEdgeOp(
+                    type="data_flow",
+                    source=enc_out.id,
+                    target=dec_in.id,
+                    attrs={
+                        "source": "agent",
+                        "status": "proposed",
+                        "verdict": "unconfirmed",
+                        "citation": "x = self.dec(self.enc(x))",
+                    },
+                ),
+            ],
+            actor="agent:propose",
+            base_graph_version=load_manifest(layout).graph_version,
+        ),
+    )
+    return receipt.edges[0]
+
+
+def test_reject_ghost_keeps_it_proposed_and_queued(tmp_path: Path) -> None:
+    layout = _seed_project(tmp_path)
+    ghost_id = _seed_ghost_edge(layout)
+    client = TestClient(create_app(layout))
+
+    resp = client.post(
+        f"/edge/{ghost_id}/verdict",
+        json={"verdict": "wrong", "note": "skip 分支不经过 dec"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    edge = load_edge(layout, ghost_id)
+    assert edge.attrs["verdict"] == "wrong"
+    assert edge.attrs["verdict_by"] == "user"
+    assert edge.attrs["verdict_note"] == "skip 分支不经过 dec"
+    assert edge.attrs["status"] == "proposed"  # NOT deleted
+    assert edge.attrs["citation"]  # agent evidence preserved
+
+    dis = client.get("/disagreements").json()["disagreements"]
+    assert [d["id"] for d in dis] == [ghost_id]
+    assert dis[0]["reasons"] == ["user_rejected_ghost"]
+
+
+def test_verdict_requires_note(tmp_path: Path) -> None:
+    layout = _seed_project(tmp_path)
+    ghost_id = _seed_ghost_edge(layout)
+    client = TestClient(create_app(layout))
+
+    for body in (
+        {"verdict": "wrong"},
+        {"verdict": "wrong", "note": "   "},
+        {"verdict": "nonsense", "note": "x"},
+    ):
+        resp = client.post(f"/edge/{ghost_id}/verdict", json=body)
+        assert resp.status_code == 422, body
+    assert load_edge(layout, ghost_id).attrs["verdict"] == "unconfirmed"
+
+
+def test_verdict_404_unknown_and_422_contains(tmp_path: Path) -> None:
+    layout = _seed_project(tmp_path)
+    contains = next(e for e in iter_edges(layout) if e.type == "contains")
+    client = TestClient(create_app(layout))
+
+    ok_body = {"verdict": "wrong", "note": "x"}
+    assert client.post("/edge/edg_nope/verdict", json=ok_body).status_code == 404
+    assert client.post(f"/edge/{contains.id}/verdict", json=ok_body).status_code == 422
+
+
+def test_accept_ghost(tmp_path: Path) -> None:
+    layout = _seed_project(tmp_path)
+    ghost_id = _seed_ghost_edge(layout)
+    client = TestClient(create_app(layout))
+
+    resp = client.post(f"/edge/{ghost_id}/accept")
+    assert resp.status_code == 200, resp.text
+    edge = load_edge(layout, ghost_id)
+    assert edge.attrs["status"] == "accepted"
+    assert edge.attrs["verdict"] == "correct"
+    assert edge.attrs["verdict_by"] == "user"
+    assert client.get("/disagreements").json()["disagreements"] == []
+
+
+def test_accept_non_ghost_rejected(tmp_path: Path) -> None:
+    layout = _seed_project(tmp_path)
+    user_edge = next(e for e in iter_edges(layout) if e.type == "data_flow")
+    client = TestClient(create_app(layout))
+    assert client.post(f"/edge/{user_edge.id}/accept").status_code == 422
+
+
+def test_disagreements_agent_flagged_and_disputed(tmp_path: Path) -> None:
+    layout = _seed_project(tmp_path)
+    user_edge = next(e for e in iter_edges(layout) if e.type == "data_flow")
+    ghost_id = _seed_ghost_edge(layout)
+
+    # Simulate the agent verify pass: human-drawn edge ruled uncertain, ghost disputed.
+    from simulanka.kernel.intent import UpdateAttrsOp
+    apply_patch(
+        layout,
+        PatchIntent(
+            ops=[
+                UpdateAttrsOp(
+                    target=user_edge.id,
+                    attrs={"source": "user", "verdict": "uncertain", "verdict_by": "agent"},
+                ),
+                UpdateAttrsOp(target=ghost_id, attrs={"verdict": "disputed"}),
+            ],
+            actor="agent:verify",
+            base_graph_version=load_manifest(layout).graph_version,
+        ),
+    )
+    client = TestClient(create_app(layout))
+    dis = {d["id"]: d["reasons"] for d in client.get("/disagreements").json()["disagreements"]}
+    assert dis[user_edge.id] == ["agent_flagged_user_edge"]
+    assert dis[ghost_id] == ["disputed"]
+
+
+def test_discuss_toggle(tmp_path: Path) -> None:
+    layout = _seed_project(tmp_path)
+    user_edge = next(e for e in iter_edges(layout) if e.type == "data_flow")
+    client = TestClient(create_app(layout))
+
+    assert client.post(f"/edge/{user_edge.id}/discuss").status_code == 200
+    dis = client.get("/disagreements").json()["disagreements"]
+    assert [d["id"] for d in dis] == [user_edge.id]
+    assert dis[0]["reasons"] == ["manual"]
+
+    assert (
+        client.post(f"/edge/{user_edge.id}/discuss", json={"discuss": False}).status_code
+        == 200
+    )
+    assert client.get("/disagreements").json()["disagreements"] == []

@@ -17,13 +17,19 @@ from fastapi.responses import StreamingResponse
 
 from simulanka.kernel.apply import apply_patch_now
 from simulanka.kernel.events import Event, iter_events
-from simulanka.kernel.intent import CreateEdgeOp, DeleteEdgeOp
+from simulanka.kernel.intent import CreateEdgeOp, DeleteEdgeOp, UpdateAttrsOp
 from simulanka.kernel.manifest import load_manifest
 from simulanka.kernel.validator import ValidationError
 from simulanka.layout.project import ProjectLayout
 from simulanka.schema.entities import Edge
 from simulanka.storage.checkpoint import ensure_repo
-from simulanka.storage.entity_store import iter_edges, iter_nodes, iter_ports
+from simulanka.storage.entity_store import (
+    edge_exists,
+    iter_edges,
+    iter_nodes,
+    iter_ports,
+    load_edge,
+)
 
 DEV_ORIGINS = (
     "http://localhost:5173",
@@ -161,7 +167,151 @@ def create_app(layout: ProjectLayout | None = None) -> FastAPI:
             "graph_version": receipt.graph_version,
         }
 
+    # --- §13.6 verify-discuss: human-side edge ops -------------------------
+    # All four are thin UpdateAttrsOp wrappers; the kernel stays the only
+    # writer. They cover the human (intent-domain) cells of the write matrix —
+    # the agent's op-block channel is the Codex harness seam, not here.
+
+    @app.post("/edge/{edge_id}/verdict")
+    def post_verdict(
+        edge_id: str,
+        body: dict[str, Any] = Body(default_factory=dict),
+    ) -> dict[str, Any]:
+        """Human verdict on a ``data_flow`` edge (§13.6 分歧提交).
+
+        Body: ``{verdict, note}``. ``verdict`` is the user-writable subset —
+        ``wrong`` (reject a ghost / own edge), ``disputed`` (insist against
+        the agent's verdict on a human-drawn edge), ``correct`` (post-
+        discussion confirmation). ``note`` is **required**: defending the
+        judgment is the learning moment (Q4), and it gives the agent a
+        concrete claim to argue with. Rejecting a ghost does NOT delete it —
+        ``status`` stays ``proposed`` so it enters the disagreement queue;
+        deletion happens only after discussion via DELETE /edge/{id}.
+        """
+        _require_data_flow(layout, edge_id)
+        verdict = body.get("verdict")
+        note = body.get("note")
+        if verdict not in ("correct", "wrong", "disputed"):
+            raise HTTPException(
+                status_code=422,
+                detail="verdict must be one of: correct, wrong, disputed",
+            )
+        if not isinstance(note, str) or not note.strip():
+            raise HTTPException(
+                status_code=422,
+                detail="note is required — defend the judgment (我认为…因为…)",
+            )
+        receipt = apply_patch_now(
+            layout,
+            ops=[UpdateAttrsOp(
+                target=edge_id,
+                attrs={
+                    "verdict": verdict,
+                    "verdict_by": "user",
+                    "verdict_note": note.strip(),
+                },
+            )],
+            actor="user",
+            note="frontend: human verdict",
+        )
+        return {"edge_id": edge_id, "graph_version": receipt.graph_version}
+
+    @app.post("/edge/{edge_id}/accept")
+    def accept_ghost(edge_id: str) -> dict[str, Any]:
+        """Accept a proposed ghost edge (§13.5.3 同意即连). Agreement needs no
+        defense, so no note. Only the human may do this (write matrix)."""
+        edge = _require_data_flow(layout, edge_id)
+        if not (
+            edge.attrs.get("source") == "agent"
+            and edge.attrs.get("status") == "proposed"
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="only a proposed ghost edge can be accepted",
+            )
+        receipt = apply_patch_now(
+            layout,
+            ops=[UpdateAttrsOp(
+                target=edge_id,
+                attrs={
+                    "status": "accepted",
+                    "verdict": "correct",
+                    "verdict_by": "user",
+                },
+            )],
+            actor="user",
+            note="frontend: accept ghost",
+        )
+        return {"edge_id": edge_id, "graph_version": receipt.graph_version}
+
+    @app.post("/edge/{edge_id}/discuss")
+    def set_discuss(
+        edge_id: str,
+        body: dict[str, Any] = Body(default_factory=dict),
+    ) -> dict[str, Any]:
+        """Pull any edge into (or out of) the discussion set by hand.
+        Body: ``{discuss: bool}``, defaults to true."""
+        _require_data_flow(layout, edge_id)
+        flag = body.get("discuss", True)
+        if not isinstance(flag, bool):
+            raise HTTPException(status_code=422, detail="discuss must be a boolean")
+        receipt = apply_patch_now(
+            layout,
+            ops=[UpdateAttrsOp(target=edge_id, attrs={"discuss": flag})],
+            actor="user",
+            note="frontend: toggle discuss",
+        )
+        return {"edge_id": edge_id, "graph_version": receipt.graph_version}
+
+    @app.get("/disagreements")
+    def get_disagreements() -> dict[str, Any]:
+        """The §13.6 disagreement set, computed from edge attrs (no extra
+        state): ① ghosts the human rejected, ② human-drawn edges the agent's
+        verify pass ruled wrong/uncertain, ③ disputed verdicts, ④ edges pulled
+        in by hand. One edge can match several buckets — ``reasons`` lists all.
+        """
+        out: list[dict[str, Any]] = []
+        for e in iter_edges(layout):
+            if e.type != "data_flow":
+                continue
+            a = e.attrs
+            reasons: list[str] = []
+            if (
+                a.get("source") == "agent"
+                and a.get("status") == "proposed"
+                and a.get("verdict") == "wrong"
+                and a.get("verdict_by") == "user"
+            ):
+                reasons.append("user_rejected_ghost")
+            if (
+                a.get("source") == "user"
+                and a.get("verdict") in ("wrong", "uncertain")
+                and a.get("verdict_by") == "agent"
+            ):
+                reasons.append("agent_flagged_user_edge")
+            if a.get("verdict") == "disputed":
+                reasons.append("disputed")
+            if a.get("discuss") is True:
+                reasons.append("manual")
+            if reasons:
+                out.append({**_edge_dict(e), "reasons": reasons})
+        return {"disagreements": out}
+
     return app
+
+
+def _require_data_flow(layout: ProjectLayout, edge_id: str) -> Edge:
+    """404 on unknown edge, 422 on a non-``data_flow`` edge (verdicts on
+    structural edges are meaningless)."""
+    if not edge_exists(layout, edge_id):
+        raise HTTPException(status_code=404, detail=f"edge {edge_id!r} not found")
+    edge = load_edge(layout, edge_id)
+    if edge.type != "data_flow":
+        raise HTTPException(
+            status_code=422,
+            detail="verify-discuss ops apply to data_flow edges only",
+        )
+    return edge
 
 
 def _build_payload(
