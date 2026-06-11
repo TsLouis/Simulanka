@@ -207,3 +207,32 @@
 **今日实现边界（诚实切分）**：
 - **今天闭环**（不需命门 C、不烧 opencode）：① 本节设计；② 前端——同一端口引出的多条边按 `output_slice` 上标签、视觉可分（用「前端对着 fixture 写」那套）；③ propose 的端点映射逻辑 + `output_slice` 写入，用注入式 runner + 合成图**单测**。三绿。
 - **随命门 C（Codex）**：真 opencode 是否真吐切片、真导入 SAM2 端口是否带 propose 映射所依赖的 label——live 验证挂在命门 C 上，今天不假装关掉。
+
+#### 13.6 核对-讨论交互 —— 设计定稿（2026-06-11 grill，Q1–Q4 + 工程裁定）
+
+> 浓缩定稿在 design.md §13.6；本节存推导与证据，含一处被 spike 推翻的预设。
+
+**起点（现状核查）**：propose.py 的 ghost 已直接经 `apply_patch_now` 落库、前端灰虚线已通；§13.5.3 锁了流程骨架（选 port 浮 ghost / 同意即连 / 不同即分歧 / 「核对」批量提交 → 讨论）；当年明确推迟的「核对-讨论交互细节、edge-attr 更新 op、/verify 批量」就是本场要裁的。kernel 现状：`UpdateAttrsOp` 只收 node selector；存储层**无任何 undo/snapshot**（纯 JSON + 追加 event log，sqlite 可重建）。
+
+**Q1 讨论形态 —— 用户裁：实时交互必要（推荐的「异步回合制」被否）**。用户明确：实时交互是必要的，harness 交互化问题交给 Codex 线解决。
+- **spike 把可行性坐实、且推翻了「实时=攻 TTY」的预设**：`opencode serve`（headless server）与 `opencode run -s <session-id> --format json`（**非交互续接同一会话**）都存在。所以实时聊天 = 共享 session id 的非交互单发序列，每一发都是 §13.5.3 已验证可靠的调用形态；TTY 死锁/权限门坑根本不在路径上。Codex 的活从「解决交互式问题」缩为「session 续聊 + JSON 解析 + prompt」。
+- 当初推荐异步回合制的理由（非交互坑、复用 propose 形状）被 spike 化解大半——记此供后人：**「opencode 非交互坑」只挡 TUI 交互，不挡 session 续聊**。
+
+**Q2 讨论单位 —— 一批一场会话（用户采纳推荐）**。整批分歧进同一会话：一个架构性误解（如漏看某分支）常同时解释 3–5 条分歧，agent 须有全局上下文才能发现共同根因，也省每条边重复导航源码的成本。结论逐条落到各自边上，聊完才算批完。否决「一边一线程」：跨边共同根因发现不了 + N 次独立导航成本。
+
+**Q3 写权 —— 用户提出「真实 vs 意图」两域，吸收为写者维度（不立分支机制）**。用户：人和 agent 在「意图」上可宽松写（服务人机对齐），「真实情况」只反映当前代码；并要求 git 自动化撤回。
+- **机制修正（lean 纪律）**：两域不是新分支/新实体——现有 attrs 已表达它，缺的只是把**写权矩阵**讲明白：
+  - 真实域 = importer 结构+端口、trace verdict、shape_check、port confidence → **只有机器写**，人/agent 不能伪造（不能手标 trace-correct）。
+  - 意图域 = ghost、agent verdict/note、人画的边、人的裁决、讨论 → 人+agent 写，内部分层：agent 实时改**自己的层**（自己的 verdict/note、撤回自己未被接受的 ghost、新提 ghost）；实边连/拆/接受、推翻人的判断**只能人点**。
+  - 关键推论：**人画的实边也在意图域**——人的当前理解、非被验证事实，这正是它需要被核对的原因。
+- **agent 不拿写工具**：会话回复嵌结构化 op 块 → 服务端解析 → 按矩阵过滤 → `apply_patch`。kernel 唯一写者不破；op 块协议 = Claude/Codex 接缝契约。
+- **git 自动化（必要兜底，非锦上添花）**：agent 拿到实时写权 + 存储层零 undo ⇒ 必须有恢复点。`.simulanka/` 内嵌**独立 git 仓**（嵌在 baseline 代码仓里会污染用户 code history，故隔离；indexes/logs/cache 入 .gitignore），每次 kernel commit 自动 git commit、讨论每轮起点打 tag，恢复 = checkout + index rebuild。
+
+**Q4 生成效应 —— 分歧必填短理由（用户采纳推荐）**。拒 ghost / 坚持己见提交前必须写一句「我认为…因为…」：① 「为自己的判断辩护」即本项目的学习时刻（与 §13.5.3 disputed-必写-note 铁律对称，人不豁免）；② 给 agent 可反驳的靶子，讨论从「针对你的理由」开场而非从零猜。结论蒸馏回该边 `verdict_note`；全文 transcript 留 opencode session（可 export），不进图——「学习笔记」类功能是 scope creep，不做。
+
+**工程裁定（Claude 定，随实现可调）**：
+- **分歧集**（机械推导自 §13.5.3 verdict 状态机）：① 人拒的 ghost；② 核对 pass 被裁 wrong/uncertain 的人画边；③ disputed。人可手动拉任意边进讨论。
+- **拒 ghost ≠ 删边**：`verdict=wrong, verdict_by=user（枚举新增）, note=理由`，status 仍 proposed 进队列；讨论后人确认拒绝才 DELETE。
+- **kernel 增量**：`UpdateAttrsOp.target` 扩到 edge selector（= §13.5.3 推迟的那个 op，到点）；`verdict_by` 增 `user`。均按分工规矩①在本场设计讨论过审。
+- **流程**：点「核对」一键两相 —— agent 核对 pass（裁 unconfirmed，写 verdict）→ 分歧集非空则自动开讨论会话。
+- **切缝**：Claude 先行到「分歧集就绪 + 面板」（kernel op、server 端点、port 浮 ghost、拒绝理由表单、面板、git checkpoint），不被 Codex harness 阻塞。

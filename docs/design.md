@@ -464,6 +464,9 @@ Simulanka 的数据层已经统一在 node / edge / port 三个原语上。model
 - 深色画布、grid 背景。
 - 缩放时节点细节渐进显示（远缩看 type，近缩看 attrs/ports）。
 
+> **最终美术方向（2026-06-11 用户定）**：交互范式不变（仍 ComfyUI/UE5 节点图 UX），但视觉皮肤最终走**原神
+> 童话风**（呼应 Simulanka 之名）；现阶段不做，功能/稳定性优先，皮肤轮与 §13.6 面板开发同捆时再设计。
+
 ### 12.6 技术栈
 
 | 层 | 选型 | 理由 |
@@ -520,8 +523,9 @@ LiteGraph 的 quirks（JS 非 TS、API 偏旧）可控。需要的扩展点：�
   `label`（参数名/kwarg/dict key）；`shape`（单张量 verified 槽才记）。结构端口名 `in`/`out` 永远在，多 IO 追加
   `in1`/`out1`…。**唯一真风险 = 端口标错让用户自信学错，故宁可标 inferred 不假装 verified。**
 - **`edge.attrs`**：`source` ∈ {`trace`, `user`, `agent`}（前端三色区分）；`status`（`proposed` = ghost 灰虚线）；
-  `verdict` ∈ {`unconfirmed`, `correct`, `wrong`, `uncertain`, `disputed`} + `verdict_by` ∈ {`trace`, `agent`} +
-  `verdict_note`；`citation`（agent 提议必带的源码出处，无则 skip）；`evidence_locality` ∈ {`in_method`,
+  `verdict` ∈ {`unconfirmed`, `correct`, `wrong`, `uncertain`, `disputed`} + `verdict_by` ∈ {`trace`, `agent`, `user`}
+  （`user` 2026-06-11 加：人拒 ghost = `verdict=wrong, verdict_by=user, verdict_note=必填理由`，`status` 仍 `proposed`
+  进分歧队列，不直接删边——讨论后人确认拒绝才删，见 §13.6）+ `verdict_note`；`citation`（agent 提议必带的源码出处，无则 skip）；`evidence_locality` ∈ {`in_method`,
   `cross_method`, `cross_state`}（出处局部性，核对按它加权——跨态的 cited 边更可疑）；`output_slice`（§13.3 多输出，
   一个输出的哪一片走这条边，如 `[-1]`/`[:-1]`）；`shape_check`（连线当下本地算，`match`/`mismatch`/`unknown`，只提示不硬拦）。
 - **两条铁律**：① **trace 不对称——只确认绝不否定**（trace 只看 tensor 谱系，对状态/标量/控制流全盲；假 `wrong` =
@@ -560,10 +564,41 @@ LiteGraph 的 quirks（JS 非 TS、API 偏旧）可控。需要的扩展点：�
 > wire 字段上反复打架；agent 线边界天然窄而稳。三条规矩：① 契约冻结点 = §13.2 的 edge/port attrs，Codex 需要新增
 > attrs 字段或动 schema/kernel 须先过设计讨论；② `docs/design.md` 单写者仍是 Claude；③ 交叉审保留。
 
-- **核对-讨论交互**（Claude）：选中 port 浮出该处 ghost 建议、同意即连/分歧批量提交、agent 与人讨论解决（学习发生在此）。
+- **核对-讨论交互**（Claude）：设计已定稿（2026-06-11 grill，见 §13.6），待实现。
 - **命门 C**（Codex）：importer→图→propose **live 串联**（真 SAM2，用导入图的端口词表而非手工提供）。
   本质是"propose 改用导入图的端口词表"，只*读*图状态、走现有 API。
 - **agent 工程**（Codex）：prompt/导航策略；opencode harness 坑（非交互卡权限门死锁、`run` 须 `--print-logs` 否则挂起、
   导航策略 run 间随机）；`evidence_locality` 由 propose 推结构跨度 + agent 显式标跨态。见 [[project_deferred_agent_work]]。
 - **前端边界投影删除缺口**（Claude；§12.4 × §13.3 连/拆边）：在下钻视图里删 boundary 桩子上的边不落库（桩子没接删除逻辑），
   会"骗人"。待修：或标桩子连线不可拖断（只读），或映射到真 edge id 发 DELETE。
+
+### 13.6 核对-讨论交互（2026-06-11 grill 定稿，待实现）
+
+> 完整推导归档在 [`docs/archive/s13-human-drawn-edges.md`](archive/s13-human-drawn-edges.md) §13.6。
+
+- **形态 = 前端实时聊天面板；底层 = opencode session 续聊**。spike 验证：`opencode run -s <id> --format json`
+  可非交互续接同一会话——多轮实时 ≠ 攻 TTY 死锁，每一发都是已验证可靠的非交互单发，多轮 = 共享 session id 的
+  单发序列。harness 归 Codex（量级从「解决交互式问题」缩为「session 续聊 + JSON 解析」）。
+- **单位 = 一批一场会话**。点「核对」→ agent 先跑核对 pass（裁 `unconfirmed`）→ 全部分歧进同一会话；理由：一个
+  架构性误解常同时解释多条分歧，agent 要有全局上下文。结论逐条落到各自边上，聊完才算批完。
+- **分歧集**：① 人拒的 ghost（必填理由，见 §13.2 `verdict_by=user`）；② 核对中被 agent 裁 `wrong`/`uncertain`
+  的人画边；③ `disputed`（agent vs trace）。人可手动把任意边拉进讨论。
+- **真实/意图两域 + 写权矩阵**（不立分支/新实体——它是现有 attrs 的*写者维度*）：
+  - **真实域**（只反映当前代码）：importer 结构+端口、trace verdict、`shape_check`、port `confidence` ——
+    只有机器写；人和 agent 都不能伪造。
+  - **意图域**（人机对齐工作区）：ghost、agent verdict/note、人画的边、人的裁决、讨论 —— 人+agent 写，内部分层：
+    **agent 讨论中可实时改自己的层**（更新自己的 verdict/note、撤回自己未被接受的 ghost、新提 ghost，画布经 SSE
+    实时变）；**实边连/拆/接受、推翻人的判断，永远只能人点**（「人最终裁」铁律）。人画的实边也在意图域——它是人的
+    当前理解而非被验证的事实，这正是它需要被核对的原因。
+  - agent 在会话里**不拿写工具**：回复中嵌结构化 op 块，服务端解析、按写权矩阵过滤后经 `apply_patch` 落库——
+    kernel 仍是唯一写者。op 块协议 = Claude/Codex 接缝契约，双方共定。
+- **生成效应落点**：人提交分歧**必填短理由**（进 `verdict_note`，`verdict_by=user`）——「为自己的判断辩护」即
+  学习时刻，也给 agent 可反驳的靶子；讨论开场即针对理由，不从零猜。结论蒸馏回该边 `verdict_note`；全文
+  transcript 留在 opencode session（可 `opencode export`），不进图。
+- **撤回兜底（agent 拿实时写权的前置）**：存储层现无任何 undo —— `.simulanka/` 内嵌**独立 git 仓**（与 baseline
+  代码仓历史隔离；`indexes/` `logs/` `cache/` 入 .gitignore），每次 kernel commit 自动 git commit，讨论每轮起点
+  打 tag；恢复 = git checkout + `graph index rebuild`。
+- **kernel 增量（本场拍板的契约变更）**：① `UpdateAttrsOp.target` 扩到 edge selector——即 §13.5.3 当年推迟的
+  「edge-attr 更新 op，异议回写时再加」，到点了；② `verdict_by` 增 `user`（§13.2 已更新）。
+- **实现切缝**：Claude = kernel op 扩展 + server 端点 + 前端（选中 port 浮 ghost、拒绝必填理由、讨论面板、逐条
+  落边）+ git checkpoint；Codex = 会话 harness。Claude 侧可先行到「分歧集就绪 + 面板」，不被 harness 阻塞。
