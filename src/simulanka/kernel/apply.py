@@ -28,6 +28,7 @@ from simulanka.kernel.validator import (
 )
 from simulanka.layout.project import ProjectLayout
 from simulanka.schema.entities import Edge, Node, Port
+from simulanka.storage.checkpoint import maybe_checkpoint
 from simulanka.storage.entity_store import (
     delete_edge,
     list_ports_of,
@@ -135,6 +136,13 @@ def apply_patch(layout: ProjectLayout, intent: PatchIntent) -> Receipt:
         }
     )
     write_manifest(layout, manifest)
+
+    # §13.6 撤回兜底: snapshot the whole dot-dir into the embedded git repo.
+    # No-op until storage.checkpoint.ensure_repo has run (server startup).
+    message = f"v{new_version} {intent.actor}"
+    if intent.note:
+        message = f"{message}: {intent.note}"
+    maybe_checkpoint(layout, message)
 
     return Receipt(
         graph_version=new_version,

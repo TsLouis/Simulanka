@@ -597,7 +597,8 @@ LiteGraph 的 quirks（JS 非 TS、API 偏旧）可控。需要的扩展点：�
   transcript 留在 opencode session（可 `opencode export`），不进图。
 - **撤回兜底（agent 拿实时写权的前置）**：存储层现无任何 undo —— `.simulanka/` 内嵌**独立 git 仓**（与 baseline
   代码仓历史隔离；`indexes/` `logs/` `cache/` 入 .gitignore），每次 kernel commit 自动 git commit，讨论每轮起点
-  打 tag；恢复 = git checkout + `graph index rebuild`。
+  打 tag；恢复 = git checkout + `graph index rebuild`。实现裁定：惰性激活——`.git` 不存在时 apply_patch 零开销跳过，
+  API server 启动时 `ensure_repo` 点亮（agent 写权只经 server 进来，兜底必先于风险存在；kernel 测试不付 git 税）。
 - **kernel 增量（本场拍板的契约变更）**：① `UpdateAttrsOp.target` 扩到 edge selector——即 §13.5.3 当年推迟的
   「edge-attr 更新 op，异议回写时再加」，到点了；② `verdict_by` 增 `user`（§13.2 已更新）。
 - **实现切缝**：Claude = kernel op 扩展 + server 端点 + 前端（选中 port 浮 ghost、拒绝必填理由、讨论面板、逐条

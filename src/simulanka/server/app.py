@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
+import subprocess
 import tempfile
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -20,6 +22,7 @@ from simulanka.kernel.manifest import load_manifest
 from simulanka.kernel.validator import ValidationError
 from simulanka.layout.project import ProjectLayout
 from simulanka.schema.entities import Edge
+from simulanka.storage.checkpoint import ensure_repo
 from simulanka.storage.entity_store import iter_edges, iter_nodes, iter_ports
 
 DEV_ORIGINS = (
@@ -34,6 +37,17 @@ SSE_POLL_INTERVAL = 0.25  # seconds between event_log polls
 def create_app(layout: ProjectLayout | None = None) -> FastAPI:
     if layout is None:
         layout = ProjectLayout.require()
+
+    # §13.6: agent write power only enters through this server, so activating
+    # the embedded checkpoint repo here guarantees every kernel commit from
+    # now on has a git recovery point. Best-effort — a machine without git
+    # can still browse the graph.
+    try:
+        ensure_repo(layout)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        logging.getLogger(__name__).warning(
+            "checkpoint repo init failed (no recovery net): %s", exc
+        )
 
     app = FastAPI(title="Simulanka Graph API")
     app.add_middleware(
