@@ -555,9 +555,15 @@ LiteGraph 的 quirks（JS 非 TS、API 偏旧）可控。需要的扩展点：�
 
 ### 13.5 待办 / 推迟
 
-- **核对-讨论交互**：选中 port 浮出该处 ghost 建议、同意即连/分歧批量提交、agent 与人讨论解决（学习发生在此）。
-- **命门 C**：importer→图→propose **live 串联**（真 SAM2，用导入图的端口词表而非手工提供）。归 Codex 后端线。
-- **agent 工程**：prompt/导航策略；opencode harness 坑（非交互卡权限门死锁、`run` 须 `--print-logs` 否则挂起、
+> **分工（2026-06-11 重定，替代旧的前后端切分）**：**Codex = agent 工程线**（`propose.py` + agent prompt/harness），
+> **Claude = 其余全部**（kernel/schema/importer/frontend/server）。理由：§13.5 的活几乎都纵切前后端，按层切会在
+> wire 字段上反复打架；agent 线边界天然窄而稳。三条规矩：① 契约冻结点 = §13.2 的 edge/port attrs，Codex 需要新增
+> attrs 字段或动 schema/kernel 须先过设计讨论；② `docs/design.md` 单写者仍是 Claude；③ 交叉审保留。
+
+- **核对-讨论交互**（Claude）：选中 port 浮出该处 ghost 建议、同意即连/分歧批量提交、agent 与人讨论解决（学习发生在此）。
+- **命门 C**（Codex）：importer→图→propose **live 串联**（真 SAM2，用导入图的端口词表而非手工提供）。
+  本质是"propose 改用导入图的端口词表"，只*读*图状态、走现有 API。
+- **agent 工程**（Codex）：prompt/导航策略；opencode harness 坑（非交互卡权限门死锁、`run` 须 `--print-logs` 否则挂起、
   导航策略 run 间随机）；`evidence_locality` 由 propose 推结构跨度 + agent 显式标跨态。见 [[project_deferred_agent_work]]。
-- **前端边界投影删除缺口**（§12.4 × §13.3 连/拆边）：在下钻视图里删 boundary 桩子上的边不落库（桩子没接删除逻辑），
+- **前端边界投影删除缺口**（Claude；§12.4 × §13.3 连/拆边）：在下钻视图里删 boundary 桩子上的边不落库（桩子没接删除逻辑），
   会"骗人"。待修：或标桩子连线不可拖断（只读），或映射到真 edge id 发 DELETE。
