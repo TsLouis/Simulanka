@@ -603,3 +603,5 @@ LiteGraph 的 quirks（JS 非 TS、API 偏旧）可控。需要的扩展点：�
   「edge-attr 更新 op，异议回写时再加」，到点了；② `verdict_by` 增 `user`（§13.2 已更新）。
 - **实现切缝**：Claude = kernel op 扩展 + server 端点 + 前端（选中 port 浮 ghost、拒绝必填理由、讨论面板、逐条
   落边）+ git checkpoint；Codex = 会话 harness。Claude 侧可先行到「分歧集就绪 + 面板」，不被 harness 阻塞。
+  实现裁定：「浮 ghost」落在**选中节点**粒度（面板内逐条带端口名）——LiteGraph 里端口圆点的点击命中框就是拉线
+  手势的起点，抢同一命中框做选中会打架；被拒 ghost 画布上染红色虚线与未核 ghost 区分。

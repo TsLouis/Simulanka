@@ -39,6 +39,12 @@ export interface ExternalNodeDTO {
   name: string
 }
 
+// §13.6: one disagreement-set entry — an edge plus which buckets it hit
+// (user_rejected_ghost / agent_flagged_user_edge / disputed / manual).
+export interface DisagreementDTO extends EdgeDTO {
+  reasons: string[]
+}
+
 export interface AncestorDTO {
   id: string
   type: string

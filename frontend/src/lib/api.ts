@@ -1,4 +1,4 @@
-import type { GraphPayload, ShapeCheck } from './types'
+import type { DisagreementDTO, GraphPayload, ShapeCheck } from './types'
 
 export async function fetchGraph(
   root: string | null,
@@ -36,6 +36,54 @@ export async function deleteEdge(edgeId: string): Promise<void> {
   if (!resp.ok) {
     throw new Error(`DELETE /edge failed: ${resp.status} ${await resp.text()}`)
   }
+}
+
+// --- §13.6 verify-discuss -------------------------------------------------
+
+// Accept a proposed ghost edge (同意即连). Only valid on a ghost; the server
+// 422s anything else.
+export async function acceptGhost(edgeId: string): Promise<void> {
+  const resp = await fetch(`/edge/${encodeURIComponent(edgeId)}/accept`, { method: 'POST' })
+  if (!resp.ok) {
+    throw new Error(`POST /edge/accept failed: ${resp.status} ${await resp.text()}`)
+  }
+}
+
+// Human verdict write-back. `note` is server-enforced non-empty: defending the
+// judgment is the §13.6 learning moment.
+export async function postVerdict(
+  edgeId: string,
+  verdict: 'correct' | 'wrong' | 'disputed',
+  note: string,
+): Promise<void> {
+  const resp = await fetch(`/edge/${encodeURIComponent(edgeId)}/verdict`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ verdict, note }),
+  })
+  if (!resp.ok) {
+    throw new Error(`POST /edge/verdict failed: ${resp.status} ${await resp.text()}`)
+  }
+}
+
+// Pull an edge into (true) or out of (false) the discussion set by hand.
+export async function setDiscuss(edgeId: string, discuss: boolean): Promise<void> {
+  const resp = await fetch(`/edge/${encodeURIComponent(edgeId)}/discuss`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ discuss }),
+  })
+  if (!resp.ok) {
+    throw new Error(`POST /edge/discuss failed: ${resp.status} ${await resp.text()}`)
+  }
+}
+
+export async function fetchDisagreements(): Promise<DisagreementDTO[]> {
+  const resp = await fetch('/disagreements')
+  if (!resp.ok) {
+    throw new Error(`GET /disagreements failed: ${resp.status} ${await resp.text()}`)
+  }
+  return (await resp.json()).disagreements as DisagreementDTO[]
 }
 
 // Per-view-root maps of node id → [x, y]. "top" is the top-level view key.

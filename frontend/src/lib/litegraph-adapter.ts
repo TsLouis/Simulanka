@@ -46,6 +46,9 @@ const EDGE_COLORS: Record<string, string> = {
 // gray dashed line — visibly a draft, distinct from the solid purple of a
 // confirmed agent edge. Provenance colour is overridden by this until verified.
 const GHOST_COLOR = '#8a8a8a'
+// §13.6: a ghost the human rejected stays proposed (it queues for discussion,
+// deletion only after that) but must read as contested, not merely unconfirmed.
+const REJECTED_GHOST_COLOR = '#d16a5a'
 
 const TYPE_PREFIX = 'simulanka/'
 const BOUNDARY_PREFIX = 'simulanka-boundary/'
@@ -241,7 +244,10 @@ function decorateLink(link: LiteLink, e: EdgeDTO): void {
   const src = typeof e.attrs.source === 'string' ? e.attrs.source : null
   if (e.attrs.status === 'proposed') {
     link.simulanka_ghost = true
-    link.color = GHOST_COLOR
+    link.color =
+      e.attrs.verdict === 'wrong' && e.attrs.verdict_by === 'user'
+        ? REJECTED_GHOST_COLOR
+        : GHOST_COLOR
   } else if (src && EDGE_COLORS[src]) {
     link.color = EDGE_COLORS[src]
   }

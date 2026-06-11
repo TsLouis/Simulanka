@@ -3,17 +3,22 @@
   import { LGraphCanvas, type LGraphNode } from 'litegraph.js'
   import 'litegraph.js/css/litegraph.css'
   import {
+    acceptGhost,
     createEdge,
     deleteEdge,
+    fetchDisagreements,
     fetchGraph,
     fetchPositions,
+    postVerdict,
     savePositions,
+    setDiscuss,
     type Positions,
   } from './lib/api'
   import { subscribeEvents, type EventSubscription } from './lib/events'
   import { buildLiteGraph } from './lib/litegraph-adapter'
   import NodeInspector from './lib/NodeInspector.svelte'
-  import type { NodeDTO, PortDTO } from './lib/types'
+  import VerifyPanel from './lib/VerifyPanel.svelte'
+  import type { DisagreementDTO, EdgeDTO, NodeDTO, PortDTO } from './lib/types'
 
   let canvasEl: HTMLCanvasElement
   let depth = 1
@@ -35,6 +40,13 @@
   let selectedId: string | null = null
   let selectedNode: NodeDTO | null = null
   let portsById: Map<string, PortDTO> = new Map()
+
+  // §13.6 verify-discuss panel state. currentEdges/namesById mirror the last
+  // payload so the panel can render ghosts without re-fetching.
+  let verifyOpen = false
+  let disagreements: DisagreementDTO[] = []
+  let currentEdges: EdgeDTO[] = []
+  let namesById: Map<string, string> = new Map()
 
   // Set of node ids currently rendered; used to decide whether an SSE commit
   // is relevant to the active view.
@@ -118,9 +130,40 @@
       if (!selectedNode) selectedId = null
 
       currentNodeIds = new Set(payload.nodes.map(n => n.id))
+
+      // Verify-panel inputs. Boundary edges included: a cross-boundary ghost
+      // is still reviewable from inside the drill-down view.
+      currentEdges = [...payload.edges, ...payload.boundary_edges]
+      namesById = new Map(
+        [...payload.nodes, ...payload.external_nodes].map(n => [n.id, n.name]),
+      )
+      try {
+        disagreements = await fetchDisagreements()
+      } catch (err) {
+        console.warn('fetchDisagreements failed', err)
+      }
     } catch (err) {
       status = `error: ${(err as Error).message}`
     }
+  }
+
+  // Panel actions are fire-and-forget: the kernel commit comes back over SSE
+  // and reloads the view (the edge-update event carries the endpoint node ids,
+  // so touchesView matches). Failures surface in the status bar.
+  function panelAccept(edgeId: string) {
+    void acceptGhost(edgeId).catch(err => {
+      status = `accept failed: ${(err as Error).message}`
+    })
+  }
+  function panelReject(edgeId: string, note: string) {
+    void postVerdict(edgeId, 'wrong', note).catch(err => {
+      status = `reject failed: ${(err as Error).message}`
+    })
+  }
+  function panelDiscuss(edgeId: string, discuss: boolean) {
+    void setDiscuss(edgeId, discuss).catch(err => {
+      status = `discuss toggle failed: ${(err as Error).message}`
+    })
   }
 
   // §13.5.3: render ghost links (agent proposals, status="proposed") dashed.
@@ -340,6 +383,17 @@
   // When the inspector opens/closes the canvas width changes — give the DOM a
   // tick to reflow, then resize the canvas backing buffer to match.
   $: if (selectedNode !== undefined) void tick().then(resizeCanvas)
+  $: if (verifyOpen !== undefined) void tick().then(resizeCanvas)
+
+  // Header badge: work waiting in the verify loop (pending ghosts + the
+  // disagreement set). Same pending-ghost filter as the panel.
+  $: pendingCount =
+    currentEdges.filter(
+      e =>
+        e.attrs.status === 'proposed' &&
+        e.attrs.source === 'agent' &&
+        !(e.attrs.verdict === 'wrong' && e.attrs.verdict_by === 'user'),
+    ).length + disagreements.length
 </script>
 
 <header>
@@ -362,6 +416,10 @@
   </nav>
   <label>depth <input type="number" min="0" max="5" bind:value={depth} on:change={load} /></label>
   <button on:click={load}>Reload</button>
+  <button class:panel-on={verifyOpen} on:click={() => (verifyOpen = !verifyOpen)}>
+    核对
+    {#if pendingCount > 0}<span class="badge">{pendingCount}</span>{/if}
+  </button>
   <span class="status">
     <span class="live" class:on={liveOk} title={liveOk ? `live · v${liveVersion}` : 'disconnected'}></span>
     {status} · {nodeCount}n / {edgeCount}e
@@ -372,6 +430,18 @@
 <main class:with-inspector={selectedNode !== null}>
   <canvas bind:this={canvasEl}></canvas>
   <NodeInspector node={selectedNode} {portsById} />
+  {#if verifyOpen}
+    <VerifyPanel
+      edges={currentEdges}
+      {disagreements}
+      {namesById}
+      {portsById}
+      {selectedId}
+      onAccept={panelAccept}
+      onReject={panelReject}
+      onDiscuss={panelDiscuss}
+    />
+  {/if}
 </main>
 
 <style>
@@ -411,6 +481,19 @@
   }
   header button:hover {
     background: #444;
+  }
+  header button.panel-on {
+    background: #2c3e50;
+    border-color: #5a7fd1;
+  }
+  .badge {
+    display: inline-block;
+    margin-left: 5px;
+    background: #d16a5a;
+    color: #fff;
+    border-radius: 8px;
+    padding: 0 6px;
+    font-size: 11px;
   }
   .crumbs {
     display: flex;
