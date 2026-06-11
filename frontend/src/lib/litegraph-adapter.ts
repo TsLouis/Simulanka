@@ -124,7 +124,16 @@ export function buildLiteGraph(
       const dstPortId = (target as unknown as { simulanka_in_ports?: string[] })
         .simulanka_in_ports?.[slot]
       const create = callbacks.onCreateEdge
-      if (!srcPortId || !dstPortId || !create) return
+      if (!srcPortId || !dstPortId || !create) {
+        // Unresolvable endpoint — e.g. one end is a boundary-stub slot, which
+        // carries no simulanka ports. Undo the canvas link instead of leaving
+        // an unpersisted line that lies about graph state. Deferred: LiteGraph
+        // is still inside connect() when this handler fires.
+        queueMicrotask(() => {
+          (target as unknown as { disconnectInput: (s: number) => void }).disconnectInput(slot)
+        })
+        return
+      }
       const sc = computeShapeCheck(portsById.get(srcPortId), portsById.get(dstPortId))
       void create(srcPortId, dstPortId, sc).then(keep => {
         if (!keep) {
@@ -198,21 +207,7 @@ export function buildLiteGraph(
   // not drawn (see §12.3).
   for (const e of payload.edges) {
     const link = connectViaPorts(e, byNode, inSlot, outSlot)
-    if (link) {
-      link.simulanka_edge_id = e.id
-      const src = typeof e.attrs.source === 'string' ? e.attrs.source : null
-      if (e.attrs.status === 'proposed') {
-        link.simulanka_ghost = true
-        link.color = GHOST_COLOR
-      } else if (src && EDGE_COLORS[src]) {
-        link.color = EDGE_COLORS[src]
-      }
-      // §13.5.6: carry the output-slice onto the link so two edges leaving the
-      // same port (e.g. image_encoder `[-1]` vs `[:-1]`) render distinguishably.
-      if (typeof e.attrs.output_slice === 'string') {
-        link.simulanka_slice = e.attrs.output_slice
-      }
-    }
+    if (link) decorateLink(link, e)
   }
 
   // Cross-boundary edges → virtual boundary nodes (§12.4). One boundary node
@@ -228,11 +223,33 @@ export function buildLiteGraph(
       outSlot,
       portsById,
       callbacks,
+      onConnectionsChange,
     )
   }
 
   building = false
   return { graph, byNode }
+}
+
+// Stamp a LiteGraph link with the persisted edge's identity and provenance
+// styling. Applies to internal edges and boundary-stub projections alike
+// (§12.4): a stub link carries the real edge id, so disconnecting it deletes
+// the real edge instead of silently diverging from the store, and a proposed
+// cross-boundary edge still reads as a ghost inside a drill-down view.
+function decorateLink(link: LiteLink, e: EdgeDTO): void {
+  link.simulanka_edge_id = e.id
+  const src = typeof e.attrs.source === 'string' ? e.attrs.source : null
+  if (e.attrs.status === 'proposed') {
+    link.simulanka_ghost = true
+    link.color = GHOST_COLOR
+  } else if (src && EDGE_COLORS[src]) {
+    link.color = EDGE_COLORS[src]
+  }
+  // §13.5.6: carry the output-slice onto the link so two edges leaving the
+  // same port (e.g. image_encoder `[-1]` vs `[:-1]`) render distinguishably.
+  if (typeof e.attrs.output_slice === 'string') {
+    link.simulanka_slice = e.attrs.output_slice
+  }
 }
 
 // Draw-time shape verdict (§13.5.2). Only verified↔verified ports with shapes
@@ -305,6 +322,13 @@ function injectBoundary(
   outSlot: Map<string, number>,
   portsById: Map<string, PortDTO>,
   callbacks: AdapterCallbacks,
+  onConnectionsChange: (
+    this: LGraphNode,
+    type: number,
+    slot: number,
+    connected: boolean,
+    link: LiteLink | undefined,
+  ) => void,
 ): void {
   const externalById = new Map<string, ExternalNodeDTO>(
     externalNodes.map(x => [x.id, x]),
@@ -364,6 +388,11 @@ function injectBoundary(
     // Boundary nodes can't be moved or selected like real nodes — they're a
     // rendering of the subgraph frame. LiteGraph doesn't expose a clean "lock"
     // API; the visual fixed-column placement is enough for MVP.
+    // The connection handler must live here too: for outbound buckets the
+    // INPUT side of a stub link is the boundary node itself, so a disconnect
+    // there would otherwise never reach onDeleteEdge.
+    ;(lgnode as unknown as { onConnectionsChange: typeof onConnectionsChange })
+      .onConnectionsChange = onConnectionsChange
 
     // Per-edge slots so the user can see which internal port each cross-edge
     // attaches to. Slot direction is the boundary node's local view:
@@ -396,22 +425,26 @@ function injectBoundary(
     graph.add(lgnode)
 
     // Wire each boundary-node slot to the internal node's real port slot.
+    // Decorated like internal links: the stub link carries the real edge id
+    // (disconnect = persisted DELETE) and the edge's ghost/provenance styling.
     bucket.edges.forEach((e, i) => {
+      let link: LiteLink | null = null
       if (bucket.direction === 'in') {
         // boundary.out[i] → internal_dst.in[dst_port]
         const dstNode = byNode.get(e.dst)
         if (!dstNode || !e.dst_port) return
         const inp = inSlot.get(e.dst_port)
         if (inp === undefined) return
-        lgnode.connect(i, dstNode, inp)
+        link = lgnode.connect(i, dstNode, inp) as unknown as LiteLink | null
       } else {
         // internal_src.out[src_port] → boundary.in[i]
         const srcNode = byNode.get(e.src)
         if (!srcNode || !e.src_port) return
         const out = outSlot.get(e.src_port)
         if (out === undefined) return
-        srcNode.connect(out, lgnode, i)
+        link = srcNode.connect(out, lgnode, i) as unknown as LiteLink | null
       }
+      if (link) decorateLink(link, e)
     })
   }
 }
