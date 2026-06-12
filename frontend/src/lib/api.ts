@@ -86,6 +86,58 @@ export async function fetchDisagreements(): Promise<DisagreementDTO[]> {
   return (await resp.json()).disagreements as DisagreementDTO[]
 }
 
+// --- §13.6 discussion session (agent ops ride the server write-matrix gate) -
+
+export interface DiscussionOpResult {
+  op: Record<string, unknown>
+  reason?: string
+  edge_id?: string
+}
+
+export interface DiscussionTurn {
+  session_id: string
+  reply: string
+  applied: DiscussionOpResult[]
+  rejected: DiscussionOpResult[]
+  op_errors: string[]
+}
+
+export interface DiscussionState {
+  active: boolean
+  session_id?: string
+  batch?: string[]
+}
+
+export async function startDiscussion(model?: string): Promise<DiscussionTurn> {
+  const resp = await fetch('/discussion/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(model ? { model } : {}),
+  })
+  if (!resp.ok) {
+    throw new Error(`POST /discussion/start failed: ${resp.status} ${await resp.text()}`)
+  }
+  return (await resp.json()) as DiscussionTurn
+}
+
+export async function sendDiscussionMessage(text: string): Promise<DiscussionTurn> {
+  const resp = await fetch('/discussion/message', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  })
+  if (!resp.ok) {
+    throw new Error(`POST /discussion/message failed: ${resp.status} ${await resp.text()}`)
+  }
+  return (await resp.json()) as DiscussionTurn
+}
+
+export async function fetchDiscussionState(): Promise<DiscussionState> {
+  const resp = await fetch('/discussion')
+  if (!resp.ok) throw new Error(`GET /discussion failed: ${resp.status}`)
+  return (await resp.json()) as DiscussionState
+}
+
 // Per-view-root maps of node id → [x, y]. "top" is the top-level view key.
 export type Positions = Record<string, Record<string, [number, number]>>
 

@@ -7,15 +7,20 @@
     createEdge,
     deleteEdge,
     fetchDisagreements,
+    fetchDiscussionState,
     fetchGraph,
     fetchPositions,
     postVerdict,
     savePositions,
+    sendDiscussionMessage,
     setDiscuss,
+    startDiscussion,
+    type DiscussionTurn,
     type Positions,
   } from './lib/api'
   import { subscribeEvents, type EventSubscription } from './lib/events'
   import { buildLiteGraph } from './lib/litegraph-adapter'
+  import DiscussPanel, { type ChatMsg } from './lib/DiscussPanel.svelte'
   import NodeInspector from './lib/NodeInspector.svelte'
   import VerifyPanel from './lib/VerifyPanel.svelte'
   import type { DisagreementDTO, EdgeDTO, NodeDTO, PortDTO } from './lib/types'
@@ -179,6 +184,49 @@
     })
   }
 
+  // §13.6 discussion chat state. Lives here, not in the panel: closing the
+  // panel must not drop the thread. Applied ops come back over SSE like any
+  // other kernel commit — no manual canvas refresh needed.
+  let chatMessages: ChatMsg[] = []
+  let chatBusy = false
+  let discussionActive = false
+
+  function chatTurn(turn: DiscussionTurn) {
+    chatMessages = [
+      ...chatMessages,
+      { role: 'agent', text: turn.reply, applied: turn.applied, rejected: turn.rejected },
+    ]
+    if (turn.op_errors.length > 0) {
+      status = `agent op-block errors: ${turn.op_errors.join('; ')}`
+    }
+  }
+  function chatStart(model: string | null) {
+    chatBusy = true
+    startDiscussion(model ?? undefined)
+      .then(t => {
+        discussionActive = true
+        chatTurn(t)
+      })
+      .catch(err => {
+        status = `discussion start failed: ${(err as Error).message}`
+      })
+      .finally(() => {
+        chatBusy = false
+      })
+  }
+  function chatSend(text: string) {
+    chatMessages = [...chatMessages, { role: 'user', text }]
+    chatBusy = true
+    sendDiscussionMessage(text)
+      .then(chatTurn)
+      .catch(err => {
+        status = `discussion failed: ${(err as Error).message}`
+      })
+      .finally(() => {
+        chatBusy = false
+      })
+  }
+
   // §13.5.3: render ghost links (agent proposals, status="proposed") dashed.
   // LiteGraph has no per-link dash, so shadow the instance renderLink: set a
   // canvas line-dash around the original draw when the link is flagged ghost.
@@ -338,6 +386,13 @@
     } catch (err) {
       console.warn('fetchPositions failed; starting with empty layout cache', err)
     }
+    // An opencode session survives a page reload (state file + session id);
+    // history doesn't — the transcript lives in the session, not the server.
+    void fetchDiscussionState()
+      .then(s => {
+        discussionActive = s.active
+      })
+      .catch(() => undefined)
     void load()
     subscription = subscribeEvents({
       onReady: gv => {
@@ -457,7 +512,16 @@
       onAccept={panelAccept}
       onReject={panelReject}
       onDiscuss={panelDiscuss}
-    />
+    >
+      <DiscussPanel
+        messages={chatMessages}
+        active={discussionActive}
+        busy={chatBusy}
+        disagreementCount={disagreements.length}
+        onStart={chatStart}
+        onSend={chatSend}
+      />
+    </VerifyPanel>
   {/if}
 </main>
 

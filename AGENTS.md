@@ -11,6 +11,11 @@
   Codex commits on `codex/*`; Claude merges after cross-review.
 - Python: `/home/ts/Simulanka/.venv/bin/python` (absolute path; venv is not
   duplicated into worktrees).
+- **Ownership (2026-06-12 final)**: Claude = `frontend/` + `server/` + `cli/`
+  + `kernel/` + `storage/` + `schema/` (design-dense, changes via design round
+  + Codex review). Codex = agent engineering line: `agent/`, `propose.py`,
+  prompts/navigation strategy, 命门 C. Vertical feature lines, not horizontal
+  layers — that split was tried and abandoned 2026-06-11.
 - Frozen contracts: §13.6 attrs/write-matrix + server edge endpoints; schema/
   kernel changes go through a design round first. `docs/design.md` single
   writer is Claude.

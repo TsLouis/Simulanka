@@ -564,7 +564,8 @@ LiteGraph 的 quirks（JS 非 TS、API 偏旧）可控。需要的扩展点：�
 > wire 字段上反复打架；agent 线边界天然窄而稳。三条规矩：① 契约冻结点 = §13.2 的 edge/port attrs，Codex 需要新增
 > attrs 字段或动 schema/kernel 须先过设计讨论；② `docs/design.md` 单写者仍是 Claude；③ 交叉审保留。
 
-- **核对-讨论交互**（Claude）：设计已定稿（2026-06-11 grill，见 §13.6），待实现。
+- **核对-讨论交互**（Claude）：Claude 侧全部落地（2026-06-12，含讨论端点+聊天面板，见 §13.6 末条）；
+  余 Codex 侧 prompt/核对 pass + 真图端到端彩排。
 - **命门 C**（Codex）：importer→图→propose **live 串联**（真 SAM2，用导入图的端口词表而非手工提供）。
   本质是"propose 改用导入图的端口词表"，只*读*图状态、走现有 API。
 - **agent 工程**（Codex）：prompt/导航策略；opencode harness 坑（非交互卡权限门死锁、`run` 须 `--print-logs` 否则挂起、
@@ -609,3 +610,10 @@ LiteGraph 的 quirks（JS 非 TS、API 偏旧）可控。需要的扩展点：�
   真终端跑，sidecar 旁录 `transcript.txt` / `ops.jsonl` / `events.jsonl` 至 `.simulanka/agent/opencode/<时间戳>/`
   （平面文件，FileRegistry 刻意旁路，同 `changes.json` 先例）；ops 仅是 intent，server 按写权矩阵过滤后经
   `apply_patch` 落库。前端第一版读 sidecar 文件即可；xterm.js 属后期产品化步骤。
+- **讨论端点 + 聊天面板（2026-06-12，Claude）**：`POST /discussion/start`（分歧集快照入开场上下文、
+  `tag_checkpoint("discussion-start")`、开 opencode session）/ `POST /discussion/message`（续聊）/ `GET /discussion`；
+  每轮回复经 `server/agent_ops.py` 写权矩阵闸：`set_verdict`（不得覆人裁）/ `propose_edge`（无 citation 即拒）/
+  `withdraw_edge`（仅自己未被接受的 ghost），server 强制 `verdict_by=agent`、`source=agent`，逐 op 落库（坏 op 报回
+  聊天不毁批）。op 协议契约 = issue #2；开场 prompt 文案占位在 server（`OPENING_TEMPLATE`），编辑权归 Codex。
+  前端 DiscussPanel 挂核对面板内，applied/rejected chips 让矩阵裁决可见；会话经状态文件
+  （`.simulanka/agent/discussion.json`）跨重启续聊，transcript 不进图（在 opencode session 里）。

@@ -1,9 +1,7 @@
 <script lang="ts">
-  // §13.6 verify-discuss panel, Claude-side cut: ghost review (accept /
-  // reject-with-reason) + the live disagreement set. The discussion chat
-  // itself arrives with the opencode-session harness (Codex seam) — until
-  // then resolving a disagreement means deleting or re-accepting the edge
-  // on canvas / via the buttons here.
+  // §13.6 verify-discuss panel: ghost review (accept / reject-with-reason),
+  // the live disagreement set, and — via the slot — the discussion chat
+  // (DiscussPanel, driven by App.svelte state).
   import type { DisagreementDTO, EdgeDTO, PortDTO } from './types'
   import { isPendingGhost } from './verify'
 
@@ -145,8 +143,10 @@
         {/each}
       </ul>
     {/if}
-    <p class="seam">讨论会话（opencode 续聊 harness）接入后，分歧将在此逐条对谈落边。</p>
   </section>
+
+  <!-- §13.6 discussion chat (DiscussPanel via App.svelte) -->
+  <slot />
 </aside>
 
 <style>
@@ -315,12 +315,5 @@
   .muted {
     color: #888;
     margin: 4px 0;
-  }
-  .seam {
-    color: #666;
-    font-size: 11px;
-    border-top: 1px dashed #333;
-    padding-top: 8px;
-    margin-top: 4px;
   }
 </style>

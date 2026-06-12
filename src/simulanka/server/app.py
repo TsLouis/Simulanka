@@ -15,6 +15,12 @@ from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
+from simulanka.agent.harness import (
+    CommandRunner,
+    HarnessError,
+    OpenCodeTurn,
+    run_opencode_turn,
+)
 from simulanka.kernel.apply import apply_patch_now
 from simulanka.kernel.events import Event, iter_events
 from simulanka.kernel.intent import CreateEdgeOp, DeleteEdgeOp, Receipt, UpdateAttrsOp
@@ -22,7 +28,8 @@ from simulanka.kernel.manifest import load_manifest
 from simulanka.kernel.validator import ValidationError
 from simulanka.layout.project import ProjectLayout
 from simulanka.schema.entities import Edge
-from simulanka.storage.checkpoint import ensure_repo
+from simulanka.server.agent_ops import apply_agent_ops
+from simulanka.storage.checkpoint import ensure_repo, repo_exists, tag_checkpoint
 from simulanka.storage.entity_store import (
     iter_edges,
     iter_nodes,
@@ -39,7 +46,11 @@ SSE_POLL_INTERVAL = 0.25  # seconds between event_log polls
 
 
 
-def create_app(layout: ProjectLayout | None = None) -> FastAPI:
+def create_app(
+    layout: ProjectLayout | None = None,
+    *,
+    opencode_runner: CommandRunner | None = None,
+) -> FastAPI:
     if layout is None:
         layout = ProjectLayout.require()
 
@@ -266,32 +277,104 @@ def create_app(layout: ProjectLayout | None = None) -> FastAPI:
         verify pass ruled wrong/uncertain, ③ disputed verdicts, ④ edges pulled
         in by hand. One edge can match several buckets — ``reasons`` lists all.
         """
-        out: list[dict[str, Any]] = []
-        for e in iter_edges(layout):
-            if e.type != "data_flow":
-                continue
-            a = e.attrs
-            reasons: list[str] = []
-            if (
-                a.get("source") == "agent"
-                and a.get("status") == "proposed"
-                and a.get("verdict") == "wrong"
-                and a.get("verdict_by") == "user"
-            ):
-                reasons.append("user_rejected_ghost")
-            if (
-                a.get("source") == "user"
-                and a.get("verdict") in ("wrong", "uncertain")
-                and a.get("verdict_by") == "agent"
-            ):
-                reasons.append("agent_flagged_user_edge")
-            if a.get("verdict") == "disputed":
-                reasons.append("disputed")
-            if a.get("discuss") is True:
-                reasons.append("manual")
-            if reasons:
-                out.append({**_edge_dict(e), "reasons": reasons})
-        return {"disagreements": out}
+        return {"disagreements": _disagreement_list(layout)}
+
+    # --- §13.6 discussion session: the agent op channel --------------------
+    # One batch, one session (一批一场): /start snapshots the disagreement
+    # set, tags a recovery point, and opens an opencode session; /message
+    # continues it. Each turn's simulanka-ops blocks (parsed by the Codex
+    # harness) pass through the agent_ops write-matrix gate — the agent
+    # itself holds no write tools. Canvas updates ride the existing SSE.
+
+    def _run_turn(
+        message: str, *, session_id: str | None, model: str | None
+    ) -> OpenCodeTurn:
+        try:
+            return run_opencode_turn(
+                message,
+                session_id=session_id,
+                model=model,
+                runner=opencode_runner,
+            )
+        except HarnessError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @app.post("/discussion/start")
+    def discussion_start(
+        body: dict[str, Any] = Body(default_factory=dict),
+    ) -> dict[str, Any]:
+        """Open the batch discussion. Body: ``{model?}``."""
+        model = body.get("model")
+        if model is not None and (not isinstance(model, str) or not model.strip()):
+            raise HTTPException(status_code=422, detail="model must be a string")
+        disagreements = _disagreement_list(layout)
+        if not disagreements:
+            raise HTTPException(
+                status_code=422, detail="no disagreements — nothing to discuss"
+            )
+        # §13.6 撤回兜底: the round start is the recovery target. Best-effort,
+        # same as per-commit checkpoints — a broken git must not block talk.
+        if repo_exists(layout):
+            try:
+                tag_checkpoint(layout, "discussion-start")
+            except (OSError, subprocess.CalledProcessError) as exc:
+                logging.getLogger(__name__).warning(
+                    "discussion-start tag failed: %s", exc
+                )
+        turn = _run_turn(
+            _opening_message(disagreements), session_id=None, model=model
+        )
+        if not turn.session_id:
+            raise HTTPException(
+                status_code=502, detail="opencode returned no session id"
+            )
+        state = {
+            "session_id": turn.session_id,
+            "model": model,
+            "batch": [d["id"] for d in disagreements],
+        }
+        _save_discussion(layout, state)
+        applied, rejected = apply_agent_ops(layout, turn.ops)
+        return {
+            **state,
+            "reply": turn.text,
+            "applied": applied,
+            "rejected": rejected,
+            "op_errors": turn.op_errors,
+        }
+
+    @app.post("/discussion/message")
+    def discussion_message(
+        body: dict[str, Any] = Body(default_factory=dict),
+    ) -> dict[str, Any]:
+        """One human turn in the active discussion. Body: ``{text}``."""
+        text = body.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise HTTPException(status_code=422, detail="text is required")
+        state = _load_discussion(layout)
+        if state is None:
+            raise HTTPException(
+                status_code=422,
+                detail="no active discussion — POST /discussion/start first",
+            )
+        turn = _run_turn(
+            text, session_id=state["session_id"], model=state.get("model")
+        )
+        applied, rejected = apply_agent_ops(layout, turn.ops)
+        return {
+            "session_id": state["session_id"],
+            "reply": turn.text,
+            "applied": applied,
+            "rejected": rejected,
+            "op_errors": turn.op_errors,
+        }
+
+    @app.get("/discussion")
+    def discussion_state() -> dict[str, Any]:
+        state = _load_discussion(layout)
+        if state is None:
+            return {"active": False}
+        return {"active": True, **state}
 
     return app
 
@@ -461,6 +544,98 @@ def _edge_dict(e: Edge) -> dict[str, Any]:
         "dst_port": e.target_port_id,
         "attrs": e.attrs,
     }
+
+
+def _disagreement_list(layout: ProjectLayout) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for e in iter_edges(layout):
+        if e.type != "data_flow":
+            continue
+        a = e.attrs
+        reasons: list[str] = []
+        if (
+            a.get("source") == "agent"
+            and a.get("status") == "proposed"
+            and a.get("verdict") == "wrong"
+            and a.get("verdict_by") == "user"
+        ):
+            reasons.append("user_rejected_ghost")
+        if (
+            a.get("source") == "user"
+            and a.get("verdict") in ("wrong", "uncertain")
+            and a.get("verdict_by") == "agent"
+        ):
+            reasons.append("agent_flagged_user_edge")
+        if a.get("verdict") == "disputed":
+            reasons.append("disputed")
+        if a.get("discuss") is True:
+            reasons.append("manual")
+        if reasons:
+            out.append({**_edge_dict(e), "reasons": reasons})
+    return out
+
+
+# Prompt *wording* is Codex's editorial territory (issue #2); the server owns
+# only the mechanical contract: context JSON in, simulanka-ops protocol out.
+OPENING_TEMPLATE = """\
+You are the verify-discuss agent on a Simulanka research graph. The human and
+you disagree about the data-flow edges below. For each one, the human's stated
+reason (verdict_note) is your starting target: argue against it with code
+evidence, or concede.
+
+Disagreement set (JSON):
+```json
+{context}
+```
+
+You may act by embedding ONE fenced block labelled `simulanka-ops` in your
+reply, containing {{"ops": [...]}} where each op is one of:
+- {{"op": "set_verdict", "edge_id": "...",
+   "attrs": {{"verdict": "correct|wrong|uncertain", "verdict_note": "..."}}}}
+- {{"op": "propose_edge", "source": "<port_id>", "target": "<port_id>",
+   "attrs": {{"citation": "file:line — required"}}}}
+- {{"op": "withdraw_edge", "edge_id": "..."}}
+
+Rules: you can never overwrite a human verdict (argue instead); a proposal
+without a citation is rejected; you can only withdraw your own un-accepted
+ghosts. Address each disagreement, then wait for the human.
+"""
+
+
+def _opening_message(disagreements: list[dict[str, Any]]) -> str:
+    return OPENING_TEMPLATE.format(
+        context=json.dumps(disagreements, ensure_ascii=False, indent=2)
+    )
+
+
+def _discussion_path(layout: ProjectLayout) -> Path:
+    return layout.dot_dir / "agent" / "discussion.json"
+
+
+def _load_discussion(layout: ProjectLayout) -> dict[str, Any] | None:
+    path = _discussion_path(layout)
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text("utf-8"))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("session_id"), str):
+        return None
+    return data
+
+
+def _save_discussion(layout: ProjectLayout, state: dict[str, Any]) -> None:
+    path = _discussion_path(layout)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix="discussion-", suffix=".json", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(state, fh)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
 
 
 def _affected(event: Event) -> dict[str, list[str]]:
