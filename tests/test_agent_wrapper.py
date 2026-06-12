@@ -165,6 +165,25 @@ def test_track_scope_missing_dir_errors(
         )
 
 
+def test_track_scope_escaping_workdir_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "proj"
+    layout = init_project(project, with_scaffold=False).layout
+    _seed(layout)
+    (tmp_path / "outside").mkdir()
+    monkeypatch.setenv("SIMULANKA_AGENT_FAKE_ARGV", "true {prompt}")
+    with pytest.raises(AgentError, match="escapes workdir"):
+        run_agent(
+            layout,
+            agent="fake",
+            prompt="x",
+            parent="/research",
+            name="escape_scope",
+            track_scope=["../outside"],
+        )
+
+
 def test_default_ignored_dirs_not_in_diff(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

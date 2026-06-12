@@ -604,3 +604,19 @@ def test_discuss_toggle(tmp_path: Path) -> None:
         == 200
     )
     assert client.get("/disagreements").json()["disagreements"] == []
+
+
+def test_cors_preflight_allows_delete(tmp_path: Path) -> None:
+    """Direct-browser mode (no vite proxy) needs DELETE in the CORS allowlist
+    for `DELETE /edge/{id}` to survive preflight."""
+    layout = _seed_project(tmp_path)
+    client = TestClient(create_app(layout))
+    resp = client.options(
+        "/edge/edg_anything",
+        headers={
+            "Origin": "http://localhost:5173",
+            "Access-Control-Request-Method": "DELETE",
+        },
+    )
+    assert resp.status_code == 200
+    assert "DELETE" in resp.headers["access-control-allow-methods"]

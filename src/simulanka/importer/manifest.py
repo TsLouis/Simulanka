@@ -180,7 +180,7 @@ def import_baseline(
     layout: ProjectLayout,
     manifest_path: Path,
     *,
-    parent: str | None = None,
+    parent: str,
     actor: str = "importer:baseline",
 ) -> BaselineImportSummary:
     """Load, lint, and commit a baseline per its manifest.

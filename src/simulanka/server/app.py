@@ -58,7 +58,7 @@ def create_app(layout: ProjectLayout | None = None) -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(DEV_ORIGINS),
-        allow_methods=["GET", "POST"],
+        allow_methods=["GET", "POST", "DELETE"],
         allow_headers=["*"],
     )
 

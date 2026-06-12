@@ -82,7 +82,7 @@ def import_model(
     build_fn: BuildFn,
     *,
     name: str,
-    parent: str | None = None,
+    parent: str,
     actor: str = "importer:torch_export",
 ) -> ImportResult:
     """Import a PyTorch model into the graph.
@@ -98,8 +98,8 @@ def import_model(
             ``model`` node is then stamped with ``dataflow_unavailable=true``
             and zero ``data_flow`` edges are emitted.
         name: name of the root ``model`` node (must not contain ``.`` or ``/``).
-        parent: selector for the directory under which the model is placed. If
-            ``None``, the model becomes a root-level node.
+        parent: selector for the directory under which the model is placed
+            (``model`` nodes must live under a ``directory`` node).
         actor: actor string recorded in the commit events.
     """
     if "." in name or "/" in name:

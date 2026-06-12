@@ -78,3 +78,15 @@ def test_cli_init_command(tmp_path: Path) -> None:
     again = runner.invoke(app, ["init", str(target)])
     assert again.exit_code == 0
     assert "Already initialized" in again.output
+
+
+def test_init_writes_root_gitignore_when_absent(tmp_path: Path) -> None:
+    init_project(tmp_path)
+    content = (tmp_path / ".gitignore").read_text(encoding="utf-8")
+    assert ".simulanka/" in content
+
+
+def test_init_leaves_existing_root_gitignore_alone(tmp_path: Path) -> None:
+    (tmp_path / ".gitignore").write_text("# mine\n", encoding="utf-8")
+    init_project(tmp_path)
+    assert (tmp_path / ".gitignore").read_text(encoding="utf-8") == "# mine\n"
