@@ -303,9 +303,12 @@ def _fill(template_part: str, prompt: str) -> str:
 def _resolve_scope(workdir: Path, scope: list[str] | None) -> list[Path]:
     if not scope:
         return [workdir]
+    base = workdir.resolve()
     out: list[Path] = []
     for s in scope:
         p = (workdir / s).resolve()
+        if not p.is_relative_to(base):
+            raise AgentError(f"track_scope entry {s!r} escapes workdir {workdir}.")
         if not p.exists():
             raise AgentError(f"track_scope entry {s!r} does not exist under {workdir}.")
         out.append(p)

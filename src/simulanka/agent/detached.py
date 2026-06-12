@@ -29,8 +29,8 @@ from simulanka.agent.wrapper import (
 )
 from simulanka.contract import (
     ContractCheckResult,
+    TaskContract,
     check_contract,
-    contract_from_task_attrs,
     task_node_attrs,
 )
 from simulanka.kernel.apply import apply_patch_now
@@ -38,7 +38,6 @@ from simulanka.kernel.intent import CreateEdgeOp, UpdateAttrsOp
 from simulanka.layout.project import ProjectLayout
 from simulanka.runner import start_run
 from simulanka.schema.entities import Node
-from simulanka.storage.entity_store import load_node
 
 
 @dataclass(frozen=True)
@@ -238,7 +237,6 @@ def finalize_agent_diff(
             layout,
             run_node_id=run_node.id,
             run_dir=run_dir,
-            task_node_id=task_node_id,
             workdir=Path(str(meta.get("workdir"))),
             diff=diff,
         )
@@ -257,11 +255,14 @@ def _run_contract_check(
     *,
     run_node_id: str,
     run_dir: Path,
-    task_node_id: str,
     workdir: Path,
     diff: dict[str, list[str]],
 ) -> ContractCheckResult | None:
-    """Reload contract from the task node, optionally check it, persist the result.
+    """Check the launch-time contract snapshot, persist the result.
+
+    The contract comes from ``<run_dir>/contract.json`` written at launch —
+    *not* from the live task node, so editing the task after launch cannot
+    retro-rewrite what this run is judged against.
 
     Returns ``None`` if the contract has no checks configured. The acceptance
     command (when configured) runs **synchronously** in this process — i.e. in
@@ -269,13 +270,16 @@ def _run_contract_check(
     on a task-bound detached run will therefore block on the acceptance
     command's runtime.
     """
+    contract_path = run_dir / "contract.json"
     try:
-        task_node = load_node(layout, task_node_id)
+        raw = json.loads(contract_path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
         raise RuntimeError(
-            f"task node {task_node_id!r} referenced by run is missing.",
+            f"contract.json missing in {run_dir}; the run references a task "
+            f"but has no launch-time contract snapshot.",
         ) from exc
-    contract = contract_from_task_attrs(task_node.attrs)
+    raw.pop("task_node_id", None)
+    contract = TaskContract.model_validate(raw)
     if not contract.has_checks():
         return None
     result = check_contract(

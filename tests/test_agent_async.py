@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from simulanka.agent import (
+    AgentError,
     finalize_agent_diff,
     start_agent_run,
 )
@@ -200,3 +201,22 @@ def test_track_scope_persists_through_reconcile(
     assert summary is not None
     assert "watched/new.txt" in summary.added
     assert not any("ignored" in p for p in summary.added)
+
+
+def test_detached_track_scope_escaping_workdir_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "proj"
+    layout = init_project(project, with_scaffold=False).layout
+    _seed(layout)
+    (tmp_path / "outside").mkdir()
+    monkeypatch.setenv("SIMULANKA_AGENT_FAKE_ARGV", "true {prompt}")
+    with pytest.raises(AgentError, match="escapes workdir"):
+        start_agent_run(
+            layout,
+            agent="fake",
+            prompt="x",
+            parent="/research",
+            name="escape_scope",
+            track_scope=["../outside"],
+        )

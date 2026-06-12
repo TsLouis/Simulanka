@@ -125,7 +125,7 @@ EDGE_TYPES: dict[str, EdgeTypeSpec]   # needs_ports, source_types, target_types,
 
 **已知支持范围**：能跑通一次 forward 的模型都行，包括 data-dependent control flow。代价是要给真 example_inputs 跑一次推理，结构反映的是这次 trace 的执行路径（不同 input shape / mode 可能不同）。
 
-**CLI**：`simulanka import torch --build pkg.mod:fn --name N [--parent /dir]`
+**CLI**：`simulanka import torch --build pkg.mod:fn --name N [--parent /dir]`。`--parent` 默认 `/baselines`（scaffold 必建；`model` 节点不允许挂项目根，所以"省略=根"从来不是合法默认），`import baseline` 同理。
 
 #### 收尾两项（均已落地）
 
@@ -280,7 +280,7 @@ TaskContract(
 
 **优先级**：scope 违例 > acceptance 失败 > passed。两者全空 → `no_check`（向后兼容 `--prompt` 自由模式）。
 
-**Detached + 契约**：`start_agent_run --task` 在 launch 后立刻镜像契约到 run 节点，把 `task_node_id` 写进 `agent_meta.json`；`finalize_agent_diff` 跑完 diff 之后自动跑 `check_contract`（acceptance 命令在 host 进程的 finalize 阶段同步执行，不是在 detached subprocess 里）。再次 finalize 看到 run 节点已有 `contract_check` attr，跳过——幂等。
+**Detached + 契约**：`start_agent_run --task` 在 launch 后立刻镜像契约到 run 节点，把 `task_node_id` 写进 `agent_meta.json`；`finalize_agent_diff` 跑完 diff 之后自动跑 `check_contract`，判定依据是 launch 时写的 `<run_dir>/contract.json` 快照而非 task 节点现值——launch 后改 task 不重写历史 run 的判定（acceptance 命令在 host 进程的 finalize 阶段同步执行，不是在 detached subprocess 里）。再次 finalize 看到 run 节点已有 `contract_check` attr，跳过——幂等。
 
 **自由模式不动**：`run agent --prompt '...'` 不挂 task、不做检查、不写 `contract` attr。`--prompt` / `--task` 互斥。
 
@@ -394,7 +394,7 @@ FileRegistry 当前刻意保持简单，存在两处已被识别的限制，留�
 1. CLI 框架：**typer**。
 2. ID：**ULID + 前缀**（如 `nod_01HX...`）。
 3. 项目定位：默认 `$PWD` 向上找 `.simulanka/`；`SIMULANKA_PROJECT` 环境变量覆盖。不加 `--project` 开关，YAGNI。
-4. `.gitignore` 模板：排除 `indexes/`、`cache/`、`logs/`；保留 `manifest.json` 与 `graph/{nodes,edges,ports,events}/`。`init` 时如目标内无 `.gitignore` 则写入；已有则不动。
+4. `.gitignore` 模板：排除 `indexes/`、`cache/`、`logs/`；保留 `manifest.json` 与 `graph/{nodes,edges,ports,events}/`。`init` 时如目标内无 `.gitignore` 则写入；已有则不动。项目根同理：无 `.gitignore` 则写入排除 `.simulanka/` 的片段（§13.6 后 `.simulanka/` 内嵌 checkpoint git 仓，外层用户仓本就无法按普通文件跟踪它），已有则不动。
 
 ## 12. 前端可视化
 
@@ -605,3 +605,7 @@ LiteGraph 的 quirks（JS 非 TS、API 偏旧）可控。需要的扩展点：�
   落边）+ git checkpoint；Codex = 会话 harness。Claude 侧可先行到「分歧集就绪 + 面板」，不被 harness 阻塞。
   实现裁定：「浮 ghost」落在**选中节点**粒度（面板内逐条带端口名）——LiteGraph 里端口圆点的点击命中框就是拉线
   手势的起点，抢同一命中框做选中会打架；被拒 ghost 画布上染红色虚线与未核 ghost 区分。
+- **CLI-first bridge（2026-06-12，Codex）**：浏览器内嵌终端暂缓（无 xterm.js 时 TUI 控制序列裸露）；opencode 留在
+  真终端跑，sidecar 旁录 `transcript.txt` / `ops.jsonl` / `events.jsonl` 至 `.simulanka/agent/opencode/<时间戳>/`
+  （平面文件，FileRegistry 刻意旁路，同 `changes.json` 先例）；ops 仅是 intent，server 按写权矩阵过滤后经
+  `apply_patch` 落库。前端第一版读 sidecar 文件即可；xterm.js 属后期产品化步骤。

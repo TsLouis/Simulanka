@@ -233,3 +233,35 @@ children:
 
     with pytest.raises(ManifestError, match="tail"):
         import_baseline(project, manifest_path, parent="/models")
+
+
+def test_cli_import_baseline_defaults_to_baselines_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Omitting --parent places the import under the scaffold's /baselines."""
+    from typer.testing import CliRunner
+
+    from simulanka.cli.app import app
+    from simulanka.kernel.resolver import resolve_node
+
+    builds = tmp_path / "baseline" / "simulanka_builds"
+    builds.mkdir(parents=True)
+    (builds / "manifest.yaml").write_text(
+        """\
+top_level:
+  build: tests.test_baseline_manifest:build_top
+children:
+  encoder: {build: tests.test_baseline_manifest:build_encoder}
+  head: {skip: trivial}
+  tail: {skip: trivial}
+""",
+        encoding="utf-8",
+    )
+
+    project = init_project(tmp_path / "proj").layout  # scaffold creates /baselines
+    monkeypatch.setenv("SIMULANKA_PROJECT", str(project.root))
+
+    result = CliRunner().invoke(app, ["import", "baseline", str(tmp_path / "baseline")])
+    assert result.exit_code == 0, result.output
+    top = resolve_node(project, "/baselines/_Top")
+    assert top.type == "model"

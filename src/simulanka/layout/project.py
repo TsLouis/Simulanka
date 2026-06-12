@@ -163,6 +163,12 @@ def init_project(root: Path, *, with_scaffold: bool = True) -> InitResult:
     if not gitignore.exists():
         gitignore.write_text(GITIGNORE_BODY, encoding="utf-8")
 
+    # `.simulanka/` hosts its own checkpoint git repo (§13.6), so the user's
+    # repo can't track it as plain files anyway — ignore it at the root.
+    root_gitignore = root / ".gitignore"
+    if not root_gitignore.exists():
+        root_gitignore.write_text(ROOT_GITIGNORE_FRAGMENT, encoding="utf-8")
+
     if with_scaffold:
         _scaffold_managed_layout(layout)
         manifest = layout.load_manifest()  # refresh after the commit

@@ -60,14 +60,17 @@ class GhostEdge:
     names which structural output of ``src`` the edge leaves (the port ``name``
     like ``out2`` or its ``label`` like ``backbone_fpn``); ``out_slice`` is the
     sub-part of that output the edge actually carries (``[-1]`` / ``[:-1]``) when
-    one output feeds several consumers by slicing. Both optional — a clean
-    single-output module leaves them unset and the edge attaches to ``out``."""
+    one output feeds several consumers by slicing. ``evidence_locality`` is the
+    §13.5.4 confidence label: ``in_method``, ``cross_method``, or
+    ``cross_state``. All optional — a clean single-output module leaves the
+    output fields unset and the edge attaches to ``out``."""
 
     src: str
     dst: str
     citation: str
     out_port: str | None = None
     out_slice: str | None = None
+    evidence_locality: str | None = None
 
 
 @dataclass(frozen=True)
@@ -180,6 +183,8 @@ def propose_edges(
         # rides the edge, not a new port — importer/schema stay untouched.
         if g.out_slice:
             attrs["output_slice"] = g.out_slice
+        if g.evidence_locality:
+            attrs["evidence_locality"] = g.evidence_locality
         ops.append(
             CreateEdgeOp(
                 type="data_flow",
@@ -321,12 +326,17 @@ def build_prompt(
         "- If the edge carries only a SUB-PART of that output (a slice/index such "
         "as `x[-1]` or `x[:-1]`), put that slice in `slice`. This is how one "
         "output feeding several consumers stays distinguishable.\n"
+        "- Set `evidence_locality` to `in_method`, `cross_method`, or "
+        "`cross_state`: in_method means the evidence is local to this method; "
+        "cross_method means you followed another method call; cross_state means "
+        "the flow passes through object state, cache, memory bank, or a later call.\n"
         "- If you are not sure, leave the edge out. Fewer, certain edges are "
         "better than guesses.\n"
         "- Do NOT invent submodule names not in the list.\n\n"
         "Output ONLY a JSON array, no prose, like:\n"
         '[{"src": "image_encoder", "dst": "memory_attention", "out_port": "out2", '
-        '"slice": "[-1]", "citation": "vision_feats = backbone_out[-1]"}]\n\n'
+        '"slice": "[-1]", "evidence_locality": "cross_state", '
+        '"citation": "vision_feats = backbone_out[-1]"}]\n\n'
         "forward source:\n"
         "```python\n"
         f"{forward_src}\n"
@@ -371,6 +381,7 @@ def _coerce_edges(data: list[object]) -> list[GhostEdge]:
         cite = citation if isinstance(citation, str) else ""
         op = item.get("out_port")
         sl = item.get("slice")
+        locality = item.get("evidence_locality")
         out.append(
             GhostEdge(
                 src=src,
@@ -378,6 +389,12 @@ def _coerce_edges(data: list[object]) -> list[GhostEdge]:
                 citation=cite,
                 out_port=op if isinstance(op, str) and op else None,
                 out_slice=sl if isinstance(sl, str) and sl else None,
+                evidence_locality=(
+                    locality
+                    if isinstance(locality, str)
+                    and locality in ("in_method", "cross_method", "cross_state")
+                    else None
+                ),
             )
         )
     return out

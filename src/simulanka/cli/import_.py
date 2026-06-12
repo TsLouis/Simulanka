@@ -40,13 +40,13 @@ def import_torch(
         str, typer.Option("--name", "-n", help="Name for the root `model` node."),
     ],
     parent: Annotated[
-        str | None,
+        str,
         typer.Option(
             "--parent",
             "-p",
-            help="Directory selector to place the model under. Omit for project root.",
+            help="Directory selector to place the model under.",
         ),
-    ] = None,
+    ] = "/baselines",
 ) -> None:
     """Import a PyTorch model via ``torch.export``."""
     layout = ProjectLayout.require()
@@ -82,13 +82,13 @@ def import_baseline_cmd(
         ),
     ],
     parent: Annotated[
-        str | None,
+        str,
         typer.Option(
             "--parent",
             "-p",
-            help="Directory selector to place the imported nodes under. Omit for project root.",
+            help="Directory selector to place the imported nodes under.",
         ),
-    ] = None,
+    ] = "/baselines",
     check_only: Annotated[
         bool,
         typer.Option(

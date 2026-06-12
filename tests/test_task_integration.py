@@ -18,7 +18,7 @@ from simulanka.agent import (
 from simulanka.contract import task_node_attrs
 from simulanka.kernel.apply import apply_patch
 from simulanka.kernel.doctor import run_doctor
-from simulanka.kernel.intent import CreateNodeOp, PatchIntent
+from simulanka.kernel.intent import CreateNodeOp, PatchIntent, UpdateAttrsOp
 from simulanka.layout.project import ProjectLayout, init_project
 from simulanka.runner import wait_run
 from simulanka.storage.entity_store import iter_edges, load_node
@@ -265,6 +265,53 @@ def test_detached_agent_with_task_lazily_checks_contract(
     assert summary2.contract_check is None
 
     assert run_doctor(layout).ok
+
+
+def test_detached_contract_check_uses_launch_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Editing the task after launch must not change what the run is judged
+    against — finalize checks the contract.json snapshot, not the live node."""
+    layout = init_project(tmp_path, with_scaffold=False).layout
+    _seed_dir(layout)
+    (tmp_path / "workspace").mkdir()
+    task_id = _create_task(
+        layout,
+        name="frozen",
+        contract=TaskContract(goal="touch workspace", allowed_outputs=["workspace/**"]),
+    )
+    monkeypatch.setenv(
+        "SIMULANKA_AGENT_FAKE_ARGV",
+        _fake_argv(f"echo created > {tmp_path}/workspace/new.py"),
+    )
+    started = start_agent_run(
+        layout,
+        agent="fake",
+        task_node_id=task_id,
+        parent="/research",
+        name="frozen-attempt",
+    )
+    finished = wait_run(layout, started.run_node_id, timeout=10.0, poll_interval=0.05)
+
+    # Mutate the task before finalize: the live contract now allows nothing.
+    apply_patch(
+        layout,
+        PatchIntent(
+            ops=[
+                UpdateAttrsOp(
+                    target=task_id, attrs={"allowed_outputs": ["nothing/**"]},
+                ),
+            ],
+            actor="test",
+            base_graph_version=layout.load_manifest().graph_version,
+        ),
+    )
+
+    summary = finalize_agent_diff(layout, finished)
+    assert summary is not None
+    assert summary.contract_check is not None
+    # Judged against the launch-time snapshot → still in scope.
+    assert summary.contract_check.status == "passed"
 
 
 def test_detached_agent_out_of_scope_is_recorded(
