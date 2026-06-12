@@ -151,6 +151,28 @@ def test_parse_response_captures_out_port_and_slice() -> None:
     assert parse_response(blanks) == [GhostEdge("a", "b", "c")]
 
 
+def test_parse_response_captures_evidence_locality() -> None:
+    raw = (
+        '[{"src": "memory_encoder", "dst": "memory_attention", '
+        '"evidence_locality": "cross_state", '
+        '"citation": "memory = self.memory_encoder(...)"}]'
+    )
+    assert parse_response(raw) == [
+        GhostEdge(
+            "memory_encoder",
+            "memory_attention",
+            "memory = self.memory_encoder(...)",
+            evidence_locality="cross_state",
+        )
+    ]
+
+    invalid = (
+        '[{"src": "a", "dst": "b", "evidence_locality": "guessy", '
+        '"citation": "x"}]'
+    )
+    assert parse_response(invalid) == [GhostEdge("a", "b", "x")]
+
+
 def test_propose_bad_selector_raises_proposeerror(tmp_path: Path) -> None:
     # A typo'd / unresolvable selector must surface as ProposeError (which the
     # CLI catches), not a raw ResolveError traceback.
@@ -217,7 +239,7 @@ def test_propose_edges_end_to_end(tmp_path: Path) -> None:
         return """```json
 [
   {"src": "b1", "dst": "b2", "citation": "h = self.b2(h)"},
-  {"src": "b2", "dst": "head", "citation": "return self.head(h)"},
+  {"src": "b2", "dst": "head", "evidence_locality": "in_method", "citation": "return self.head(h)"},
   {"src": "b1", "dst": "ghost_module", "citation": "x"},
   {"src": "head", "dst": "b1", "citation": ""}
 ]
@@ -245,6 +267,7 @@ def test_propose_edges_end_to_end(tmp_path: Path) -> None:
         assert e.attrs["status"] == "proposed"
         assert e.attrs["verdict"] == "unconfirmed"
         assert e.attrs["citation"]
+    assert any(e.attrs.get("evidence_locality") == "in_method" for e in ghosts)
 
 
 def test_propose_edges_dedups_across_runs(tmp_path: Path) -> None:
