@@ -5,6 +5,7 @@
   // then resolving a disagreement means deleting or re-accepting the edge
   // on canvas / via the buttons here.
   import type { DisagreementDTO, EdgeDTO, PortDTO } from './types'
+  import { isPendingGhost } from './verify'
 
   export let edges: EdgeDTO[] // current view: edges + boundary_edges
   export let disagreements: DisagreementDTO[]
@@ -15,15 +16,7 @@
   export let onReject: (edgeId: string, note: string) => void
   export let onDiscuss: (edgeId: string, discuss: boolean) => void
 
-  // Pending ghosts: agent proposals awaiting the human. A ghost the user
-  // already rejected stays status=proposed (§13.6) but moves to the
-  // disagreement section, so exclude it here.
-  $: ghosts = edges.filter(
-    e =>
-      e.attrs.status === 'proposed' &&
-      e.attrs.source === 'agent' &&
-      !(e.attrs.verdict === 'wrong' && e.attrs.verdict_by === 'user'),
-  )
+  $: ghosts = edges.filter(isPendingGhost)
   // 选中 port 浮 ghost (node granularity): with a node selected, only its
   // ghosts show, grouped per port below.
   $: shownGhosts = selectedId

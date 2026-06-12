@@ -6,8 +6,12 @@ export default defineConfig({
   server: {
     proxy: {
       '/graph': 'http://127.0.0.1:8765',
-      // POST creates a user-drawn edge, DELETE /edge/{id} removes one (§13.5.2).
+      // POST creates a user-drawn edge, DELETE /edge/{id} removes one
+      // (§13.5.2); /edge/{id}/verdict|accept|discuss are the §13.6 human ops.
       '/edge': 'http://127.0.0.1:8765',
+      // §13.6 disagreement set. Every backend route MUST be listed here, or
+      // dev-mode requests hit the Vite server and 404 (the /ui lesson).
+      '/disagreements': 'http://127.0.0.1:8765',
       // GET loads persisted layout, POST /ui/positions/{rootKey} saves drag
       // deltas. Without this rule dev-mode position persistence silently 404s
       // (the request hits the Vite dev server, not the backend).

@@ -17,14 +17,13 @@ from fastapi.responses import StreamingResponse
 
 from simulanka.kernel.apply import apply_patch_now
 from simulanka.kernel.events import Event, iter_events
-from simulanka.kernel.intent import CreateEdgeOp, DeleteEdgeOp, UpdateAttrsOp
+from simulanka.kernel.intent import CreateEdgeOp, DeleteEdgeOp, Receipt, UpdateAttrsOp
 from simulanka.kernel.manifest import load_manifest
 from simulanka.kernel.validator import ValidationError
 from simulanka.layout.project import ProjectLayout
 from simulanka.schema.entities import Edge
 from simulanka.storage.checkpoint import ensure_repo
 from simulanka.storage.entity_store import (
-    edge_exists,
     iter_edges,
     iter_nodes,
     iter_ports,
@@ -201,17 +200,16 @@ def create_app(layout: ProjectLayout | None = None) -> FastAPI:
                 status_code=422,
                 detail="note is required — defend the judgment (我认为…因为…)",
             )
-        receipt = apply_patch_now(
+        receipt = _apply_user_op(
             layout,
-            ops=[UpdateAttrsOp(
+            UpdateAttrsOp(
                 target=edge_id,
                 attrs={
                     "verdict": verdict,
                     "verdict_by": "user",
                     "verdict_note": note.strip(),
                 },
-            )],
-            actor="user",
+            ),
             note="frontend: human verdict",
         )
         return {"edge_id": edge_id, "graph_version": receipt.graph_version}
@@ -229,17 +227,16 @@ def create_app(layout: ProjectLayout | None = None) -> FastAPI:
                 status_code=422,
                 detail="only a proposed ghost edge can be accepted",
             )
-        receipt = apply_patch_now(
+        receipt = _apply_user_op(
             layout,
-            ops=[UpdateAttrsOp(
+            UpdateAttrsOp(
                 target=edge_id,
                 attrs={
                     "status": "accepted",
                     "verdict": "correct",
                     "verdict_by": "user",
                 },
-            )],
-            actor="user",
+            ),
             note="frontend: accept ghost",
         )
         return {"edge_id": edge_id, "graph_version": receipt.graph_version}
@@ -255,10 +252,9 @@ def create_app(layout: ProjectLayout | None = None) -> FastAPI:
         flag = body.get("discuss", True)
         if not isinstance(flag, bool):
             raise HTTPException(status_code=422, detail="discuss must be a boolean")
-        receipt = apply_patch_now(
+        receipt = _apply_user_op(
             layout,
-            ops=[UpdateAttrsOp(target=edge_id, attrs={"discuss": flag})],
-            actor="user",
+            UpdateAttrsOp(target=edge_id, attrs={"discuss": flag}),
             note="frontend: toggle discuss",
         )
         return {"edge_id": edge_id, "graph_version": receipt.graph_version}
@@ -303,15 +299,29 @@ def create_app(layout: ProjectLayout | None = None) -> FastAPI:
 def _require_data_flow(layout: ProjectLayout, edge_id: str) -> Edge:
     """404 on unknown edge, 422 on a non-``data_flow`` edge (verdicts on
     structural edges are meaningless)."""
-    if not edge_exists(layout, edge_id):
-        raise HTTPException(status_code=404, detail=f"edge {edge_id!r} not found")
-    edge = load_edge(layout, edge_id)
+    try:
+        edge = load_edge(layout, edge_id)
+    except FileNotFoundError:
+        # Single read, no exists() pre-check: endpoints run concurrently in
+        # the threadpool, so check-then-read would race a DELETE /edge.
+        raise HTTPException(
+            status_code=404, detail=f"edge {edge_id!r} not found"
+        ) from None
     if edge.type != "data_flow":
         raise HTTPException(
             status_code=422,
             detail="verify-discuss ops apply to data_flow edges only",
         )
     return edge
+
+
+def _apply_user_op(layout: ProjectLayout, op: UpdateAttrsOp, note: str) -> Receipt:
+    """apply_patch_now with kernel rejections surfaced as 422 — e.g. the edge
+    vanished between the endpoint's precondition check and the write."""
+    try:
+        return apply_patch_now(layout, ops=[op], actor="user", note=note)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 def _build_payload(
@@ -357,25 +367,10 @@ def _build_payload(
         if not frontier:
             break
 
-    ports_of: dict[str, list[str]] = {}
-    ports_payload: list[dict[str, Any]] = []
-    for p in iter_ports(layout):
-        if p.node_id in included:
-            ports_of.setdefault(p.node_id, []).append(p.id)
-            ports_payload.append(
-                {
-                    "id": p.id,
-                    "node_id": p.node_id,
-                    "name": p.name,
-                    "side": p.direction,
-                    "port_type": p.port_type,
-                    "attrs": p.attrs,
-                }
-            )
-
     edges_payload: list[dict[str, Any]] = []
     boundary_payload: list[dict[str, Any]] = []
     external_ids: set[str] = set()
+    external_port_ids: set[str] = set()
     for e in iter_edges(layout):
         src_in = e.source_id in included
         dst_in = e.target_id in included
@@ -384,6 +379,30 @@ def _build_payload(
         elif (src_in or dst_in) and root is not None:
             boundary_payload.append(_edge_dict(e))
             external_ids.add(e.target_id if src_in else e.source_id)
+            outside_port = e.target_port_id if src_in else e.source_port_id
+            if outside_port is not None:
+                external_port_ids.add(outside_port)
+
+    # Included nodes' ports, plus the outside ports boundary edges point at —
+    # without those the frontend can't label the far end of a cross-boundary
+    # edge (§12.4 boundary ports, §13.6 panel endpoints).
+    ports_of: dict[str, list[str]] = {}
+    ports_payload: list[dict[str, Any]] = []
+    for p in iter_ports(layout):
+        if p.node_id in included:
+            ports_of.setdefault(p.node_id, []).append(p.id)
+        elif p.id not in external_port_ids:
+            continue
+        ports_payload.append(
+            {
+                "id": p.id,
+                "node_id": p.node_id,
+                "name": p.name,
+                "side": p.direction,
+                "port_type": p.port_type,
+                "attrs": p.attrs,
+            }
+        )
 
     external_payload = [
         {

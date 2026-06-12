@@ -19,6 +19,7 @@
   import NodeInspector from './lib/NodeInspector.svelte'
   import VerifyPanel from './lib/VerifyPanel.svelte'
   import type { DisagreementDTO, EdgeDTO, NodeDTO, PortDTO } from './lib/types'
+  import { isPendingGhost } from './lib/verify'
 
   let canvasEl: HTMLCanvasElement
   let depth = 1
@@ -59,9 +60,24 @@
   $: rootKey = currentRootId ?? 'top'
   $: viewPositions = positions[rootKey] ?? {}
 
+  // Refresh the disagreement set. Never rejects: a failure is reported as a
+  // message for the status bar (or null on success) so callers decide when to
+  // show it — load() must not let it be overwritten by the view status.
+  async function refreshDisagreements(): Promise<string | null> {
+    try {
+      disagreements = await fetchDisagreements()
+      return null
+    } catch (err) {
+      return `disagreements load failed: ${(err as Error).message}`
+    }
+  }
+
   async function load() {
     status = 'loading…'
     try {
+      // Fire both fetches together — the disagreement set must not serialize
+      // behind the graph payload on every SSE-triggered reload.
+      const disDone = refreshDisagreements()
       const payload = await fetchGraph(currentRootId, depth)
       const { graph } = buildLiteGraph(payload, {
         onDrillDown: (id) => {
@@ -137,11 +153,8 @@
       namesById = new Map(
         [...payload.nodes, ...payload.external_nodes].map(n => [n.id, n.name]),
       )
-      try {
-        disagreements = await fetchDisagreements()
-      } catch (err) {
-        console.warn('fetchDisagreements failed', err)
-      }
+      const disErr = await disDone
+      if (disErr) status = disErr
     } catch (err) {
       status = `error: ${(err as Error).message}`
     }
@@ -340,7 +353,16 @@
         const touchesView =
           currentRootId === null ||
           msg.nodes.some(id => currentNodeIds.has(id))
-        if (touchesView) void load()
+        if (touchesView) {
+          void load()
+        } else if (msg.edges.length > 0) {
+          // Edge verdicts can land outside the current view (agent verify
+          // pass writes anywhere) — keep the disagreement set and badge
+          // fresh without rebuilding the canvas.
+          void refreshDisagreements().then(e => {
+            if (e) status = e
+          })
+        }
       },
       onError: () => {
         liveOk = false
@@ -386,14 +408,9 @@
   $: if (verifyOpen !== undefined) void tick().then(resizeCanvas)
 
   // Header badge: work waiting in the verify loop (pending ghosts + the
-  // disagreement set). Same pending-ghost filter as the panel.
+  // disagreement set). Same shared predicate as the panel list.
   $: pendingCount =
-    currentEdges.filter(
-      e =>
-        e.attrs.status === 'proposed' &&
-        e.attrs.source === 'agent' &&
-        !(e.attrs.verdict === 'wrong' && e.attrs.verdict_by === 'user'),
-    ).length + disagreements.length
+    currentEdges.filter(isPendingGhost).length + disagreements.length
 </script>
 
 <header>

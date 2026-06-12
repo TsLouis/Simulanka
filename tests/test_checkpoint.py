@@ -49,6 +49,13 @@ def test_ensure_repo_idempotent_and_initial_snapshot(tmp_path: Path) -> None:
     assert _commit_count(layout) == 1
 
 
+def test_checkpoint_clean_tree_returns_false(tmp_path: Path) -> None:
+    layout = init_project(tmp_path, with_scaffold=False).layout
+    cp.ensure_repo(layout)
+    assert cp.checkpoint(layout, "noop") is False
+    assert _commit_count(layout) == 1
+
+
 def test_apply_patch_with_repo_commits_each_version(tmp_path: Path) -> None:
     layout = init_project(tmp_path, with_scaffold=False).layout
     cp.ensure_repo(layout)
@@ -88,7 +95,9 @@ def test_checkpoint_failure_does_not_break_apply_patch(
     layout = init_project(tmp_path, with_scaffold=False).layout
     cp.ensure_repo(layout)
 
-    def boom(layout: ProjectLayout, *args: str) -> subprocess.CompletedProcess[str]:
+    def boom(
+        layout: ProjectLayout, *args: str, check: bool = True
+    ) -> subprocess.CompletedProcess[str]:
         raise subprocess.CalledProcessError(128, ["git"], stderr="simulated")
 
     monkeypatch.setattr(cp, "_git", boom)

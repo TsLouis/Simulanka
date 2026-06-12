@@ -25,17 +25,21 @@ from simulanka.layout.project import ProjectLayout
 logger = logging.getLogger(__name__)
 
 
-def _git(layout: ProjectLayout, *args: str) -> subprocess.CompletedProcess[str]:
+def _git(
+    layout: ProjectLayout, *args: str, check: bool = True
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", "-C", str(layout.dot_dir), *args],
         capture_output=True,
         text=True,
-        check=True,
+        check=check,
     )
 
 
 def repo_exists(layout: ProjectLayout) -> bool:
-    return (layout.dot_dir / ".git").is_dir()
+    # exists(), not is_dir(): .git may be a gitdir pointer *file* (worktree
+    # form) — treating that as "no repo" would silently disable the safety net.
+    return (layout.dot_dir / ".git").exists()
 
 
 def ensure_repo(layout: ProjectLayout) -> None:
@@ -53,13 +57,20 @@ def ensure_repo(layout: ProjectLayout) -> None:
 
 
 def checkpoint(layout: ProjectLayout, message: str) -> bool:
-    """Stage everything and commit. Returns False when there was no change."""
+    """Stage everything and commit. Returns False when there was no change.
+
+    Commit first and ask questions on failure: apply_patch always mutates the
+    graph, so the dirty path is the hot path — two subprocesses, not three.
+    """
     _git(layout, "add", "-A")
-    status = _git(layout, "status", "--porcelain")
-    if not status.stdout.strip():
-        return False
-    _git(layout, "commit", "-q", "-m", message)
-    return True
+    commit = _git(layout, "commit", "-q", "-m", message, check=False)
+    if commit.returncode == 0:
+        return True
+    # A clean tree is the only benign commit failure; confirm via status
+    # instead of parsing the locale-dependent commit message.
+    if _git(layout, "status", "--porcelain").stdout.strip():
+        commit.check_returncode()
+    return False
 
 
 def maybe_checkpoint(layout: ProjectLayout, message: str) -> None:

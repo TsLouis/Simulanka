@@ -201,6 +201,11 @@ def test_get_graph_root_at_leaf_module_exposes_boundary_edge(tmp_path: Path) -> 
     ext_names = {x["name"] for x in payload["external_nodes"]}
     assert ext_names == {"dec", "Net"}
 
+    # The outside port of the boundary data_flow rides along in `ports`, so
+    # the frontend can label the far endpoint (dec's in-port) instead of '?'.
+    port_ids = {p["id"] for p in payload["ports"]}
+    assert flow["dst_port"] in port_ids
+
 
 def test_get_graph_top_level_has_no_boundary_edges(tmp_path: Path) -> None:
     """At top-level there is no outside, so boundary_edges must stay empty
