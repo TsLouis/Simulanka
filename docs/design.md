@@ -22,7 +22,7 @@ Edge : id, type, source_id, target_id, source_port_id?, target_port_id?, attrs, 
 Port : id, node_id, name, direction("in"|"out"), port_type, attrs, created_at, created_by
 ```
 
-- `id`: ULID 带前缀 `nod_` / `edg_` / `prt_`。
+- `id`: ULID 带前缀 `nod_` / `edg_` / `prt_`。已知未决（2026-06-12 评审）：节点**名字**不禁用这些前缀，而 `UpdateAttrsOp` 按 `edg_` 前缀分流 selector——名为 `edg_*` 的节点裸名更新会被劫持报 "edge not found"。根治 = validator 把三个前缀设为保留字，动 schema 须过设计，暂缓。
 - `parent_id` 是 `contains` 边的反范式缓存；doctor 校验一致性。
 - `attrs` 的合法 key 与值由类型注册表声明的 pydantic 模型校验。
 - canonical 存储里不存 selector，只存 id。
