@@ -1,3 +1,20 @@
+# Agent Collaboration (Codex ⇄ Claude)
+
+- **Codex works in `/home/ts/worktrees/simulanka-codex`** (branch `codex/dev` or
+  `codex/<topic>`, cut from `main`). The primary checkout `/home/ts/Simulanka`
+  is Claude's and has `main` checked out. Never leave uncommitted work in the
+  other side's tree; worktrees never live in `/tmp`.
+- **Communication = GitHub issues** on the private repo (`gh issue list/view/
+  comment`), one issue per topic, close when resolved. The old
+  `docs/to-codex.md` / `docs/to-claude*.md` direction files are legacy.
+- **Merges to `main`**: carry tests, state ruff / mypy --strict / pytest status.
+  Codex commits on `codex/*`; Claude merges after cross-review.
+- Python: `/home/ts/Simulanka/.venv/bin/python` (absolute path; venv is not
+  duplicated into worktrees).
+- Frozen contracts: §13.6 attrs/write-matrix + server edge endpoints; schema/
+  kernel changes go through a design round first. `docs/design.md` single
+  writer is Claude.
+
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 

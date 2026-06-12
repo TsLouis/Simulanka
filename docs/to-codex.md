@@ -143,3 +143,7 @@ merge note states ruff / mypy --strict / pytest status.
   review, per the standing 交叉审 rule). A merge request = a dated section
   in your direction file stating what's in it and the three-check status.
 - Worktrees never live in `/tmp` (WSL2 wipes it on reboot).
+
+> **2026-06-12 update — direction files retired.** Communication moves to
+> GitHub issues on the private repo (`gh issue list` / `view` / `comment`).
+> This thread continues as issue #1. See AGENTS.md "Agent Collaboration".
