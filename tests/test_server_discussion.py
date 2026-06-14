@@ -178,6 +178,11 @@ def test_start_sends_context_and_enforces_matrix(tmp_path: Path) -> None:
     # Opening message carries the context: edge ids + the human's note.
     opening = calls[0][-1]
     assert ids["ghost"] in opening and "out1 is never consumed" in opening
+    assert "stance: agree_with_human, disagree_with_human, or insufficient_evidence" in opening
+    assert "Target the human's `verdict_note` directly" in opening
+    assert "output_slice" in opening
+    assert "evidence_locality" in opening
+    assert "no fenced op block is better than\n  an uncited guess" in opening
     assert "-m" in calls[0] and "prov/m" in calls[0]
 
     # Matrix: one applied (user edge, verdict_by forced to agent), one rejected.
