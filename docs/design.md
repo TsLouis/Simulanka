@@ -564,14 +564,13 @@ LiteGraph 的 quirks（JS 非 TS、API 偏旧）可控。需要的扩展点：�
 > wire 字段上反复打架；agent 线边界天然窄而稳。三条规矩：① 契约冻结点 = §13.2 的 edge/port attrs，Codex 需要新增
 > attrs 字段或动 schema/kernel 须先过设计讨论；② `docs/design.md` 单写者仍是 Claude；③ 交叉审保留。
 
-- **核对-讨论交互**（Claude）：Claude 侧全部落地（2026-06-12，含讨论端点+聊天面板，见 §13.6 末条）；
-  余 Codex 侧 prompt/核对 pass + 真图端到端彩排。
+- **核对-讨论交互**：Claude 侧全部落地（2026-06-12，含讨论端点+聊天面板，见 §13.6 末条）；开场 prompt
+  Codex 已交付并合入 main（2026-07-03 合 `a1733b1`：逐边 triage、直指人理由、保留不确定性、cite-or-skip）。
+  余：核对 pass（Codex）+ 真图端到端彩排（双方，`deepseek-v4-flash-free`）。
 - **命门 C**（Codex）：importer→图→propose **live 串联**（真 SAM2，用导入图的端口词表而非手工提供）。
   本质是"propose 改用导入图的端口词表"，只*读*图状态、走现有 API。
 - **agent 工程**（Codex）：prompt/导航策略；opencode harness 坑（非交互卡权限门死锁、`run` 须 `--print-logs` 否则挂起、
   导航策略 run 间随机）；`evidence_locality` 由 propose 推结构跨度 + agent 显式标跨态。见 [[project_deferred_agent_work]]。
-- **前端边界投影删除缺口**（Claude；§12.4 × §13.3 连/拆边）：在下钻视图里删 boundary 桩子上的边不落库（桩子没接删除逻辑），
-  会"骗人"。待修：或标桩子连线不可拖断（只读），或映射到真 edge id 发 DELETE。
 
 ### 13.6 核对-讨论交互（2026-06-11 grill 定稿，待实现）
 
