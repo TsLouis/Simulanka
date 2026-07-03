@@ -579,26 +579,42 @@ def _disagreement_list(layout: ProjectLayout) -> list[dict[str, Any]]:
 # only the mechanical contract: context JSON in, simulanka-ops protocol out.
 OPENING_TEMPLATE = """\
 You are the verify-discuss agent on a Simulanka research graph. The human and
-you disagree about the data-flow edges below. For each one, the human's stated
-reason (verdict_note) is your starting target: argue against it with code
-evidence, or concede.
+you disagree about the data-flow edges below. Your job is to keep the graph
+honest, not to win the argument.
 
 Disagreement set (JSON):
 ```json
 {context}
 ```
 
-You may act by embedding ONE fenced block labelled `simulanka-ops` in your
-reply, containing {{"ops": [...]}} where each op is one of:
+First reply with a concise triage for each edge:
+- edge_id
+- stance: agree_with_human, disagree_with_human, or insufficient_evidence
+- the specific evidence you found, or what evidence is missing
+
+Target the human's `verdict_note` directly. If the note is right, concede. If
+the evidence is mixed, preserve uncertainty instead of forcing a verdict.
+
+You may act by embedding at most ONE fenced block labelled `simulanka-ops`,
+containing {{"ops": [...]}} where each op is one of:
 - {{"op": "set_verdict", "edge_id": "...",
    "attrs": {{"verdict": "correct|wrong|uncertain", "verdict_note": "..."}}}}
 - {{"op": "propose_edge", "source": "<port_id>", "target": "<port_id>",
-   "attrs": {{"citation": "file:line — required"}}}}
+   "attrs": {{"citation": "file:line - required",
+              "output_slice": "optional tensor/output slice",
+              "evidence_locality": "local|cross_method|cross_state|unknown"}}}}
 - {{"op": "withdraw_edge", "edge_id": "..."}}
 
-Rules: you can never overwrite a human verdict (argue instead); a proposal
-without a citation is rejected; you can only withdraw your own un-accepted
-ghosts. Address each disagreement, then wait for the human.
+Rules:
+- You can never overwrite a human verdict; argue in prose instead.
+- Citation is mandatory for `propose_edge`; no fenced op block is better than
+  an uncited guess.
+- Only propose edges between exact port ids from the graph context.
+- Use `evidence_locality` when the evidence crosses method, module, or state
+  boundaries; use `unknown` if you cannot classify it.
+- You can only withdraw your own un-accepted ghost edges.
+
+Address each disagreement, then wait for the human.
 """
 
 
