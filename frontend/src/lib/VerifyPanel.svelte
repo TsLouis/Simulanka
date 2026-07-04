@@ -21,6 +21,18 @@
     ? ghosts.filter(e => e.src === selectedId || e.dst === selectedId)
     : ghosts
 
+  // §13.6 手动拉入: any real (non-ghost) edge can be pulled into the
+  // discussion set by hand. Selection-scoped on purpose — drill-down views
+  // carry hundreds of trace edges; an unscoped list would swamp the panel.
+  $: pullable = selectedId
+    ? edges.filter(
+        e =>
+          !isPendingGhost(e) &&
+          e.attrs.discuss !== true &&
+          (e.src === selectedId || e.dst === selectedId),
+      )
+    : []
+
   // Reject form state: which ghost has its reason form open, and the draft.
   let rejecting: string | null = null
   let draft = ''
@@ -103,6 +115,34 @@
                 <button class="danger" on:click={() => startReject(e.id)}>✗ 拒绝</button>
               </div>
             {/if}
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  </section>
+
+  <section>
+    <h3>
+      拉入讨论
+      {#if selectedId}<span class="filter">@ {name(selectedId)}</span>{/if}
+      <span class="count">{pullable.length}</span>
+    </h3>
+    {#if !selectedId}
+      <p class="muted">选中节点后，其实边可手动拉入讨论</p>
+    {:else if pullable.length === 0}
+      <p class="muted">选中节点上无可拉入的边</p>
+    {:else}
+      <ul>
+        {#each pullable as e (e.id)}
+          <li>
+            <div class="endpoints">
+              <span class="ep">{name(e.src)}<em>.{portName(e.src_port)}</em></span>
+              <span class="arrow">→</span>
+              <span class="ep">{name(e.dst)}<em>.{portName(e.dst_port)}</em></span>
+            </div>
+            <div class="row">
+              <button on:click={() => onDiscuss(e.id, true)}>拉入讨论</button>
+            </div>
           </li>
         {/each}
       </ul>
