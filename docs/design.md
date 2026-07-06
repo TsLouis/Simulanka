@@ -616,3 +616,87 @@ LiteGraph 的 quirks（JS 非 TS、API 偏旧）可控。需要的扩展点：�
   聊天不毁批）。op 协议契约 = issue #2；开场 prompt 文案占位在 server（`OPENING_TEMPLATE`），编辑权归 Codex。
   前端 DiscussPanel 挂核对面板内，applied/rejected chips 让矩阵裁决可见；会话经状态文件
   （`.simulanka/agent/discussion.json`）跨重启续聊，transcript 不进图（在 opencode session 里）。
+
+## 14. 科研主循环（2026-07-06 grill 定稿）
+
+> 从「想改进 baseline」出发的完整循环：分析 → 计划 → 落图 → 执行 → 蒸馏 → 下一轮。
+> 此前只有零件（§5.1 原子、§5.5 runner、§5.6 TaskContract），本节给整体拓扑与分工。
+
+### 14.1 控制拓扑：agent 驱动系统
+
+**缺省拓扑翻转**：研究工作由现有 agent harness（Claude Code / Codex / opencode）执行，
+Simulanka 退成**图内核 + 写权闸门 + 工具面（CLI 先行，MCP 薄适配后置）+ 程序知识（skills）**。
+不再维护自有 drive-the-agent 管道（propose.py 单发形态即此类，真图彩排首步即断、§13.5.4 改形
+一个月未落地——自有管道跟不上 harness 迭代是结构性的，不是执行力问题）。「系统驱动 agent」
+仅保留于人面同步交互（§13.6 讨论面板）。
+
+**三条不变量**（翻转后防「图退化成 agent 日记」）：
+1. kernel 唯一写者 + 写权矩阵照旧；
+2. diff / acceptance / metrics 提取永远系统侧执行——agent 可触发、不可代笔结果；
+3. task / run 仍是第一等图实体，agent 经工具立项，不绕图。
+
+**确定性边界原则**（贯穿全循环）：凡能做成确定性工具的（成图、diff、验收、evidence 骨架提取、
+简报导出、计划落图）一律做成工具，agent 只调用；工具可信 ⇒ 结果可信。此为 §13「机器只做
+100% 确定的事」向全循环的推广。
+
+### 14.2 循环形态与角色
+
+```
+分析者(最强外部模型) ──计划文件(prose+结构块)──▶ ingest(确定性) ──▶ 图(proposed 态)
+     ▲                                                                │ 人异步批(画布)
+     │ 简报(确定性导出: open claims/contradicts/近期 run+metrics/预算)   ▼
+     └── evidence 骨架(机器提取) ◀── run end(系统测量) ◀── harness 执行 ◀── 操作员建 task/起 run
+```
+
+- **分析者**：只产出计划文件 = 自由 prose（推理原文）+ 机器可解析结构块（hypotheses /
+  experiments / 语义边 / **escalate 动词**）。文件原生、零工具调用污染、harness 无关
+  （GPT 类外部模型同样能写）。
+- **落图 = 确定性 ingest 工具**，含语义边端点校验（§5.1 约束）+ 写权闸。落图状态一律
+  `proposed`（分析者提议）。**否决过**「中模型秘书翻译落图」：格式严则解析器足矣，格式松则
+  图成秘书转述——两头取一，答案都是解析器。
+- **人批在落图后、画布上**（§13 核对习惯推广到研究原子），非阻塞（见 14.3）。图是文档的
+  **有损投影**（结构块双向可逆、prose 单向驻留文件）⇒ 前端硬需求：节点一键深链文档出处。
+- **操作员（中等模型秘书）**：循环的机械流——跑 ingest、修机械校验错、按 FileRegistry 归档、
+  从计划建 task、起 run、回写状态。可触发工具，**不得代笔语义**。
+- **执行括号**：`run begin`（建 run 节点 + worktree）→ harness 干活 → `run end`（系统算
+  diff、跑 acceptance、从 metrics 机械提取 evidence 骨架 `source=machine`）。系统在括号两端
+  测量，替代全程驾驶。
+- **蒸馏归分析者**：supports / contradicts 边、hypothesis 定性、claim 升降 = 下轮分析者
+  开场第一动作（先审旧账再开新篇）。执行者不给自己阅卷。claim 状态维持查询时算（§5.1）。
+
+### 14.3 可信分级与「人裁至上、非必经」
+
+| 层 | 内容 | 谁验 | 成本 |
+| --- | --- | --- | --- |
+| 构造可信 | diff、metrics、acceptance、成图 | 确定性工具，免验 | 零 |
+| 部分可信 | 过程、代码改动、中间结论 | 便宜模型快速交叉检查，速度优先 | 低、封顶 |
+| 须强验 | evidence→claim 语义判断、轮次结论 | 分析者审旧账 + 人异步抽查 | 高、集中 |
+
+- **人裁至上、非必经**：人的裁决一旦给出即最高权威（写权矩阵已保证 agent 覆盖不了
+  `verdict_by=user`），但人的缺席不阻塞循环——proposed / 部分可信之上照常推进，可信级别
+  如实记录。**精确界定**：此表述适用研究域；模型结构域（§13.6）实边接受仍只能人点，原铁律不动。
+- **可信度沿血缘查询时实时算**：claim 坐在未强验的中间结论上，展示可信级 = 全链最低档。
+  不新增同步机制，图即计算基础（同 §5.1 claim status 先例）。
+
+### 14.4 刹车（自主循环的护栏）
+
+必要，细节推迟。已定两条方向：① **分析者主动叫停**——结构块含 escalate 动词，操作员见之
+必停（格式后果现在生效，进 ingest schema）；② **时长/成本硬帽**（如每日工时上限）。断路器
+参数（连续 N 轮无人查看、M 次无进展）后调。
+
+### 14.5 打包分工与 openspec 划界
+
+- **进系统**（确定性/策略）：kernel、storage、schema、ingest、evidence 提取器、简报导出、
+  diff/acceptance、checkpoint、server/frontend。
+- **工具面**：CLI 现成先用（彩排实证 harness 驱动 CLI 顺畅）；MCP 为薄适配层，摩擦出现再建。
+- **skills**（程序知识，markdown 最耐久）：分析者格式说明书、操作员循环流程、成图 manifest
+  编写法（彩排流程即底稿）、执行纪律。agent 工程线（skills/prompt）归 Codex（分工不变，
+  内容从 propose.py 管道改道为 skills + 工具面，见 issue）。
+- **openspec 只用于 Simulanka 自身开发**（强模型写 spec、弱模型施工），不套研究循环——
+  研究循环有自己更富的 schema。
+
+### 14.6 实施切片（供后续会话/Codex 按规格施工）
+
+① plan 结构块 schema + `plan ingest`（含 escalate、语义边校验、proposed 态）；② `run begin/end`
+执行括号；③ evidence 骨架提取器；④ 简报导出 `brief export`；⑤ skills 四篇；⑥ 可信度血缘
+查询 + 前端染色（后置，可与皮肤轮同捆）。①–④ 为确定性工具，规格清晰后弱模型可施工。
