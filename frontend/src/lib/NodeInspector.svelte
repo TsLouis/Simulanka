@@ -91,56 +91,77 @@
 {/if}
 
 <style>
+  /* 星图册 · 星卡详览 —— 选中一颗星，翻开它那页典籍（调色板见 app.css :root） */
   .inspector {
     width: 320px;
-    background: #1f1f1f;
-    border-left: 1px solid #333;
-    color: #ddd;
+    background: linear-gradient(180deg, var(--panel) 0%, #111a30 100%);
+    border-left: 1px solid var(--hairline);
+    box-shadow: -12px 0 28px rgba(0, 0, 0, 0.35);
+    color: var(--text);
     font-size: 12px;
     overflow-y: auto;
-    padding: 12px 14px 24px;
+    padding: 14px 14px 24px;
     box-sizing: border-box;
   }
   header {
-    border-bottom: 1px solid #333;
+    position: relative;
+    border-bottom: 1px solid var(--hairline-2);
     padding-bottom: 10px;
-    margin-bottom: 10px;
+    margin-bottom: 12px;
+  }
+  header::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    bottom: -1px;
+    width: 56px;
+    height: 1px;
+    background: var(--gold);
   }
   h2 {
     margin: 6px 0 4px;
-    font-size: 15px;
-    color: #fff;
+    font-family: var(--font-display);
+    font-size: 17px;
+    font-weight: 400;
+    color: var(--ivory);
     word-break: break-word;
   }
   h3 {
-    margin: 0 0 4px;
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: #888;
+    margin: 0 0 5px;
+    font-family: var(--font-display);
+    font-size: 12px;
+    font-weight: 400;
+    letter-spacing: 0.12em;
+    color: var(--gold);
+  }
+  h3::before {
+    content: '✦ ';
+    font-size: 8px;
+    color: var(--gold-dim);
   }
   section {
-    margin-bottom: 12px;
+    margin-bottom: 14px;
   }
   .type-chip {
     display: inline-block;
-    background: #2c3e50;
-    color: #cde;
-    padding: 1px 6px;
+    background: var(--panel-2);
+    border: 1px solid var(--gold-dim);
+    color: var(--gold);
+    padding: 1px 7px;
     border-radius: 3px;
     font-size: 10px;
     text-transform: uppercase;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.06em;
   }
   .id {
     display: block;
-    font-family: ui-monospace, monospace;
-    color: #888;
+    font-family: var(--font-mono);
+    color: var(--muted);
     font-size: 10px;
     word-break: break-all;
   }
   .muted {
-    color: #888;
+    color: var(--muted);
   }
   .ports {
     list-style: none;
@@ -157,70 +178,72 @@
     display: inline-block;
     width: 28px;
     text-align: center;
-    border-radius: 2px;
+    border-radius: 3px;
     font-size: 10px;
     text-transform: uppercase;
     padding: 1px 0;
   }
   .side-in {
-    background: #2b3e2b;
-    color: #aef0ae;
+    background: var(--jade-deep);
+    color: var(--jade);
   }
   .side-out {
-    background: #3e2b2b;
-    color: #f0aeae;
+    background: #3a2f1c;
+    color: var(--amber);
   }
   .name {
     flex: 1;
+    color: var(--ivory);
   }
   .slotname {
-    color: #666;
-    font-family: ui-monospace, monospace;
+    color: var(--muted);
+    font-family: var(--font-mono);
     font-size: 10px;
   }
   .shape {
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-mono);
     font-size: 10px;
-    color: #cde;
-    background: #243044;
-    border-radius: 2px;
+    color: #cfe0f2;
+    background: #22334f;
+    border-radius: 3px;
     padding: 1px 5px;
   }
   .conf {
     font-size: 9px;
     text-transform: uppercase;
-    letter-spacing: 0.04em;
-    border-radius: 2px;
+    letter-spacing: 0.05em;
+    border-radius: 3px;
     padding: 1px 5px;
   }
   .conf-verified {
-    background: #1f3a1f;
-    color: #8fe08f;
+    background: var(--jade-deep);
+    color: var(--jade);
   }
   .conf-inferred {
-    background: #3a331f;
-    color: #e0cf8f;
+    background: #2c3550;
+    color: var(--muted);
   }
   .attrs {
     margin: 0;
   }
   .attrs dt {
-    color: #aaa;
-    font-family: ui-monospace, monospace;
+    color: var(--gold-dim);
+    font-family: var(--font-mono);
     font-size: 11px;
-    margin-top: 6px;
+    margin-top: 7px;
   }
   .attrs dd {
     margin: 2px 0 0;
   }
   .attrs pre {
     margin: 0;
-    background: #181818;
-    border: 1px solid #2a2a2a;
-    border-radius: 3px;
-    padding: 4px 6px;
-    font-family: ui-monospace, monospace;
+    background: var(--panel-3);
+    border: 1px solid var(--hairline-2);
+    border-radius: 4px;
+    padding: 5px 7px;
+    font-family: var(--font-mono);
     font-size: 11px;
+    color: #aebfd6;
     white-space: pre-wrap;
     word-break: break-all;
   }

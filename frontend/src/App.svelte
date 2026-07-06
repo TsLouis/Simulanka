@@ -20,6 +20,7 @@
   } from './lib/api'
   import { subscribeEvents, type EventSubscription } from './lib/events'
   import { buildLiteGraph } from './lib/litegraph-adapter'
+  import { applyNightSky } from './lib/theme'
   import DiscussPanel, { type ChatMsg } from './lib/DiscussPanel.svelte'
   import NodeInspector from './lib/NodeInspector.svelte'
   import VerifyPanel from './lib/VerifyPanel.svelte'
@@ -123,6 +124,7 @@
         lgcanvas.setGraph(graph)
       } else {
         lgcanvas = new LGraphCanvas(canvasEl, graph)
+        applyNightSky(lgcanvas)
         wireSelection(lgcanvas)
         wireNodeMoved(lgcanvas)
         wireGhostLinks(lgcanvas)
@@ -469,7 +471,7 @@
 </script>
 
 <header>
-  <strong>Simulanka</strong>
+  <strong class="brand"><span class="brand-star">✦</span>Simulanka</strong>
   <nav class="crumbs">
     <button class="crumb" on:click={() => goTo(-1)} class:active={crumbs.length === 0}>
       top
@@ -526,55 +528,114 @@
 </main>
 
 <style>
-  :global(body, html) {
-    margin: 0;
-    padding: 0;
-    background: #1a1a1a;
-    color: #ddd;
-    font-family: ui-sans-serif, system-ui, sans-serif;
-  }
+  /* 星图册壳层：漆器顶栏 + 金缘 + 夜空画布。调色板见 app.css :root。 */
   header {
+    position: relative;
     display: flex;
     gap: 12px;
     align-items: center;
-    padding: 8px 12px;
-    background: #222;
-    border-bottom: 1px solid #333;
+    padding: 9px 16px;
+    background: linear-gradient(180deg, #1a2642 0%, #141e36 100%);
     font-size: 13px;
   }
+  /* 顶栏下缘的一线金 —— 两端隐入夜色 */
+  header::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 1px;
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      var(--gold-dim) 12%,
+      var(--gold) 50%,
+      var(--gold-dim) 88%,
+      transparent 100%
+    );
+  }
+  .brand {
+    font-family: var(--font-display);
+    font-size: 19px;
+    font-weight: 400;
+    letter-spacing: 0.08em;
+    color: var(--gold-bright);
+    text-shadow: 0 0 14px var(--gold-glow);
+    display: flex;
+    align-items: baseline;
+    gap: 7px;
+    user-select: none;
+  }
+  .brand-star {
+    font-size: 13px;
+    color: var(--gold);
+    animation: star-breathe 4s ease-in-out infinite;
+  }
+  @keyframes star-breathe {
+    0%,
+    100% {
+      opacity: 0.65;
+      text-shadow: 0 0 4px var(--gold-glow);
+    }
+    50% {
+      opacity: 1;
+      text-shadow: 0 0 12px var(--gold-glow);
+    }
+  }
+  header label {
+    color: var(--muted);
+  }
   header input {
-    background: #111;
-    color: #ddd;
-    border: 1px solid #444;
-    padding: 2px 6px;
+    background: var(--panel-3);
+    color: var(--text);
+    border: 1px solid var(--hairline);
+    border-radius: 4px;
+    padding: 3px 7px;
     font-family: inherit;
     font-size: 13px;
+  }
+  header input:focus {
+    outline: none;
+    border-color: var(--gold-dim);
+    box-shadow: 0 0 0 2px rgba(217, 186, 125, 0.15);
   }
   header input[type='number'] {
     width: 50px;
   }
   header button {
-    background: #333;
-    color: #ddd;
-    border: 1px solid #555;
-    padding: 3px 10px;
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--hairline);
+    border-radius: 4px;
+    padding: 4px 12px;
     cursor: pointer;
+    font-family: inherit;
+    transition:
+      border-color 0.15s,
+      color 0.15s,
+      box-shadow 0.15s;
   }
   header button:hover {
-    background: #444;
+    border-color: var(--gold-dim);
+    color: var(--ivory);
   }
   header button.panel-on {
-    background: #2c3e50;
-    border-color: #5a7fd1;
+    border-color: var(--gold);
+    color: var(--gold-bright);
+    box-shadow:
+      inset 0 0 12px rgba(217, 186, 125, 0.12),
+      0 0 8px rgba(217, 186, 125, 0.18);
   }
   .badge {
     display: inline-block;
-    margin-left: 5px;
-    background: #d16a5a;
-    color: #fff;
+    margin-left: 6px;
+    background: var(--crimson);
+    color: #fff8f0;
     border-radius: 8px;
     padding: 0 6px;
     font-size: 11px;
+    box-shadow: 0 0 8px rgba(224, 122, 104, 0.5);
   }
   .crumbs {
     display: flex;
@@ -584,26 +645,32 @@
   .crumb {
     background: transparent;
     border: none;
-    color: #aaa;
-    padding: 2px 6px;
+    color: var(--muted);
+    padding: 2px 7px;
+    border-radius: 4px;
     cursor: pointer;
     font: inherit;
+    transition:
+      color 0.15s,
+      background 0.15s;
   }
   .crumb:hover {
-    color: #ddd;
-    background: #333;
+    color: var(--ivory);
+    background: var(--panel-2);
   }
   .crumb.active {
-    color: #fff;
-    font-weight: 600;
+    color: var(--gold-bright);
+    font-weight: 500;
   }
   .sep {
-    color: #555;
+    color: var(--gold-dim);
+    font-size: 11px;
   }
   .status {
     margin-left: auto;
-    color: #999;
-    font-family: ui-monospace, monospace;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 12px;
     display: flex;
     align-items: center;
     gap: 6px;
@@ -612,22 +679,23 @@
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: #555;
+    background: #3a4763;
     transition: background 0.2s;
   }
   .live.on {
-    background: #4ade80;
-    box-shadow: 0 0 4px #4ade80;
+    background: var(--jade);
+    box-shadow: 0 0 6px rgba(126, 207, 165, 0.8);
   }
   main {
     display: flex;
     width: 100vw;
-    height: calc(100vh - 41px);
+    height: calc(100vh - 44px);
   }
   canvas {
     display: block;
     flex: 1;
     min-width: 0;
     height: 100%;
+    background: var(--sky);
   }
 </style>

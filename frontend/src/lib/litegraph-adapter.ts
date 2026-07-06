@@ -5,6 +5,14 @@
 
 import dagre from 'dagre'
 import { LiteGraph, LGraph, type LGraphNode } from 'litegraph.js'
+import {
+  EDGE_COLORS,
+  GHOST_COLOR,
+  INFERRED_COLOR,
+  REJECTED_GHOST_COLOR,
+  styleNode,
+  VERIFIED_COLOR,
+} from './theme'
 import type {
   EdgeDTO,
   ExternalNodeDTO,
@@ -35,20 +43,8 @@ interface LiteLink {
 
 // Link colour by edge provenance (§13.5.2): machine-traced vs human-drawn vs
 // agent-asserted, so the three read apart at a glance. LiteGraph honours
-// `link.color` in renderLink.
-const EDGE_COLORS: Record<string, string> = {
-  trace: '#5a7fd1', // blue — machine-observed
-  user: '#e0a23a', // amber — human-drawn
-  agent: '#a05ad1', // purple — agent-asserted
-}
-
-// §13.5.3: an unconfirmed agent proposal (status="proposed") reads as a muted
-// gray dashed line — visibly a draft, distinct from the solid purple of a
-// confirmed agent edge. Provenance colour is overridden by this until verified.
-const GHOST_COLOR = '#8a8a8a'
-// §13.6: a ghost the human rejected stays proposed (it queues for discussion,
-// deletion only after that) but must read as contested, not merely unconfirmed.
-const REJECTED_GHOST_COLOR = '#d16a5a'
+// `link.color` in renderLink. Palette lives in theme.ts (星图册: trace=星蓝,
+// user=金线, agent=紫晶; ghost=灰蓝低语, rejected=绯红).
 
 const TYPE_PREFIX = 'simulanka/'
 const BOUNDARY_PREFIX = 'simulanka-boundary/'
@@ -157,6 +153,7 @@ export function buildLiteGraph(
     const isContainer = n.child_count > 0
     const lgnode = LiteGraph.createNode(ensureRegistered(n.type)) as LGraphNode
     lgnode.title = isContainer ? `▸ ${n.name}` : n.name
+    styleNode(lgnode, n.type)
     ;(lgnode as unknown as { simulanka: NodeDTO }).simulanka = n
 
     let inI = 0
@@ -270,11 +267,8 @@ function computeShapeCheck(src?: PortDTO, dst?: PortDTO): ShapeCheck {
   return ss.length === ds.length && ss.every((v, i) => v === ds[i]) ? 'match' : 'mismatch'
 }
 
-// Confidence palette: verified slots read as live (green), inferred as muted
-// grey. Shared with the inspector's intent, kept local since LiteGraph wants
-// the colours inline on the slot.
-const VERIFIED_COLOR = '#5ad15a'
-const INFERRED_COLOR = '#9a9a9a'
+// Confidence palette: verified slots read as live (jade), inferred as muted
+// grey-blue. Values from theme.ts so inspector chips and slot dots agree.
 
 // Build the LiteGraph slot `extra_info`: a display `label` (semantic name +
 // observed shape) and a confidence-coded dot colour. A port that declares no
@@ -389,6 +383,7 @@ function injectBoundary(
     lgnode.title = bucket.direction === 'in'
       ? `← from ${bucket.externalName}`
       : `→ to ${bucket.externalName}`
+    styleNode(lgnode, 'boundary')
     ;(lgnode as unknown as { simulanka_boundary: BoundaryBucket }).simulanka_boundary =
       bucket
     // Boundary nodes can't be moved or selected like real nodes — they're a

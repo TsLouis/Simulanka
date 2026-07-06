@@ -110,26 +110,35 @@
 </section>
 
 <style>
+  /* 星图册 · 讨论席 —— 与核对面板同窗，金线隔断（调色板见 app.css :root） */
   .discuss {
-    border-top: 1px dashed #333;
-    padding-top: 10px;
+    border-top: 1px dashed var(--gold-dim);
+    padding-top: 12px;
   }
   h3 {
-    margin: 0 0 6px;
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: #888;
+    margin: 0 0 8px;
+    font-family: var(--font-display);
+    font-size: 13px;
+    font-weight: 400;
+    letter-spacing: 0.12em;
+    color: var(--gold);
     display: flex;
     align-items: center;
     gap: 6px;
   }
+  h3::before {
+    content: '✦';
+    font-size: 9px;
+    color: var(--gold-dim);
+  }
   .unit {
-    text-transform: none;
-    color: #666;
+    font-family: var(--font-body);
+    font-size: 10px;
+    letter-spacing: 0;
+    color: var(--muted);
   }
   .muted {
-    color: #888;
+    color: var(--muted);
     margin: 4px 0 8px;
   }
   .start-row {
@@ -139,12 +148,17 @@
   input {
     flex: 1;
     min-width: 0;
-    background: #111;
-    color: #ddd;
-    border: 1px solid #444;
-    padding: 4px 6px;
+    background: var(--panel-3);
+    color: var(--text);
+    border: 1px solid var(--hairline);
+    border-radius: 4px;
+    padding: 4px 7px;
     font-family: inherit;
     font-size: 12px;
+  }
+  input:focus {
+    outline: none;
+    border-color: var(--gold-dim);
   }
   .thread {
     max-height: 320px;
@@ -155,24 +169,37 @@
     margin-bottom: 8px;
   }
   .msg {
-    border-radius: 6px;
-    padding: 6px 8px;
+    border-radius: 8px;
+    padding: 7px 9px;
     max-width: 92%;
     white-space: pre-wrap;
     word-break: break-word;
   }
   .msg.user {
     align-self: flex-end;
-    background: #2c3e50;
-    color: #dde8f5;
+    background: #33405e;
+    color: #e6edf8;
+    border: 1px solid #45557d;
+    border-radius: 8px 8px 2px 8px;
   }
   .msg.agent {
     align-self: flex-start;
-    background: #262626;
-    border: 1px solid #2e2e2e;
+    background: var(--panel-2);
+    border: 1px solid var(--hairline-2);
+    border-radius: 8px 8px 8px 2px;
   }
   .msg.pending {
-    color: #777;
+    color: var(--muted);
+    animation: pending-pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes pending-pulse {
+    0%,
+    100% {
+      opacity: 0.5;
+    }
+    50% {
+      opacity: 1;
+    }
   }
   .chips {
     display: flex;
@@ -181,21 +208,21 @@
     margin-top: 6px;
   }
   .chip {
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-mono);
     font-size: 10px;
     border-radius: 3px;
     padding: 1px 6px;
     cursor: default;
   }
   .chip.ok {
-    background: #1d3324;
-    color: #8fe08f;
-    border: 1px solid #3a6;
+    background: var(--jade-deep);
+    color: var(--jade);
+    border: 1px solid #3d6b52;
   }
   .chip.no {
-    background: #331f1f;
-    color: #f0aeae;
-    border: 1px solid #a55;
+    background: var(--crimson-deep);
+    color: var(--crimson);
+    border: 1px solid #7a4038;
   }
   .composer {
     display: flex;
@@ -205,31 +232,51 @@
   textarea {
     flex: 1;
     box-sizing: border-box;
-    background: #111;
-    color: #ddd;
-    border: 1px solid #444;
-    padding: 4px 6px;
+    background: var(--panel-3);
+    color: var(--text);
+    border: 1px solid var(--hairline);
+    border-radius: 4px;
+    padding: 5px 7px;
     font-family: inherit;
     font-size: 12px;
     resize: vertical;
   }
+  textarea:focus {
+    outline: none;
+    border-color: var(--gold-dim);
+    box-shadow: 0 0 0 2px rgba(217, 186, 125, 0.12);
+  }
   button {
-    background: #333;
-    color: #ddd;
-    border: 1px solid #555;
-    padding: 3px 10px;
+    background: var(--panel-3);
+    color: var(--text);
+    border: 1px solid var(--hairline);
+    border-radius: 4px;
+    padding: 4px 11px;
     cursor: pointer;
+    font-family: inherit;
     font-size: 12px;
+    transition:
+      border-color 0.15s,
+      color 0.15s,
+      box-shadow 0.15s;
   }
   button:hover {
-    background: #444;
+    border-color: var(--gold-dim);
+    color: var(--ivory);
   }
   button:disabled {
     opacity: 0.4;
     cursor: not-allowed;
   }
+  /* 主 CTA：鎏金按钮 —— 开始讨论 / 发送 */
   button.primary {
-    border-color: #5a7fd1;
-    color: #b9ccf2;
+    background: linear-gradient(180deg, #d9ba7d 0%, #b99a5e 100%);
+    border-color: var(--gold);
+    color: #241c0c;
+    font-weight: 500;
+  }
+  button.primary:hover:not(:disabled) {
+    box-shadow: 0 0 12px var(--gold-glow);
+    color: #241c0c;
   }
 </style>

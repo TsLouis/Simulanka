@@ -191,39 +191,57 @@
 </aside>
 
 <style>
+  /* 星图册 · 核对面板 = 漆器典籍窗（调色板见 app.css :root） */
   .verify {
     width: 340px;
-    background: #1f1f1f;
-    border-left: 1px solid #333;
-    color: #ddd;
+    background: linear-gradient(180deg, var(--panel) 0%, #111a30 100%);
+    border-left: 1px solid var(--hairline);
+    box-shadow: -12px 0 28px rgba(0, 0, 0, 0.35);
+    color: var(--text);
     font-size: 12px;
     overflow-y: auto;
-    padding: 12px 14px 24px;
+    padding: 14px 14px 24px;
     box-sizing: border-box;
   }
   h3 {
-    margin: 0 0 6px;
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: #888;
+    margin: 0 0 8px;
+    font-family: var(--font-display);
+    font-size: 13px;
+    font-weight: 400;
+    letter-spacing: 0.12em;
+    color: var(--gold);
     display: flex;
     align-items: center;
     gap: 6px;
   }
+  h3::before {
+    content: '✦';
+    font-size: 9px;
+    color: var(--gold-dim);
+  }
   section {
-    margin-bottom: 18px;
+    margin-bottom: 20px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--hairline-2);
+  }
+  section:last-of-type {
+    border-bottom: none;
   }
   .filter {
-    color: #e0a23a;
-    text-transform: none;
+    font-family: var(--font-body);
+    font-size: 11px;
+    letter-spacing: 0;
+    color: var(--amber);
   }
   .count {
     margin-left: auto;
-    background: #333;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    background: var(--panel-3);
+    border: 1px solid var(--hairline-2);
     border-radius: 8px;
     padding: 0 7px;
-    color: #ccc;
+    color: var(--muted);
   }
   ul {
     list-style: none;
@@ -231,14 +249,17 @@
     margin: 0;
   }
   li {
-    border: 1px solid #2e2e2e;
-    border-radius: 4px;
-    padding: 8px;
+    border: 1px solid var(--hairline-2);
+    border-radius: 6px;
+    padding: 9px;
     margin-bottom: 8px;
-    background: #232323;
+    background: var(--panel-2);
+  }
+  li.ghost {
+    border-left: 3px solid var(--violet);
   }
   li.dis {
-    border-left: 3px solid #d16a5a;
+    border-left: 3px solid var(--crimson);
   }
   .endpoints {
     display: flex;
@@ -247,35 +268,35 @@
     gap: 4px;
   }
   .ep {
-    color: #fff;
+    color: var(--ivory);
   }
   .ep em {
-    color: #9ab;
+    color: var(--star);
     font-style: normal;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-mono);
     font-size: 11px;
   }
   .arrow {
-    color: #777;
+    color: var(--gold-dim);
   }
   .slice {
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-mono);
     font-size: 10px;
-    color: #cde;
-    background: #243044;
-    border-radius: 2px;
+    color: #cfe0f2;
+    background: #22334f;
+    border-radius: 3px;
     padding: 1px 5px;
   }
   .citation {
     display: block;
     margin-top: 6px;
-    background: #181818;
-    border: 1px solid #2a2a2a;
-    border-radius: 3px;
-    padding: 4px 6px;
-    font-family: ui-monospace, monospace;
+    background: var(--panel-3);
+    border: 1px solid var(--hairline-2);
+    border-radius: 4px;
+    padding: 4px 7px;
+    font-family: var(--font-mono);
     font-size: 11px;
-    color: #b8c4d0;
+    color: #aebfd6;
     white-space: pre-wrap;
     word-break: break-all;
   }
@@ -285,27 +306,41 @@
     margin-top: 8px;
   }
   button {
-    background: #333;
-    color: #ddd;
-    border: 1px solid #555;
-    padding: 3px 10px;
+    background: var(--panel-3);
+    color: var(--text);
+    border: 1px solid var(--hairline);
+    border-radius: 4px;
+    padding: 4px 11px;
     cursor: pointer;
+    font-family: inherit;
     font-size: 12px;
+    transition:
+      border-color 0.15s,
+      color 0.15s;
   }
   button:hover {
-    background: #444;
+    border-color: var(--gold-dim);
+    color: var(--ivory);
   }
   button:disabled {
     opacity: 0.4;
     cursor: not-allowed;
   }
   button.ok {
-    border-color: #3a6;
-    color: #8fe08f;
+    border-color: #3d6b52;
+    color: var(--jade);
+  }
+  button.ok:hover {
+    border-color: var(--jade);
+    box-shadow: 0 0 8px rgba(126, 207, 165, 0.25);
   }
   button.danger {
-    border-color: #a55;
-    color: #f0aeae;
+    border-color: #7a4038;
+    color: var(--crimson);
+  }
+  button.danger:hover {
+    border-color: var(--crimson);
+    box-shadow: 0 0 8px rgba(224, 122, 104, 0.25);
   }
   .reject-form {
     margin-top: 8px;
@@ -313,48 +348,58 @@
   textarea {
     width: 100%;
     box-sizing: border-box;
-    background: #111;
-    color: #ddd;
-    border: 1px solid #444;
-    padding: 4px 6px;
+    background: var(--panel-3);
+    color: var(--text);
+    border: 1px solid var(--hairline);
+    border-radius: 4px;
+    padding: 5px 7px;
     font-family: inherit;
     font-size: 12px;
     resize: vertical;
   }
+  textarea:focus {
+    outline: none;
+    border-color: var(--gold-dim);
+    box-shadow: 0 0 0 2px rgba(217, 186, 125, 0.12);
+  }
   .reason {
     font-size: 9px;
     text-transform: uppercase;
-    letter-spacing: 0.04em;
-    border-radius: 2px;
-    padding: 1px 5px;
-    background: #3a2a1f;
-    color: #e0b88f;
+    letter-spacing: 0.05em;
+    border-radius: 3px;
+    padding: 1px 6px;
+    background: #3a2f1c;
+    color: var(--amber);
   }
   .reason-disputed {
-    background: #3a1f1f;
-    color: #e08f8f;
+    background: var(--crimson-deep);
+    color: var(--crimson);
   }
   .reason-manual {
-    background: #1f2a3a;
-    color: #8fb8e0;
+    background: #1e2c44;
+    color: var(--star);
   }
   .verdict-line {
     margin-top: 6px;
-    color: #aaa;
+    color: var(--muted);
+  }
+  .verdict-line b {
+    color: var(--ivory);
   }
   .by {
-    color: #777;
+    color: var(--gold-dim);
     margin-left: 4px;
   }
   blockquote {
     margin: 6px 0 0;
-    padding: 4px 8px;
-    border-left: 2px solid #555;
-    color: #ccc;
-    background: #1b1b1b;
+    padding: 5px 9px;
+    border-left: 2px solid var(--gold-dim);
+    color: var(--text);
+    background: var(--panel-3);
+    border-radius: 0 4px 4px 0;
   }
   .muted {
-    color: #888;
+    color: var(--muted);
     margin: 4px 0;
   }
 </style>
