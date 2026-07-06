@@ -27,6 +27,7 @@
   $: pullable = selectedId
     ? edges.filter(
         e =>
+          e.type === 'data_flow' && // view payload mixes in `contains` — server refuses those
           !isPendingGhost(e) &&
           e.attrs.discuss !== true &&
           (e.src === selectedId || e.dst === selectedId),
