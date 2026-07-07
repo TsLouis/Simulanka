@@ -22,6 +22,7 @@ from simulanka.kernel.migration import check_versions
 from simulanka.kernel.resolver import resolve_node, resolve_port
 from simulanka.kernel.validator import (
     ValidationError,
+    reserved_name_error,
     validate_edge,
     validate_node,
     validate_port,
@@ -52,6 +53,7 @@ class _Pending:
     updated_edges: list[Edge]
     canonical_ops: list[dict[str, Any]]
     deleted_edges: list[Edge]
+    refs: dict[str, Node]  # intent-local @ref handles → pending nodes
 
 
 def apply_patch_now(
@@ -93,7 +95,7 @@ def apply_patch(layout: ProjectLayout, intent: PatchIntent) -> Receipt:
     now = datetime.now(timezone.utc)
     pending = _Pending(
         nodes=[], edges=[], ports=[], updated_nodes=[], updated_edges=[],
-        canonical_ops=[], deleted_edges=[],
+        canonical_ops=[], deleted_edges=[], refs={},
     )
     errors: list[str] = []
 
@@ -197,10 +199,24 @@ def _handle_create_node(
 
     parent_node: Node | None = None
     if op.parent is not None:
-        try:
-            parent_node = resolve_node(layout, op.parent)
-        except ValueError as exc:
-            return [f"{prefix}: {exc}"]
+        if op.parent.startswith("@"):
+            parent_node = pending.refs.get(op.parent[1:])
+            if parent_node is None:
+                return [
+                    f"{prefix}: unknown ref `{op.parent}` "
+                    "(no earlier create_node declared it)."
+                ]
+        else:
+            try:
+                parent_node = resolve_node(layout, op.parent)
+            except ValueError as exc:
+                return [f"{prefix}: {exc}"]
+
+    if op.ref is not None:
+        if not op.ref:
+            return [f"{prefix}: ref must be non-empty when given."]
+        if op.ref in pending.refs:
+            return [f"{prefix}: ref `{op.ref}` already declared earlier in this patch."]
 
     node = Node(
         id=new_id("nod"),
@@ -218,6 +234,8 @@ def _handle_create_node(
         return errors
 
     pending.nodes.append(node)
+    if op.ref is not None:
+        pending.refs[op.ref] = node
     pending.canonical_ops.append(
         {
             "kind": "create_node",
@@ -319,11 +337,11 @@ def _handle_create_edge(
     # it the way the other handlers do, so apply_patch raises ValidationError
     # rather than letting resolve_*'s ValueError escape uncaught.
     try:
-        source_node, source_port = _resolve_endpoint(layout, op.source)
+        source_node, source_port = _resolve_endpoint(layout, op.source, pending)
     except ValueError as exc:
         return [f"{prefix}: source: {exc}"]
     try:
-        target_node, target_port = _resolve_endpoint(layout, op.target)
+        target_node, target_port = _resolve_endpoint(layout, op.target, pending)
     except ValueError as exc:
         return [f"{prefix}: target: {exc}"]
 
@@ -450,6 +468,9 @@ def _handle_rename_node(
 ) -> list[str]:
     if not op.new_name:
         return [f"{prefix}: new_name must be non-empty."]
+    reserved = reserved_name_error(op.new_name)
+    if reserved:
+        return [f"{prefix}: {reserved}"]
     try:
         existing = resolve_node(layout, op.target)
     except ValueError as exc:
@@ -528,8 +549,16 @@ def _handle_delete_edge(
     return []
 
 
-def _resolve_endpoint(layout: ProjectLayout, selector: str) -> tuple[Node, Port | None]:
-    """Given a selector, return (node, optional port). Accepts node or port selectors."""
+def _resolve_endpoint(
+    layout: ProjectLayout, selector: str, pending: _Pending
+) -> tuple[Node, Port | None]:
+    """Given a selector, return (node, optional port). Accepts node or port selectors,
+    plus intent-local ``@ref`` handles (node-level only — pending nodes have no ports)."""
+    if selector.startswith("@"):
+        node = pending.refs.get(selector[1:])
+        if node is None:
+            raise ValueError(f"unknown ref `{selector}` (no earlier create_node declared it).")
+        return node, None
     if selector.startswith("prt_") or _looks_like_port_selector(selector):
         port = resolve_port(layout, selector)
         from simulanka.storage.entity_store import load_node

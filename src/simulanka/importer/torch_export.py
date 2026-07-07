@@ -240,7 +240,10 @@ def import_model(
                         type="data_flow",
                         source=_fqn_to_selector(root_path, src) + ".out",
                         target=_fqn_to_selector(root_path, tgt) + ".in",
-                        attrs={"source": "trace"},
+                        # Machine-observed edges are born verified (§13.2 trace
+                        # verdict materialisation): queries need not special-case
+                        # "trace ⇒ implicitly correct". No backfill of old graphs.
+                        attrs={"source": "trace", "verdict": "correct", "verdict_by": "trace"},
                     ),
                 ],
                 actor=actor,

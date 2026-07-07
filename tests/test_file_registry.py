@@ -219,3 +219,44 @@ def test_cli_file_register(tmp_path: Path) -> None:
     )
     assert result.exit_code == 0, result.output
     assert "Registered nod_" in result.output
+
+
+def test_plan_and_brief_share_research_dir(tmp_path: Path) -> None:
+    """§14.7: two kinds, one managed dir — prefixes tell the artefacts apart."""
+    layout = init_project(tmp_path).layout
+
+    plan = create_file(layout, "plan", "r1-encoder", b"# plan\n")
+    brief = create_file(layout, "brief", "r1", b"# brief\n")
+
+    assert plan.relative_path == "research/plan-r1-encoder.md"
+    assert brief.relative_path == "research/brief-r1.md"
+    research_dirs = [
+        n for n in iter_nodes(layout)
+        if n.type == "directory" and n.parent_id is None
+        and n.attrs.get("fs_path") == "research"
+    ]
+    assert len(research_dirs) == 1  # shared dir scaffolds exactly one node
+    assert "managed_kind" not in research_dirs[0].attrs
+    report = run_doctor(layout)
+    assert report.ok, [i.model_dump() for i in report.issues]
+
+
+def test_new_kind_on_old_project_creates_dir_lazily(tmp_path: Path) -> None:
+    """Graphs scaffolded before a kind existed must not need a migrate step."""
+    # Scaffold a project as if plan/brief didn't exist yet.
+    import simulanka.registry.file_kinds as fk
+    saved = dict(fk.FILE_KINDS)
+    for k in ("plan", "brief"):
+        del fk.FILE_KINDS[k]
+    try:
+        old = init_project(tmp_path).layout
+        assert not (old.root / "research").exists()
+    finally:
+        fk.FILE_KINDS.clear()
+        fk.FILE_KINDS.update(saved)
+
+    result = create_file(old, "plan", "r1", b"# plan\n")
+    assert result.relative_path == "research/plan-r1.md"
+    assert (old.root / "research" / "plan-r1.md").is_file()
+    report = run_doctor(old)
+    assert report.ok, [i.model_dump() for i in report.issues]

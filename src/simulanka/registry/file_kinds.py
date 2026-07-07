@@ -39,6 +39,16 @@ FILE_KINDS: dict[str, FileKindSpec] = {
     "artifact": FileKindSpec(
         name="artifact", dir_name=".simulanka/artifacts", binding="managed",
     ),
+    # §14 research loop: analyst plans and their deterministic inverse, briefs.
+    # One shared top-level dir; the prefix alone tells the round's artefacts apart.
+    "plan": FileKindSpec(
+        name="plan", dir_name="research", binding="managed",
+        default_extension=".md", name_prefix="plan-",
+    ),
+    "brief": FileKindSpec(
+        name="brief", dir_name="research", binding="managed",
+        default_extension=".md", name_prefix="brief-",
+    ),
 }
 
 

@@ -8,13 +8,21 @@ from simulanka.registry.types import PortDirection
 
 
 class CreateNodeOp(BaseModel):
+    """``ref`` is an intent-local handle: later ops in the same PatchIntent may
+    select this not-yet-committed node as ``@<ref>`` (create_node.parent and
+    create_edge endpoints). Never persisted — events record real ids only.
+    Exists so multi-entity narratives (§14.7 plan ingest) can land atomically;
+    the disk resolver cannot see pending nodes by design.
+    """
+
     model_config = ConfigDict(extra="forbid")
 
     kind: Literal["create_node"] = "create_node"
     type: str
     name: str
-    parent: str | None = None  # selector: id or absolute path; None = root
+    parent: str | None = None  # selector: id, absolute path, or @ref; None = root
     attrs: dict[str, Any] = Field(default_factory=dict)
+    ref: str | None = None
 
 
 class CreatePortOp(BaseModel):

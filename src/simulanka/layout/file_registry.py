@@ -115,7 +115,7 @@ def _commit_file_node(
     actor: str,
     abs_path: Path | None = None,
 ) -> FileResult:
-    parent = _find_managed_dir_node(layout, spec.name)
+    parent = _find_managed_dir_node(layout, spec)
     if abs_path is None:
         abs_path = layout.root / rel_path
 
@@ -180,17 +180,40 @@ def _derive_relative_path(spec: FileKindSpec, name: str) -> str:
     return f"{spec.dir_name}/{fname}"
 
 
-def _find_managed_dir_node(layout: ProjectLayout, kind: str) -> Node:
+def _find_managed_dir_node(layout: ProjectLayout, spec: FileKindSpec) -> Node:
+    # Primary match is `fs_path` — kinds may share a directory (plan/brief both
+    # live under `research/`), so `managed_kind` can no longer be the key. The
+    # attr fallback keeps graphs from before `fs_path` existed resolving.
     for n in iter_nodes(layout):
-        if (
-            n.type == "directory"
-            and n.parent_id is None
-            and n.attrs.get("managed_kind") == kind
+        if n.type == "directory" and n.parent_id is None and (
+            n.attrs.get("fs_path") == spec.dir_name
+            or n.attrs.get("managed_kind") == spec.name
         ):
             return n
-    raise FileRegistryError(
-        f"Managed-dir node for kind `{kind}` not found. "
-        "Was the project initialized with scaffolding?"
+
+    # Kinds added after a project was scaffolded (e.g. §14's plan/brief on an
+    # older graph) create their managed dir lazily instead of demanding a
+    # migrate step.
+    if spec.binding == "managed":
+        (layout.root / spec.dir_name).mkdir(parents=True, exist_ok=True)
+    receipt = apply_patch(
+        layout,
+        PatchIntent(
+            ops=[
+                CreateNodeOp(
+                    type="directory",
+                    name=spec.dir_name.split("/")[-1],
+                    parent=None,
+                    attrs={"fs_path": spec.dir_name},
+                )
+            ],
+            actor="system:file-registry",
+            base_graph_version=layout.load_manifest().graph_version,
+            note=f"Lazily created managed dir `{spec.dir_name}` for kind `{spec.name}`.",
+        ),
     )
+    from simulanka.storage.entity_store import load_node
+
+    return load_node(layout, receipt.nodes[0])
 
 

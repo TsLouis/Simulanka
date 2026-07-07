@@ -22,7 +22,7 @@ Edge : id, type, source_id, target_id, source_port_id?, target_port_id?, attrs, 
 Port : id, node_id, name, direction("in"|"out"), port_type, attrs, created_at, created_by
 ```
 
-- `id`: ULID 带前缀 `nod_` / `edg_` / `prt_`。节点**名字**曾不禁用这些前缀，而 `UpdateAttrsOp` 按 `edg_` 前缀分流 selector——名为 `edg_*` 的节点裸名更新会被劫持报 "edge not found"（2026-06-12 评审发现）。**2026-07-06 裁定：三前缀为名字保留字**，validator 在 create/rename 时拒绝，待实现（小改，随下次 kernel 触碰落地）。
+- `id`: ULID 带前缀 `nod_` / `edg_` / `prt_`。节点**名字**曾不禁用这些前缀，而 `UpdateAttrsOp` 按 `edg_` 前缀分流 selector——名为 `edg_*` 的节点裸名更新会被劫持报 "edge not found"（2026-06-12 评审发现）。**2026-07-06 裁定：三前缀为名字保留字**，validator 在 create/rename 时拒绝；2026-07-07 已实现，连带 `@` 前缀一并保留（与 §3 intent 内 `@ref` 句柄语法冲突）。
 - `parent_id` 是 `contains` 边的反范式缓存；doctor 校验一致性。
 - `attrs` 的合法 key 与值由类型注册表声明的 pydantic 模型校验。
 - canonical 存储里不存 selector，只存 id。
@@ -41,6 +41,12 @@ PatchIntent (含 selector)
 事务边界：上述四步全成功才落盘（临时目录 + 原子 rename）。失败 → 整体回滚。
 
 `PatchIntent.ops` 支持：`create_node` / `create_edge` / `create_port` / `update_attrs`（同 patch 内可级联，浅 merge 语义） / `rename_node` / `delete_edge`（§13.3 加，唯一删除语义，拒 `contains`）。节点 `delete` / `move` 仍未实现（无真实用例驱动）。实现节奏见 §9。
+
+**Intent 内引用 `@ref`**（2026-07-07 裁定，§14.7 干跑逼出）：`create_node` 增可选 `ref` 字段（intent
+局部句柄）；同 intent 内后序 op 的 node selector 可写 `@<ref>` 引用该新建节点（parent、edge 端点、
+update_attrs target 均可）。此前 resolver 只见已落盘实体，「建节点 + 连边」无法单 intent 原子落地
+（plan ingest 的硬前提；importer 当年也是被迫分批）。选显式句柄而非让路径 selector 穿透 pending：
+歧义为零、事件里仍记真实 id、回放不受影响。`ref` 不落盘、不进 canonical ops。
 
 乐观锁：intent 携带 `base_graph_version`；与 manifest 不符则拒绝并提示重读。
 
@@ -533,7 +539,7 @@ LiteGraph 的 quirks（JS 非 TS、API 偏旧）可控。需要的扩展点：�
   （两台仪器打架、该被看见，不被静默覆盖）。
 - **trace verdict 物化（2026-07-06 裁定）**：importer 建 trace `data_flow` 边时即盖 `verdict=correct, verdict_by=trace`。
   此前只标 `source=trace` 不盖 verdict，真图彩排实测面板显示 `verdict=None`——明明观测过却显示未裁，是撒谎；且不物化
-  则「agent 质疑 trace」的 disputed 桶无从机械判定。待实现（importer 一处 + 既有图 backfill 不做，新导入生效）。
+  则「agent 质疑 trace」的 disputed 桶无从机械判定。2026-07-07 已实现（importer 一处 + 既有图 backfill 不做，新导入生效）。
 - **agent 性格契约：少而准**——只画能从源码直接指依据的边、每条 ghost 必带 `citation`；要靠猜控制流/状态的不画、只标缺口。
   把"宁可漏不可错"从 trace 复制到 agent。
 
@@ -713,9 +719,11 @@ Simulanka 退成**图内核 + 写权闸门 + 工具面（CLI 先行，MCP 薄适
 
 ```jsonc
 {
-  "distill": {                    // 审旧账：只引用已存在的图 id，全部可空
+  "distill": {                    // 审旧账：引用已存在的图 id；new_claims 是唯一的铸造例外
+    "new_claims": [{"lid": "c1", "body": "...", "status": "open|supported|refuted"}],
+                                  // 蒸馏的核心产出就是新结论——没有它分析者无处铸造 claim（干跑咬出）
     "edges":  [{"type": "supports|contradicts", "source": "<evidence id>",
-                "target": "<claim|hypothesis id>", "note": "..."}],
+                "target": "<claim|hypothesis id> | c1", "note": "..."}],   // target 可引 new_claims 的 lid
     "claims": [{"id": "<claim id>", "status": "open|supported|refuted", "note": "..."}],
     "hypotheses": [{"id": "<hypothesis id>", "verdict": "...", "note": "..."}]   // 定性，词表沿用 §13.2
   },
@@ -723,7 +731,8 @@ Simulanka 退成**图内核 + 写权闸门 + 工具面（CLI 先行，MCP 薄适
     "questions":   [{"lid": "q1", "body": "..."}],
     "hypotheses":  [{"lid": "h1", "body": "...", "addresses": "q1 | <graph id>"}],
     "experiments": [{"lid": "e1", "goal": "...", "tests": "h1 | <graph id>",
-                     "tasks": [{"goal": "...", "allowed_outputs": [], "acceptance": "...",
+                     "tasks": [{"lid": "t1",     // 可省，缺省按序派生 t1/t2/…
+                                "goal": "...", "allowed_outputs": [], "acceptance": "...",
                                 "budget_time_seconds": null}]}]   // 字段 = §5.6 TaskContract 原词表
   },
   "escalate": null                 // 或 {"reason": "..."}——分析者叫停（§14.4）
@@ -734,23 +743,42 @@ Simulanka 退成**图内核 + 写权闸门 + 工具面（CLI 先行，MCP 薄适
 1. 解析唯一围栏块 → pydantic 校验；引用解析：图 id 直接 resolve（失败=拒），lid 仅限块内引用。
 2. 语义边端点类型按 §5.1 校验；**单 PatchIntent 原子落地**——计划是整体一致的叙事，半个计划落图
    =不一致状态，部分失败即整体拒+报告，分析者改文件重发（有意区别于 op-block 的逐 op：那是交互式聊天，这是文档）。
+   块内 lid 引用（plan 段互引 + distill 边连 new_claims）用 §3 的 `@ref` 机制落成一个 intent。
 3. 落图标记：新节点/边 attrs `source="analyst"` + `plan_file` + `plan_lid`（前端深链文档出处用）；
    experiment `status=planned`。distill 的 claim 状态改写是**分析者的判断记录**（写者=分析者，与 §5.1
    「支持/反驳计数查询时算」不冲突——计数与可信级仍实时算，status 是判断快照）。
 4. `escalate` 非空 → 建 `note` 节点（attrs `kind=escalate`, `body=reason`）；**操作员契约：见 escalate 即停轮**。零新类型。
-5. 计划文件本身登记为 `file` 节点；同一文件重复 ingest = 拒（幂等/修订流 v2 再议）。
+5. 计划文件本身登记为 `file` 节点；同一文件重复 ingest = 拒（判据：该注册路径的 file 节点已存在；
+   幂等/修订流 v2 再议）。
 
-**开放点**（记录不阻塞）：人批 ratified 标记的具体 attr（等前端整合）；plan 文件的 FileRegistry kind；
-briefing 导出格式与本格式的对偶性（简报里给的 id 就是块里引用的 id，实现时对表）。
+**落图布局与铭章**（2026-07-07 干跑裁定）：
+- FileRegistry 新增两 kind：`plan` / `brief`，共享顶层 `research/` 目录，`name_prefix` 分别
+  `plan-` / `brief-`（一个目录、两类文件，按前缀即可分辨轮次产物）。
+- ingest 为每份计划建**一个 directory 节点**（`research/` 之下，名=计划文件 stem），块内新原子
+  （question/hypothesis/experiment/claim）落其中、**名=lid**——lid 天然块内唯一，跨轮撞名被
+  per-plan 目录隔离，前端还白得一层「按轮下钻」。task 节点父=其 experiment。
+- **tasks 落为一等 `task` 节点**（attrs 平铺 §5.6 契约字段），由 ingest 直接 `create_node`
+  （`task create` CLI 不收自由 attrs，且操作员转录契约=已死的翻译步）；操作员对 task 只做
+  `run begin --task <id>`，无一字转写。
+- **actor 铭章**：ingest 的 PatchIntent `actor="analyst"`（工具只是笔，作者是分析者；attrs
+  `source` 与 created_by 由此对齐）；操作员经 CLI 的机械操作应带 `--actor operator`（写权矩阵
+  把 operator 归 agent 类，不得冒 user）。
+
+**开放点**（记录不阻塞）：人批 ratified 标记的具体 attr（等前端整合）。
+（对偶性已由 §14.8 简报块锁定；2026-07-07 干跑在真 SAM2 图上验证：plan→ingest→run→evidence→
+brief→次轮 distill 全链闭环，铸出的 claim/supports 即上文 new_claims 语义的来源。）
 
 ### 14.8 执行括号与收尾工具（切片②③④可执行规格，2026-07-07）
 
 **② `run begin` / `run end`（执行括号）** —— 替代「系统全程驾驶」，系统只在两端测量：
 
 - `simulanka run begin --task <sel> [--parent <dir>] [--name <n>] [--workdir <path>]`：
-  建 `run` 节点（`status=running`、`started_at`、`workdir`）；镜像契约（§5.6 同款：`contract` attr +
+  建 `run` 节点（`status=running`、`started_at`、`workdir`；`--parent` 缺省 = task 的父 experiment，
+  containment 即表达 run↔experiment 归属，不另连 `part_of`）；镜像契约（§5.6 同款：`contract` attr +
   `<run_dir>/contract.json` 快照 + `fulfills` 边）；记录 diff 基线 = workdir 的 git `HEAD`，
   begin 时已有脏文件则记 `baseline_dirty=true` + 脏文件清单（诚实降级，不装干净）。
+  清单必须 `git status --porcelain -uall` 取**文件粒度**——porcelain 默认把未跟踪目录折叠成一行，
+  end 时的 diff = end 态清单 − begin 态清单（集合差），折叠粒度会把既有脏文件算到 run 头上（干跑实测）。
   打印 run id / handle，harness 自持（不设「当前 run」环境态——并发 run 显式传 id 更稳）。
 - `simulanka run end <run> [--status done|failed] [--metrics <file>]`：系统侧依次——
   ① 对基线算 diff（复用 §5.4 wrapper 的 workspace diff 路径）；② 按 contract.json 快照跑
@@ -774,9 +802,17 @@ briefing 导出格式与本格式的对偶性（简报里给的 id 就是块里�
 
 - 输出 = markdown：prose 头（一段自动概览）+ **一个 ```simulanka-brief``` JSON 块**，与 §14.7
   计划格式镜像对偶——**块里给出的图 id 就是计划块 `distill` 段可直接引用的 id**。
-- 块内容（全部确定性、排序固定，同图态必同输出）：open 的 question/hypothesis/claim（含
-  verdict/status/body）；近期 run（id、task goal、`contract_check`、evidence metrics、duration）；
-  未处理的 escalate note；§13 分歧集条数（一行，不展开）；预算消耗小计（所列 run 的 wall-clock 和）。
-- `--out <file>` 或 stdout；文件走 FileRegistry（kind 与 plan 文件一并定，§14.7 开放点）。
+- 块内容（全部确定性、按 id 排序，同图态必同输出）：open 的 question/hypothesis/claim（含
+  verdict/status/body）；近期 run（id、task goal、`contract_check`、duration、**evidence 条目
+  含其节点 id + metrics**——没有 evidence id 下轮 distill 的 supports/contradicts 就无的放矢，
+  对偶性会在此断裂，干跑实测）；未处理的 escalate note；§13 分歧集条数（一行，不展开）；
+  预算消耗小计（所列 run 的 wall-clock 和）。
+- **open 的判据**（v1，全部查询时判）：claim = `status=="open"`；hypothesis = 无 `verdict` attr
+  （distill 下过 verdict 即视为已结）；question = 全列（v1 无关闭机制）。「近期 run」= 非 `done`
+  experiment 名下的全部 run（experiment 的 status 由操作员在其 tasks 的 run 收尾后翻 `done`，
+  属机械流，写进操作员 skill）。
+- 工具 PatchIntent（如有写入）与 evidence 提取器、`run begin/end` 一律 `actor="system"`
+  （三不变量：测量永远系统侧）。
+- `--out <file>` 或 stdout；文件走 FileRegistry `brief` kind（§14.7 已裁：`research/` 下 `brief-` 前缀）。
 
 实现均为确定性工具（§14.1 边界），规格照施工即可；kernel/schema 零改动（全部现有原子与边型）。

@@ -187,21 +187,26 @@ def _scaffold_managed_layout(layout: ProjectLayout) -> None:
     )
     from simulanka.registry.file_kinds import FILE_KINDS
 
-    ops: list[IntentOp] = []
+    # Kinds may share a directory (plan/brief → research/), so scaffold one
+    # node per unique dir; lookup keys on `fs_path` (see _find_managed_dir_node).
+    # `managed_kind` is only written when a single kind owns the dir.
+    kinds_by_dir: dict[str, list[str]] = {}
     for kind, spec in FILE_KINDS.items():
+        kinds_by_dir.setdefault(spec.dir_name, []).append(kind)
+
+    ops: list[IntentOp] = []
+    for dir_name, kinds in kinds_by_dir.items():
         # Filesystem side.
-        (layout.root / spec.dir_name).mkdir(parents=True, exist_ok=True)
-        # Graph side: one directory node per kind, distinguished by
-        # `attrs.managed_kind`. Name is the basename of the directory.
+        (layout.root / dir_name).mkdir(parents=True, exist_ok=True)
+        attrs: dict[str, str] = {"fs_path": dir_name}
+        if len(kinds) == 1:
+            attrs["managed_kind"] = kinds[0]
         ops.append(
             CreateNodeOp(
                 type="directory",
-                name=spec.dir_name.split("/")[-1],
+                name=dir_name.split("/")[-1],
                 parent=None,
-                attrs={
-                    "fs_path": spec.dir_name,
-                    "managed_kind": kind,
-                },
+                attrs=attrs,
             )
         )
 

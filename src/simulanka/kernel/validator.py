@@ -8,12 +8,33 @@ class ValidationError(ValueError):
     """One or more invariants violated."""
 
 
+_RESERVED_NAME_PREFIXES = ("nod_", "edg_", "prt_")
+
+
+def reserved_name_error(name: str) -> str | None:
+    """Names that would be hijacked by selector syntax are reserved.
+
+    `edg_*` bare names get routed to the edge branch of UpdateAttrsOp
+    (2026-06-12 review), `nod_`/`prt_` shadow id selectors the same way, and a
+    leading `@` collides with intent-local ref handles. Enforced on create and
+    rename — the two places a name enters the graph.
+    """
+    if name.startswith(_RESERVED_NAME_PREFIXES):
+        return f"Name `{name}` uses a reserved id prefix (nod_/edg_/prt_)."
+    if name.startswith("@"):
+        return f"Name `{name}` may not start with `@` (reserved for intent-local refs)."
+    return None
+
+
 def validate_node(
     node: Node,
     *,
     parent_type: str | None,
 ) -> list[str]:
     errors: list[str] = []
+    reserved = reserved_name_error(node.name)
+    if reserved:
+        errors.append(reserved)
     spec = NODE_TYPES.get(node.type)
     if spec is None:
         errors.append(f"Unknown node type `{node.type}`.")

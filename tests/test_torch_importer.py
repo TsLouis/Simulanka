@@ -106,6 +106,11 @@ def test_imports_module_hierarchy_and_data_flow(tmp_path: Path) -> None:
     assert all(e.attrs.get("source") == "trace" for e in data_flow), (
         "machine-observed edges must be marked source=trace"
     )
+    # §13.2 trace verdict materialisation: born verified, no query special-case.
+    assert all(
+        e.attrs.get("verdict") == "correct" and e.attrs.get("verdict_by") == "trace"
+        for e in data_flow
+    )
     by_endpoints = {(e.source_id, e.target_id) for e in data_flow}
 
     ids = result.module_node_ids
