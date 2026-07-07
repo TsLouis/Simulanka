@@ -271,13 +271,14 @@
         // from one output port then read apart by their slice, not just target.
         const slice = link?.simulanka_slice
         if (slice && link?._pos) {
-          drawSliceLabel(ctx, link._pos, slice, link.color ?? '#a05ad1')
+          drawSliceLabel(ctx, link._pos, slice, link.color ?? '#b28ce0')
         }
       }
   }
 
   // A small chip at the link centre carrying the output-slice (§13.5.6). Drawn
   // in graph coordinates (the renderLink ctx is already canvas-transformed).
+  // 星图册: night-lacquer chip, hairline border in the link's own colour.
   function drawSliceLabel(
     ctx: CanvasRenderingContext2D,
     pos: [number, number],
@@ -285,14 +286,23 @@
     color: string,
   ) {
     ctx.save()
-    ctx.font = '10px monospace'
+    ctx.font = '10px ui-monospace, monospace'
     const w = ctx.measureText(text).width
-    const padX = 4
-    const h = 13
+    const padX = 5
+    const h = 14
     const x = pos[0] - w / 2 - padX
     const y = pos[1] - h / 2
-    ctx.fillStyle = 'rgba(20,20,20,0.78)'
-    ctx.fillRect(x, y, w + padX * 2, h)
+    const bw = w + padX * 2
+    const r = 4
+    ctx.beginPath()
+    ctx.roundRect(x, y, bw, h, r)
+    ctx.fillStyle = 'rgba(11, 19, 34, 0.88)' // --sky @ 88%
+    ctx.fill()
+    ctx.strokeStyle = color
+    ctx.globalAlpha = 0.55
+    ctx.lineWidth = 1
+    ctx.stroke()
+    ctx.globalAlpha = 1
     ctx.fillStyle = color
     ctx.textBaseline = 'middle'
     ctx.fillText(text, pos[0] - w / 2, pos[1])
@@ -707,5 +717,15 @@
     min-width: 0;
     height: 100%;
     background: var(--sky);
+    animation: sky-reveal 0.9s ease-out;
+  }
+  /* 开场：夜空自深处浮现一次，不循环不打扰 */
+  @keyframes sky-reveal {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
   }
 </style>
