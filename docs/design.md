@@ -707,8 +707,9 @@ Simulanka 退成**图内核 + 写权闸门 + 工具面（CLI 先行，MCP 薄适
 ### 14.6 实施切片（供后续会话/Codex 按规格施工）
 
 ① plan 结构块 schema + `plan ingest`（规格见 §14.7）；② `run begin/end`
-执行括号；③ evidence 骨架提取器；④ 简报导出 `brief export`；⑤ skills 四篇；⑥ 可信度血缘
-查询 + 前端染色（后置，可与皮肤轮同捆）。①–④ 为确定性工具，规格清晰后弱模型可施工。
+执行括号；③ evidence 骨架提取器；④ 简报导出 `brief export`（②③④规格见 §14.8）；⑤ skills 四篇
+（Codex 线）；⑥ 可信度血缘查询 + 前端染色（规格见 §14.9，可与皮肤轮同捆）。①–④⑥ 为确定性
+工具，规格清晰后弱模型可施工；全部规格已于 2026-07-07 干跑校准（见 §14.7 尾注）。
 
 ### 14.7 计划文件格式 v1（切片①可执行规格，2026-07-06）
 
@@ -746,7 +747,8 @@ Simulanka 退成**图内核 + 写权闸门 + 工具面（CLI 先行，MCP 薄适
    块内 lid 引用（plan 段互引 + distill 边连 new_claims）用 §3 的 `@ref` 机制落成一个 intent。
 3. 落图标记：新节点/边 attrs `source="analyst"` + `plan_file` + `plan_lid`（前端深链文档出处用）；
    experiment `status=planned`。distill 的 claim 状态改写是**分析者的判断记录**（写者=分析者，与 §5.1
-   「支持/反驳计数查询时算」不冲突——计数与可信级仍实时算，status 是判断快照）。
+   「支持/反驳计数查询时算」不冲突——计数与可信级仍实时算，status 是判断快照）；distill 改写同时在
+   目标实体盖 `reviewed_in=<plan_file>` 章（§14.9 可信级 `reviewed` 的判据来源）。
 4. `escalate` 非空 → 建 `note` 节点（attrs `kind=escalate`, `body=reason`）；**操作员契约：见 escalate 即停轮**。零新类型。
 5. 计划文件本身登记为 `file` 节点；同一文件重复 ingest = 拒（判据：该注册路径的 file 节点已存在；
    幂等/修订流 v2 再议）。
@@ -816,3 +818,43 @@ brief→次轮 distill 全链闭环，铸出的 claim/supports 即上文 new_cla
 - `--out <file>` 或 stdout；文件走 FileRegistry `brief` kind（§14.7 已裁：`research/` 下 `brief-` 前缀）。
 
 实现均为确定性工具（§14.1 边界），规格照施工即可；kernel/schema 零改动（全部现有原子与边型）。
+
+### 14.9 可信度血缘查询 + 前端染色（切片⑥可执行规格，2026-07-07）
+
+§14.3 三级可信的落地形态。两条硬原则：**查询时算、不落盘**（同 §5.1 claim 计数先例——写路径纯净，
+分级规则可改而历史不脏）；**展示血缘、不折叠**——不做 min/加权把上游可信度折成一个分数：图存在的
+意义就是让人看见「为什么可信」，折叠恰恰把 why 藏掉。人看链条自己下判断，机器只负责把链条摆出来。
+
+**每实体可信级**（确定性映射，只读既有铭章）：
+
+| 级 | 判据（按此优先序） | 语义 |
+| --- | --- | --- |
+| `human` | `verdict_by=="user"` 或人批标记 | 人裁至上（§14.3），压倒一切 |
+| `constructed` | `source ∈ {trace, machine}` | 构造可信：确定性工具产物，免验 |
+| `reviewed` | attrs 含 `reviewed_in` | 次轮分析者审过旧账（强验完成） |
+| `checked` | attrs 含 `checked_by` | 便宜模型快检过（部分可信） |
+| `unreviewed` | 以上皆无（source=analyst/agent） | 须强验，尚未有人碰 |
+
+配套铭章（本节新增两枚，均走 `update_attrs`）：
+- `reviewed_in=<plan_file>`：**`plan ingest` 在执行 distill 的 claims/hypotheses 改写时自动盖**在
+  目标实体上（次轮分析者审旧账即强验，§14.3；浅 merge 后到先得变最新覆盖，历史在事件日志）。
+- `checked_by=<model>` + `checked_at` + `check_note`：快检工具（⑤操作员流程的一环）盖，
+  `actor="checker:<model>"`。快检只针对过程/中间结论类，不给 `unreviewed` 的
+  evidence→claim 判断升级背书（那是次轮分析者与人的领地）。
+
+**血缘链查询** `GET /node/{id}/provenance`（服务端确定性走链，同图态必同输出）：
+从 claim/hypothesis 出发沿固定边集回溯——incoming `supports`/`contradicts` → evidence →
+（parent / `produces` 逆向）→ run → `fulfills` → task →（parent）→ experiment →
+`plan_file` → 计划文件节点。每跳输出 `{id, type, name, trust, via_edge, via_edge_trust}`
+（边与节点分别定级：supports 边是分析者的判断，evidence 是机器的测量，二者可信级常不同——
+这正是不折叠的理由）。visited 集防环；按 id 排序保证确定性。
+
+**前端染色**（与皮肤轮同色系，theme.ts 加映射即可）：`human`=金 `--gold-bright`；
+`constructed`=星蓝 `--star`（与 trace 边同源同色，语义一致）；`reviewed`=玉 `--jade`；
+`checked`=琥珀 `--amber`；`unreviewed`=灰 `--muted`（视觉上「未定」应当显眼地不显眼）。
+研究域节点的 view payload 带 `trust` 字段（服务端算，可按 graph_version 缓存）；
+NodeInspector 加可信级徽记 + 血缘链列表（逐跳可点击跳转）。
+
+**v1 不做**：数值分数（三级+人裁够用，分数=伪精度）；跨实体折叠聚合（见上）；question 的
+可信级（它是提问不是断言）；快检章的写权矩阵强制（checker 走通用 update_attrs，矩阵扩展等
+真滥用出现）。
