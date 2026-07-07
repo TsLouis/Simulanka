@@ -10,6 +10,9 @@
   export let namesById: Map<string, string>
   export let portsById: Map<string, PortDTO>
   export let selectedId: string | null // selected node filters the ghost list
+  // Edges with an action in flight: their buttons lock until the request
+  // settles, so the SSE roundtrip gap can't read as "click did nothing".
+  export let busyEdges: Set<string> = new Set()
   export let onAccept: (edgeId: string) => void
   export let onReject: (edgeId: string, note: string) => void
   export let onDiscuss: (edgeId: string, discuss: boolean) => void
@@ -104,7 +107,11 @@
                   placeholder="必填：我认为…因为…（这是给 agent 的可反驳靶子）"
                 ></textarea>
                 <div class="row">
-                  <button class="danger" disabled={!draft.trim()} on:click={submitReject}>
+                  <button
+                    class="danger"
+                    disabled={!draft.trim() || busyEdges.has(e.id)}
+                    on:click={submitReject}
+                  >
                     提交拒绝
                   </button>
                   <button on:click={() => (rejecting = null)}>取消</button>
@@ -112,8 +119,12 @@
               </div>
             {:else}
               <div class="row">
-                <button class="ok" on:click={() => onAccept(e.id)}>✓ 接受</button>
-                <button class="danger" on:click={() => startReject(e.id)}>✗ 拒绝</button>
+                <button class="ok" disabled={busyEdges.has(e.id)} on:click={() => onAccept(e.id)}>
+                  ✓ 接受
+                </button>
+                <button class="danger" disabled={busyEdges.has(e.id)} on:click={() => startReject(e.id)}>
+                  ✗ 拒绝
+                </button>
               </div>
             {/if}
           </li>
@@ -142,7 +153,9 @@
               <span class="ep">{name(e.dst)}<em>.{portName(e.dst_port)}</em></span>
             </div>
             <div class="row">
-              <button on:click={() => onDiscuss(e.id, true)}>拉入讨论</button>
+              <button disabled={busyEdges.has(e.id)} on:click={() => onDiscuss(e.id, true)}>
+                拉入讨论
+              </button>
             </div>
           </li>
         {/each}
@@ -159,9 +172,9 @@
         {#each disagreements as d (d.id)}
           <li class="dis">
             <div class="endpoints">
-              <span class="ep">{name(d.src)}</span>
+              <span class="ep">{d.src_name ?? name(d.src)}</span>
               <span class="arrow">→</span>
-              <span class="ep">{name(d.dst)}</span>
+              <span class="ep">{d.dst_name ?? name(d.dst)}</span>
               {#each d.reasons as r}
                 <span class="reason reason-{r}">{REASON_LABELS[r] ?? r}</span>
               {/each}
@@ -177,7 +190,9 @@
             {/if}
             {#if d.reasons.includes('manual')}
               <div class="row">
-                <button on:click={() => onDiscuss(d.id, false)}>移出讨论</button>
+                <button disabled={busyEdges.has(d.id)} on:click={() => onDiscuss(d.id, false)}>
+                  移出讨论
+                </button>
               </div>
             {/if}
           </li>

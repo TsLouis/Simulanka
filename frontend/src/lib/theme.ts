@@ -74,6 +74,7 @@ export function applyNightSky(canvas: LGraphCanvas): void {
 
   const c = canvas as unknown as Record<string, unknown>
   c.background_image = null // 关掉默认网格，让星野接管
+  c.show_info = false // 左下角 FPS 调试角标不属于星图
   c.clear_background_color = SKY
   c.render_canvas_border = false
   c.render_connections_border = false
@@ -85,6 +86,11 @@ export function applyNightSky(canvas: LGraphCanvas): void {
   c.onDrawBackground = (ctx: CanvasRenderingContext2D, area: [number, number, number, number]) => {
     drawStarfield(ctx, area)
   }
+
+  // 双击容器节点是我们的下钻手势；LiteGraph 原生的 node Properties 面板
+  // （带 Delete，且不走 kernel）在同一手势上弹出——压掉，NodeInspector
+  // 是唯一的节点详情面。
+  c.onShowNodePanel = () => {}
 
   // Web 字体就绪后重绘一次，否则首帧 canvas 文字落回退字体。
   const fonts = (document as Document & { fonts?: FontFaceSet }).fonts

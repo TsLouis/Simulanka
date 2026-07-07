@@ -50,12 +50,22 @@ select = ["E", "F", "I", "B", "UP", "SIM"]
 ignore = ["B008"]
 
 [tool.mypy]
-python_version = "3.10"
+# 与唯一开发环境（仓内 .venv，Py3.12）对齐；此前 3.10 在 numpy stubs 的
+# PEP 695 `type` 语法上直接 syntax error（numpy 随 SAM2 彩排装入）。
+python_version = "3.12"
 strict = true
 files = ["src", "tests"]
 
 [[tool.mypy.overrides]]
 module = ["torch", "torch.*"]
+ignore_missing_imports = true
+
+# numpy 只是 SAM2 类 baseline 的运行时依赖（本项目代码不直接 import）；
+# 其自带 stubs 用了 PEP 695 `type` 语法，在 python_version=3.10 的解析下
+# 直接报 syntax error —— 跳过第三方 stub，而非放宽本项目的兼容口径。
+[[tool.mypy.overrides]]
+module = ["numpy", "numpy.*"]
+follow_imports = "skip"
 ignore_missing_imports = true
 
 # Dummy torch.nn.Module subclasses in the importer tests are pure fixtures;

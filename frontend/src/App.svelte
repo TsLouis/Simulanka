@@ -170,20 +170,29 @@
   // Panel actions are fire-and-forget: the kernel commit comes back over SSE
   // and reloads the view (the edge-update event carries the endpoint node ids,
   // so touchesView matches). Failures surface in the status bar.
+  // busyEdges is the in-flight lock: without it the SSE roundtrip gap reads as
+  // "the click did nothing" and invites click storms (彩排实测 21 连发同一边).
+  let busyEdges: Set<string> = new Set()
+  function withBusy(edgeId: string, p: Promise<unknown>, what: string) {
+    busyEdges = new Set(busyEdges).add(edgeId)
+    void p
+      .catch(err => {
+        status = `${what} failed: ${(err as Error).message}`
+      })
+      .finally(() => {
+        const next = new Set(busyEdges)
+        next.delete(edgeId)
+        busyEdges = next
+      })
+  }
   function panelAccept(edgeId: string) {
-    void acceptGhost(edgeId).catch(err => {
-      status = `accept failed: ${(err as Error).message}`
-    })
+    withBusy(edgeId, acceptGhost(edgeId), 'accept')
   }
   function panelReject(edgeId: string, note: string) {
-    void postVerdict(edgeId, 'wrong', note).catch(err => {
-      status = `reject failed: ${(err as Error).message}`
-    })
+    withBusy(edgeId, postVerdict(edgeId, 'wrong', note), 'reject')
   }
   function panelDiscuss(edgeId: string, discuss: boolean) {
-    void setDiscuss(edgeId, discuss).catch(err => {
-      status = `discuss toggle failed: ${(err as Error).message}`
-    })
+    withBusy(edgeId, setDiscuss(edgeId, discuss), 'discuss toggle')
   }
 
   // §13.6 discussion chat state. Lives here, not in the panel: closing the
@@ -511,6 +520,7 @@
       {namesById}
       {portsById}
       {selectedId}
+      {busyEdges}
       onAccept={panelAccept}
       onReject={panelReject}
       onDiscuss={panelDiscuss}

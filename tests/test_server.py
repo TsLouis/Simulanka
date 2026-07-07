@@ -514,6 +514,10 @@ def test_reject_ghost_keeps_it_proposed_and_queued(tmp_path: Path) -> None:
     dis = client.get("/disagreements").json()["disagreements"]
     assert [d["id"] for d in dis] == [ghost_id]
     assert dis[0]["reasons"] == ["user_rejected_ghost"]
+    # Endpoint names ride along — the panel must not fall back to raw node
+    # ids when the disagreement lives outside the current view.
+    assert dis[0]["src_name"] == "enc"
+    assert dis[0]["dst_name"] == "dec"
 
 
 def test_verdict_requires_note(tmp_path: Path) -> None:

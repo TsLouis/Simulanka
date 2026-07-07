@@ -41,8 +41,12 @@ export interface ExternalNodeDTO {
 
 // §13.6: one disagreement-set entry — an edge plus which buckets it hit
 // (user_rejected_ghost / agent_flagged_user_edge / disputed / manual).
+// Endpoint names come from the server: the set spans the whole graph, so the
+// current view's name map can't resolve edges that live in other views.
 export interface DisagreementDTO extends EdgeDTO {
   reasons: string[]
+  src_name?: string
+  dst_name?: string
 }
 
 export interface AncestorDTO {

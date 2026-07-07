@@ -35,6 +35,7 @@ from simulanka.storage.entity_store import (
     iter_nodes,
     iter_ports,
     load_edge,
+    load_node,
 )
 
 DEV_ORIGINS = (
@@ -548,6 +549,20 @@ def _edge_dict(e: Edge) -> dict[str, Any]:
 
 def _disagreement_list(layout: ProjectLayout) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
+    # Endpoint names ride along: the disagreement set spans the whole graph,
+    # so the frontend's current-view name map can't resolve edges from other
+    # views (they'd render as raw node ids), and the discussion opening
+    # context reads better with names than ULIDs.
+    names: dict[str, str] = {}
+
+    def node_name(node_id: str) -> str:
+        if node_id not in names:
+            try:
+                names[node_id] = load_node(layout, node_id).name
+            except FileNotFoundError:
+                names[node_id] = node_id
+        return names[node_id]
+
     for e in iter_edges(layout):
         if e.type != "data_flow":
             continue
@@ -571,7 +586,12 @@ def _disagreement_list(layout: ProjectLayout) -> list[dict[str, Any]]:
         if a.get("discuss") is True:
             reasons.append("manual")
         if reasons:
-            out.append({**_edge_dict(e), "reasons": reasons})
+            out.append({
+                **_edge_dict(e),
+                "reasons": reasons,
+                "src_name": node_name(e.source_id),
+                "dst_name": node_name(e.target_id),
+            })
     return out
 
 
