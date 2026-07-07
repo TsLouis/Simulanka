@@ -742,3 +742,41 @@ Simulanka 退成**图内核 + 写权闸门 + 工具面（CLI 先行，MCP 薄适
 
 **开放点**（记录不阻塞）：人批 ratified 标记的具体 attr（等前端整合）；plan 文件的 FileRegistry kind；
 briefing 导出格式与本格式的对偶性（简报里给的 id 就是块里引用的 id，实现时对表）。
+
+### 14.8 执行括号与收尾工具（切片②③④可执行规格，2026-07-07）
+
+**② `run begin` / `run end`（执行括号）** —— 替代「系统全程驾驶」，系统只在两端测量：
+
+- `simulanka run begin --task <sel> [--parent <dir>] [--name <n>] [--workdir <path>]`：
+  建 `run` 节点（`status=running`、`started_at`、`workdir`）；镜像契约（§5.6 同款：`contract` attr +
+  `<run_dir>/contract.json` 快照 + `fulfills` 边）；记录 diff 基线 = workdir 的 git `HEAD`，
+  begin 时已有脏文件则记 `baseline_dirty=true` + 脏文件清单（诚实降级，不装干净）。
+  打印 run id / handle，harness 自持（不设「当前 run」环境态——并发 run 显式传 id 更稳）。
+- `simulanka run end <run> [--status done|failed] [--metrics <file>]`：系统侧依次——
+  ① 对基线算 diff（复用 §5.4 wrapper 的 workspace diff 路径）；② 按 contract.json 快照跑
+  acceptance（`sh -c`，log 入 run_dir）；③ 写 `contract_check`（判定优先级同 §5.6）；
+  ④ metrics 存在则触发③的 evidence 提取；⑤ `ended_at`/`duration_seconds`/`status`。
+  已 end 的 run 再 end = 拒（幂等边界同 detached finalize 先例）。
+- **孤儿 run**（begin 后 harness 崩了没 end）：无进程可查（run=会话非进程，/proc 特判不适用），
+  v1 由人工 `run end --status failed` 收尾 + doctor 增一检：`running` 超 `budget.time_seconds`
+  （无预算则 24h）即提示。
+
+**③ evidence 骨架提取器**（`run end` 内触发，也可独立 `simulanka evidence extract <run>`）：
+
+- 约定：metrics 文件 = 平铺 JSON 标量字典（`--metrics <file>` 或 workdir `metrics.json`；
+  task 的 `allowed_outputs` 应涵盖它）。
+- 产出：`evidence` 节点（parent=run，§5.1 允许），attrs `source="machine"`、`metrics=<dict>`、
+  `metrics_path`、`body`=一行摘要；`produces` 边 run→evidence。**不连 supports/contradicts**——
+  语义判断归分析者（§14.2），执行者与提取器都无笔。
+- 解析失败/非标量 → 不造 evidence，run 记 `metrics_error`（宁可缺不可假）。
+
+**④ 简报导出 `brief export`**（分析者开场输入，ingest 的逆操作）：
+
+- 输出 = markdown：prose 头（一段自动概览）+ **一个 ```simulanka-brief``` JSON 块**，与 §14.7
+  计划格式镜像对偶——**块里给出的图 id 就是计划块 `distill` 段可直接引用的 id**。
+- 块内容（全部确定性、排序固定，同图态必同输出）：open 的 question/hypothesis/claim（含
+  verdict/status/body）；近期 run（id、task goal、`contract_check`、evidence metrics、duration）；
+  未处理的 escalate note；§13 分歧集条数（一行，不展开）；预算消耗小计（所列 run 的 wall-clock 和）。
+- `--out <file>` 或 stdout；文件走 FileRegistry（kind 与 plan 文件一并定，§14.7 开放点）。
+
+实现均为确定性工具（§14.1 边界），规格照施工即可；kernel/schema 零改动（全部现有原子与边型）。
