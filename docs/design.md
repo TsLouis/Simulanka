@@ -625,6 +625,14 @@ LiteGraph 的 quirks（JS 非 TS、API 偏旧）可控。需要的扩展点：�
   聊天不毁批）。op 协议契约 = issue #2；开场 prompt 文案占位在 server（`OPENING_TEMPLATE`），编辑权归 Codex。
   前端 DiscussPanel 挂核对面板内，applied/rejected chips 让矩阵裁决可见；会话经状态文件
   （`.simulanka/agent/discussion.json`）跨重启续聊，transcript 不进图（在 opencode session 里）。
+- **通用对话入口（2026-07-08 定向，实现推迟）**：DiscussPanel 从「核对分歧」单场景推广为前端通用
+  agent 对话入口（人找 agent 不出前端）。定案两条：① **消息不进图**——对话存**会话树文件**（旁路
+  文件先例：run log / sidecar / discussion.json），图中每场对话仅落一张锚点 `note`（指向会话 + 关联
+  实体），结论照旧经 op 块 + 写权矩阵落账。「消息=节点 + 类型隔离豁免血缘」考虑过并否决：同等 UX 下
+  它让每个后续工具（brief/doctor/索引/血缘）永久背「过滤聊天」税，成本应集中付在一个对话视图组件里。
+  ② **多分枝对话采纳为需求**——分枝 = 会话树文件里的树结构，opencode 侧分枝 v1 = 新 session + 祖先
+  上下文重放；前端对话视图复用 node-edge 视觉语言（图皮、文件芯）。余下岔口（入口位置、上下文注入、
+  写权范围、沉淀物）grill 后实现。
 
 ## 14. 科研主循环（2026-07-06 grill 定稿）
 
