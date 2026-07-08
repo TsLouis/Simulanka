@@ -385,6 +385,9 @@ FileRegistry 当前刻意保持简单，存在两处已被识别的限制，留�
 
 1. **不支持多分枝实验布局**。`file create --kind X --name Y` 永远把文件放到 kind 的固定目录（`src/`、`docs/` 等），无法表达"branch A 和 branch B 各有自己的代码/日志/结果"。
 2. **没有 `dataset` 类别**。`baseline` 当作通用外部引用顶着，但数据集的特性（体积大、跨实验共用、远程、有版本）当前没承载。
+3. **create 不查兄弟重名**（2026-07-08 切片①实测确认）。rename 查、create 放行——且**不能**简单补齐：
+   FileRegistry 把全部登记文件平挂在顶层目录节点下，`src/a/util.py` 与 `src/b/util.py` 同名同父是合法现状。
+   歧义按 §4 在读时拒绝（路径 selector 匹配多项即拒）；需要唯一性的写者自行保证（plan ingest 靠 lid 块内唯一 + `escalate` 保留 lid）。
 
 **根因**：`FileKindSpec.dir_name` 把"语义（这是代码/文档）"与"位置（放在 src/）"耦合在一处。多分枝场景下语义不变，位置应跟作用域走（project / experiment / run）。
 
@@ -724,7 +727,9 @@ Simulanka 退成**图内核 + 写权闸门 + 工具面（CLI 先行，MCP 薄适
 **文件形态**：Markdown，自由 prose（分析者推理原文）+ **恰好一个** ```` ```simulanka-plan ```` 围栏块（JSON）。
 0 个或多于 1 个块 = ingest 拒。文件经 FileRegistry 归档（kind/路径由 FileRegistry 裁，实现时定）。
 
-**块 schema**（两段式，对应「先审旧账、再开新篇」）：
+**块 schema**（两段式，对应「先审旧账、再开新篇」；**两段均可省，全空块拒**（2026-07-08 澄清）——
+「开场先审旧账」是循环纪律，落点在操作员/分析者 skill，不进格式；工具是纯格式转换器。两段之分是
+解析规则差异而非流程：distill 引用已落图实体（id 解析 + 类型校验），plan 铸造新实体（lid 局部句柄））：
 
 ```jsonc
 {
@@ -758,6 +763,7 @@ Simulanka 退成**图内核 + 写权闸门 + 工具面（CLI 先行，MCP 薄适
    「支持/反驳计数查询时算」不冲突——计数与可信级仍实时算，status 是判断快照）；distill 改写同时在
    目标实体盖 `reviewed_in=<plan_file>` 章（§14.9 可信级 `reviewed` 的判据来源）。
 4. `escalate` 非空 → 建 `note` 节点（attrs `kind=escalate`, `body=reason`）；**操作员契约：见 escalate 即停轮**。零新类型。
+   `escalate` 为**保留 lid**（该 note 与 lid 命名的原子同级，而 kernel 建时不查兄弟重名——§10.3——格式侧自禁）。
 5. 计划文件本身登记为 `file` 节点；同一文件重复 ingest = 拒（判据：该注册路径的 file 节点已存在；
    幂等/修订流 v2 再议）。
 

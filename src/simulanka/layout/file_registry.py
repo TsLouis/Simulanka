@@ -155,6 +155,15 @@ def _commit_file_node(
     )
 
 
+def managed_dir_node(layout: ProjectLayout, kind: str) -> Node:
+    """Resolve (lazily creating) the managed top-level directory node for `kind`.
+
+    Public entry for callers that commit file nodes inside their own
+    PatchIntent (plan ingest) instead of going through create/register_file.
+    """
+    return _find_managed_dir_node(layout, _spec_or_error(kind))
+
+
 def find_file_nodes_under_kind(layout: ProjectLayout, kind: str) -> list[Node]:
     return [
         n for n in iter_nodes(layout)
