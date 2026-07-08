@@ -1,0 +1,4 @@
+interface:
+  display_name: "Simulanka Agent Discipline"
+  short_description: "Keep agent graph writes cited and bounded"
+  default_prompt: "Use $simulanka-agent-discipline when proposing or checking Simulanka graph edges and research claims."

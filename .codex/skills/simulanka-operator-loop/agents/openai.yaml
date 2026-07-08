@@ -1,0 +1,4 @@
+interface:
+  display_name: "Simulanka Operator Loop"
+  short_description: "Run Simulanka research cycles mechanically"
+  default_prompt: "Use $simulanka-operator-loop to execute a Simulanka plan through ingest, runs, evidence, and brief export."
