@@ -329,20 +329,21 @@ SQLite 索引是查询加速，可任意删并 `simulanka graph index rebuild`�
 
 ## 7. CLI 表面
 
-对齐 handoff acceptance flow，前缀 `simulanka`：
+前缀 `simulanka`（2026-07-08 对齐实现现状；旧版列的 `graph patch apply` 从未实现，删）：
 
 ```text
 simulanka init <path>
-simulanka graph node create  --type T --name N [--parent S] [--attrs k=v]
-simulanka graph port create  <node> --name N --direction in|out --type T
-simulanka graph connect      <src.port> <dst.port> --type T
-simulanka graph inspect      <selector>
-simulanka graph doctor       [--repair]
-simulanka graph export       --format json
-simulanka graph import       --file <bundle>
-simulanka graph patch apply  --file intent.json [--dry-run]
-simulanka graph migrate      [--dry-run]
-simulanka graph index rebuild
+simulanka graph node create|inspect · port create · connect
+simulanka graph file create|register            # FileRegistry 裁路径（§10）
+simulanka graph doctor [--repair] · migrate [--dry-run] · index rebuild
+simulanka graph export · import                 # 全图 JSON bundle
+simulanka import torch|baseline …               # §5.2 导入器
+simulanka export model-explorer …               # §5.2 可视化导出
+simulanka run exec|agent|status|wait|kill|reconcile   # §5.3 / §5.5
+simulanka task create|inspect                   # §5.6
+simulanka plan ingest <file>                    # §14.7 计划落图
+simulanka propose <model>                       # §13.5.3 agent 提议 ghost 边
+simulanka serve                                 # §12 前端 API + SSE
 ```
 
 每个写命令在内部组装 `PatchIntent` 调 `apply_patch`。
@@ -720,10 +721,11 @@ Simulanka 退成**图内核 + 写权闸门 + 工具面（CLI 先行，MCP 薄适
 
 ### 14.6 实施切片（供后续会话/Codex 按规格施工）
 
-① plan 结构块 schema + `plan ingest`（规格见 §14.7）；② `run begin/end`
-执行括号；③ evidence 骨架提取器；④ 简报导出 `brief export`（②③④规格见 §14.8）；⑤ skills 四篇
-（Codex 线）；⑥ 可信度血缘查询 + 前端染色（规格见 §14.9，可与皮肤轮同捆）。①–④⑥ 为确定性
-工具，规格清晰后弱模型可施工；全部规格已于 2026-07-07 干跑校准（见 §14.7 尾注）。
+① plan 结构块 schema + `plan ingest`（规格见 §14.7）——**✅ 已落地 2026-07-08**（`src/simulanka/plan.py` +
+CLI + 16 测试，9e5fe4b）；② `run begin/end` 执行括号；③ evidence 骨架提取器；④ 简报导出
+`brief export`（②③④规格见 §14.8）；⑤ skills 四篇（Codex 线）；⑥ 可信度血缘查询 + 前端染色
+（规格见 §14.9，可与皮肤轮同捆）。①–④⑥ 为确定性工具，规格清晰后弱模型可施工；全部规格已于
+2026-07-07 干跑校准（见 §14.7 尾注）。
 
 ### 14.7 计划文件格式 v1（切片①可执行规格，2026-07-06）
 
