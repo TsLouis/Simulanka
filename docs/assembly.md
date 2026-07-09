@@ -103,7 +103,7 @@
 
 **🔲 `run begin` / `run end`（切片②）**——执行括号，系统只在两端测量，中间干活的是人还是 agent 不管：
 
-- `run begin --task <sel> [--parent <dir>] [--name <n>] [--workdir <path>]`：建 run 节点（`status=running`）；镜像契约（`contract` attr + `<run_dir>/contract.json` 快照 + `fulfills` 边）；记 diff 基线 = workdir 的 git HEAD；已有脏文件则 `baseline_dirty=true` + **文件粒度**清单（`git status --porcelain -uall`，未跟踪目录必须展开——折叠粒度会把既有脏文件算到 run 头上）。打印 run id，harness 自持，**不设「当前 run」环境态**。`--parent` 缺省 = task 的父 experiment。
+- `run begin --task <sel> [--parent <dir>] [--name <n>] [--workdir <path>]`：建 run 节点（`status=running`）；镜像契约（`contract` attr + `<run_dir>/contract.json` 快照 + `fulfills` 边）；**diff 机制＝wrapper 快照比对**（2026-07-09 裁定：begin 拍工作区快照存盘、end 比对，全系统统一为这一条测量路径；作废原 §14.8「porcelain 清单集合差」——集合差漏掉「begin 时已脏、run 中又改」的文件，快照比对不漏且不依赖 git）。git HEAD 与脏文件清单（`git status --porcelain -uall` 文件粒度）仍在 begin 时记录为**诚实性元数据**（`baseline_dirty=true`），不作 diff 机制。打印 run id，harness 自持，**不设「当前 run」环境态**。`--parent` 缺省 = task 的父 experiment。
 - `run end <run> [--status done|failed] [--metrics <file>]`：① 对基线算 diff（复用 wrapper 的 workspace diff 路径）→ ② 按 contract.json 快照跑 acceptance → ③ 写 `contract_check` → ④ 有 metrics 则触发切片③ → ⑤ `ended_at`/`duration_seconds`/`status`。已 end 再 end = 拒。
 - 孤儿 run（begin 后 harness 崩）：v1 人工 `run end --status failed` + doctor 增一检（`running` 超预算或 24h 即提示）。
 - intent 一律 `actor="system"`（测量归系统）。
@@ -120,7 +120,9 @@
 
 - **`run agent`**：(agent, prompt|--task) → CLI 调用（argv 模板 `codex exec {prompt}` / `claude -p {prompt}`，`SIMULANKA_AGENT_<NAME>_ARGV` 环境变量可覆盖）。**不接管** agent 的 skills/MCP 配置，**不解析**其输出——只前后快照工作区、diff 写 `changes.json`；挂 task 时镜像契约 + fulfills + 契约检查。`--detach` 异步同 run 路径。
 - **`propose`**：起 agent 读 forward() 提议 ghost 数据流边。纪律在代码里强制而非 prompt 里恳求：仅已知直接子模块间、`citation` 非空才落地（cite-or-skip），全部生而 `proposed/unconfirmed`，多输出经 out_port/out_slice 表达。
-- **opencode harness**（`agent/harness.py`）：非交互续聊 opencode session、抽出回复文本、解析 ops 块——讨论面板的执行底座。`opencode_cli_bridge` + `pty_bridge` 提供带 sidecar 记录的实时会话形态（xterm 可接）。
+- **opencode harness**（`agent/harness.py`）：非交互续聊 opencode session、抽出回复文本、解析 ops 块——讨论面板的执行底座。
+
+**插座子任务（2026-07-09 grill 定，静态末位，🔲）**：① **run agent 骑到 run 括号上**——消掉「wrapper 快照 diff」与「run end 测量」两套并行真相，全系统一条测量路径（动 `agent/wrapper.py`，属 Codex 线，规格 Claude 出）；② `--actor operator` 在 CLI 机械写命令上贯通；③ **前端内嵌自由 agent 会话**走结构化事件流路线（见 frontend.md）。**死端勿再试**：PTY 终端透传作主路线（`pty_bridge`/`opencode_cli_bridge` 原型实测体验差，TUI 重绘/尺寸/输入法驯服成本无底）——降级为逃生舱不再投入，sidecar 录制思想保留。
 
 ## CLI 一览（转换面）
 

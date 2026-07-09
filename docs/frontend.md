@@ -56,8 +56,9 @@
 ## 待实现（静态验收缺口）
 
 **深链文档出处** 🔲：研究原子已带 `plan_file` + `plan_lid` 铭章，前端做「节点一键跳到计划文件对应位置」。图是文档的有损投影（prose 单向驻留文件），这条链是投影可逆性的人面保证。
+形态（2026-07-09 定，用户裁）：**应用内只读文档抽屉**——server 读文件端点 + markdown 渲染 + `plan_lid` 文本匹配跳转/高亮。**不做**：编辑、双向同步、逐条精确锚定（匹配不到退化为打开文档顶部）；跳编辑器按钮不预做，A 实测不够再加。
 
-**按轮下钻** 🔲：ingest 已按计划建轮次目录（`research/<plan-stem>/`），下钻机制现成；缺的是研究原子的友好呈现（question/hypothesis/experiment/task/run/evidence/claim 的节点样式与状态徽记）。
+**按轮下钻 + 信息密度** 🔲：ingest 已按计划建轮次目录（`research/<plan-stem>/`），下钻机制现成。呈现要求（2026-07-09 用户定为硬需求）：**日常所需信息大多数不点开侧栏就能从画布读到**。每类研究原子一张卡片：question/claim=正文摘要+状态徽记、hypothesis=正文+verdict 徽记、experiment=goal+status、task=goal+契约摘要、run=状态/时长/exit code、evidence=关键 metrics 数值。字段清单=可调项（首版 Claude 定，彩排中按用户反馈迭代）。
 
 **可信度染色 + 血缘链** 🔲（切片⑥规格，可与皮肤轮同捆）：
 
@@ -77,5 +78,10 @@
 - 研究域节点 view payload 带 `trust` 字段（服务端算）；NodeInspector 加可信级徽记 + 血缘链列表（逐跳可点跳转）。
 - 配套铭章：`reviewed_in`（plan ingest 已盖✅）；`checked_by/checked_at/check_note`（快检工具属动态线，铭章词表先定）。
 - v1 不做：数值分数（伪精度）、跨实体折叠聚合、question 可信级（提问不是断言）、快检章的矩阵强制。
+
+**内嵌 agent 会话（插座子任务，静态末位）** 🔲（2026-07-09 grill 定）：前端起一个自由 agent 会话——agent 像在自己的 harness 里一样做任何事，界面是前端。技术路线＝**结构化事件流 + 原生会话面板**：用 harness 无头流式接口（opencode JSON / `claude -p --output-format stream-json`），渲染为对话气泡 + 工具调用卡片 + 流式输出；每 harness 一个薄展示适配器（只薄在展示层，调用与写权仍 harness 无关），先只接 opencode（免费模型现成）。写图仍只经 CLI/写权闸；会话干 task 时自己调 `run begin/end` 打卡（打卡即会话的图身份）。
+**验收**：免费模型跑一个玩具 task，会话/diff/验收/落图全程前端可见，输出好坏不作数。
+**与 §13.6 的边界**：不冲突——§13.6 禁的是「谈论图的无锚聊天」；这是**干活的会话**，锚天然是 task/run。
+**死端勿再试**：PTY 终端透传（xterm.js 嵌 TUI）作主路线——原型实测体验差，TUI 重绘/尺寸同步/输入法驯服成本无底；降级为逃生舱，sidecar 录制思想保留。
 
 **美术皮肤**（原神童话风）：不作为静态验收条件，随前端波次择机。
