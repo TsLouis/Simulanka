@@ -1,0 +1,4 @@
+interface:
+  display_name: "Simulanka Plan Author"
+  short_description: "Write analyzer plan blocks for Simulanka"
+  default_prompt: "Use $simulanka-plan-author to draft a Simulanka research plan with a valid simulanka-plan block."

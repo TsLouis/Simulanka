@@ -1,0 +1,4 @@
+interface:
+  display_name: "Simulanka Baseline Manifest"
+  short_description: "Create lintable baseline import manifests"
+  default_prompt: "Use $simulanka-baseline-manifest to write a simulanka_builds manifest and build functions for a baseline import."
