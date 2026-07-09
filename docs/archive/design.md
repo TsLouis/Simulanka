@@ -1,6 +1,10 @@
 # Simulanka — Research Graph Kernel Alpha
 
-Date: 2026-05-15 · Status: Draft
+Date: 2026-05-15 · Status: **已归档（2026-07-09）**
+
+> 本文档已退役为**决策档案**：历史、依据、死端（§13.4 已否决勿再试）与未实现规格的原始出处。
+> 现行文档见 `docs/overview.md`（入口）+ `kernel.md` / `assembly.md` / `frontend.md`。
+> 查「是什么」看新文档组；查「为什么/当时怎么定的」查本文。本文不再更新。
 
 精简到最少原语。依据：`researcher-handoff/researcher_remote_handoff_2026-05-14.md` 八条原则。
 

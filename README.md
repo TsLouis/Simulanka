@@ -2,7 +2,7 @@
 
 A semi-automated scientific research system built around a Research Graph Kernel.
 
-This repository is at the **Kernel Alpha** milestone. See `docs/design.md` for the architecture and `docs/archive/` for prior-art notes.
+This repository is past the **Kernel Alpha** milestone. See `docs/overview.md` for what the system is and how it splits into parts; `docs/archive/` holds the frozen decision history.
 
 ## Development
 
@@ -19,5 +19,5 @@ pytest
 
 - `src/simulanka/` — Python package
 - `tests/` — pytest suite, mirrors `src/`
-- `docs/design.md` — Kernel Alpha design (single source of truth for the architecture)
-- `docs/archive/` — Pre-Alpha notes (researcher handoff, etc.)
+- `docs/overview.md` — entry point; `kernel.md` / `assembly.md` / `frontend.md` — current architecture
+- `docs/archive/` — frozen decision history (`design.md`) and pre-Alpha notes

@@ -1,6 +1,6 @@
 # Agent PTY Bridge
 
-Date: 2026-06-12
+Date: 2026-06-12 · Status: **已归档（2026-07-09）**，实现现状一句话见 `docs/assembly.md` agent 插座节
 Owner: Codex
 
 This is the prototype for proposal 2: real-time agent interaction through a

@@ -1,6 +1,6 @@
 # Baselines & Remote Experiment Workspace
 
-Date: 2026-05-19 · Status: convention (prose rules, not enforced by code)
+Date: 2026-05-19 · Status: **已归档（2026-07-09）**，远端工作区约定仍有效（prose rules, not enforced by code）；manifest/成图部分现行版见 `docs/assembly.md`
 
 Simulanka 的 graph state 在本地（`.simulanka/`），但**真正跑实验的代码和数据在远端 a100-118**。本文档约定远端工作区的组织方式和实验生命周期。规则由 codex / claude 等 agent 自觉遵守，不在 kernel 层强制。
 

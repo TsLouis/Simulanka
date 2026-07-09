@@ -17,8 +17,10 @@
   prompts/navigation strategy, 命门 C. Vertical feature lines, not horizontal
   layers — that split was tried and abandoned 2026-06-11.
 - Frozen contracts: §13.6 attrs/write-matrix + server edge endpoints; schema/
-  kernel changes go through a design round first. `docs/design.md` single
-  writer is Claude.
+  kernel changes go through a design round first. Authoritative docs are now
+  `docs/overview.md` + `kernel.md` / `assembly.md` / `frontend.md` (single
+  writer: Claude); `docs/archive/design.md` is the frozen decision archive
+  (section numbers like §13.6/§14.7 still refer to it).
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence

@@ -2,7 +2,7 @@
 
 Semi-automated scientific research system built around a content-addressed **Research Graph** (`.simulanka/`) that tracks experiments, runs, code, datasets, and the lineage between them. Python 3.11+, single-user, local-first.
 
-**Status**: Research Graph Kernel **Alpha** complete (milestones 1–14, see `docs/design.md` §9). Working tree on `main` is the source of truth; `docs/design.md` is the authoritative design doc.
+**Status**: Research Graph Kernel **Alpha** complete; current phase is **static-first** (see `docs/overview.md` — 静态验收清单). Working tree on `main` is the source of truth; **`docs/overview.md` + `kernel.md` / `assembly.md` / `frontend.md` are the authoritative docs** (current conclusions only). `docs/archive/design.md` is the frozen decision archive — consult it for "why", never update it.
 
 ## Repository layout
 
@@ -16,9 +16,9 @@ src/simulanka/
   agent/       wrapper for codex/claude CLIs; argv via env-var templates, workspace diff
   contract.py  TaskContract model + allowed_outputs glob check + acceptance command runner
   importer/    torch.export → graph nodes (leaf-edge rollup)
-  cli/         typer entry points: graph / run / task / file / agent / doctor
+  cli/         typer entry points: graph / run / task / plan / import / export / serve
 tests/         pytest suite; mirrors src/ structure
-docs/design.md authoritative design doc; §5.5 (async runner) + §5.6 (TaskContract)
+docs/          overview.md (entry) + kernel.md / assembly.md / frontend.md; archive/ = frozen history
 ```
 
 ## Dev workflow
@@ -28,23 +28,24 @@ docs/design.md authoritative design doc; §5.5 (async runner) + §5.6 (TaskContr
 .venv/bin/python -m mypy --strict src tests    # type check
 .venv/bin/python -m pytest -q                  # tests
 .venv/bin/python -m pytest -x -q               # tests, stop on first failure
-simulanka doctor                               # graph health check (entrypoint after install)
+simulanka graph doctor                         # graph health check (entrypoint after install)
 ```
 
 All three must stay green. Torch is an optional extra (`pip install -e '.[torch]'`); importer tests will skip if torch isn't installed.
 
 ## Design discipline
 
-- **Lean first-principles.** No premature abstraction, no half-implementations, no scaffolding for "later". Three similar lines beats an early helper. If the Alpha doesn't do it, at most a one-line note in `docs/design.md`.
+- **Lean first-principles.** No premature abstraction, no half-implementations, no scaffolding for "later". Three similar lines beats an early helper. If we don't do it yet, at most a one-line note in the relevant docs/ 分篇.
 - **Kernel writes graph state, nothing else does.** All mutations go through `apply_patch(layout, PatchIntent(...))`. The runner and agent layers never touch storage directly.
 - **FileRegistry owns project layout.** Agents/users don't pick paths freely; ask FileRegistry for a kind-appropriate path.
 - **Loose coupling for external tools.** Agent CLIs (codex/claude) are wrapped via argv templates with env-var overrides — Simulanka does not duplicate the user's skills/MCP setup.
 
 ## What to read first when picking up a new task
 
-1. `docs/design.md` — design rationale, section headers track milestones
+1. `docs/overview.md` — what/parts/acceptance; then the relevant 分篇 (`kernel.md` / `assembly.md` / `frontend.md`)
 2. `.claude/projects/-home-ts-Simulanka/memory/MEMORY.md` (when memory is in context) — user preferences, design decisions, what NOT to do
 3. The relevant `tests/test_*.py` — they encode the contract better than prose
+4. `docs/archive/design.md` only when you need the "why" behind a decision (frozen; includes the dead-end list)
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
