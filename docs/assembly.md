@@ -2,7 +2,7 @@
 
 > 分篇之二（入口见 `overview.md`）。统一抽象：**文档、模型、执行现场都是外部原文，图是它们的可检查投影**。
 > 每种转换都是确定性工具——同样的原文必得同样的图。人和任何模型只读写原文，不直接操作图。
-> 标注 🔲 的小节是已定稿、未施工的规格（子任务 S3、S8；编号见 overview 施工清单）。
+> 标注 🔲 的小节是已定稿、未施工的规格（子任务 S8；编号见 overview 施工清单）。
 
 ## 铭章约定（attrs 语义词表）
 
@@ -54,16 +54,16 @@
 - 归档：文件在 `research/` 外则复制为 `research/plan-<名>.md`；已在内则就地登记（要求 `plan-` 前缀）。同一路径重复 ingest = 拒（修订流 v2 再议）。
 - **表达力演进**：目标对齐研究原子全词表；v1 已知缺口（分析者铸 evidence、已有实体间补 addresses/tests 边、自由 note）**不预补**，真实轮次首撞驱动。
 
-## 图 → 文档：brief 块 + `brief export` 🔲（S3）
+## 图 → 文档：brief 块 + `brief export`（S3）✅
 
-分析者开场输入，ingest 的逆操作。输出 markdown：prose 概览 + 一个 ```` ```simulanka-brief ```` JSON 块，与 plan 块**镜像对偶——简报给出的图 id 就是下轮 distill 段可直接引用的 id**。
+分析者开场输入，ingest 的逆操作（`brief.py`，实测于 `tests/test_brief_export.py`）。输出 markdown：prose 概览（计数 + ESCALATE 醒目列出）+ 一个 ```` ```simulanka-brief ```` JSON 块，与 plan 块**镜像对偶——简报给出的图 id 就是下轮 distill 段可直接引用的 id**。
 
-- 块内容（全部确定性、按 id 排序，同图态必同输出）：open 的 question/hypothesis/claim；近期 run（id、task goal、contract_check、duration、**evidence 条目含节点 id + metrics**——没有 evidence id，下轮 supports/contradicts 无的放矢）；未处理的 escalate note；§13 分歧集条数（一行）；预算消耗小计。
+- 块内容（全部确定性、按 id 排序、无时间戳，同图态必同字节输出）：open 的 question/hypothesis/claim；近期 run（id、task goal、contract_check、duration、**evidence 条目含节点 id + metrics**——没有 evidence id，下轮 supports/contradicts 无的放矢）；未处理的 escalate note；§13 分歧集条数（一行）；预算消耗小计。
 - open 判据（v1，查询时判）：claim = `status=="open"`；hypothesis = 无 `verdict`；question = 全列。「近期 run」= 非 `done` experiment 名下全部 run（experiment 翻 done 是操作员机械流）。
-- `--out <file>` 或 stdout；文件走 FileRegistry `brief` kind。如有写入，`actor="system"`。
-- **escalate 闭环（2026-07-10 定）**：note 增 `status: open|resolved`；解除＝人的显式动作（前端就地「已处理」按钮 / CLI，`actor=user`，可附处置理由 `resolve_note`）；brief 只列 open。「下轮 ingest 自动消音」已否决——叫停信号只能由人解除，与人裁至上同源。
+- `--out <名>` 或 stdout；写入走 FileRegistry `brief` kind（`research/brief-<名>.md`，路径归策略不归用户），`actor="system"`。
+- **escalate 闭环（2026-07-10 定）✅**：note 生而 `status=open`；解除＝人的显式动作（CLI `note resolve <id> [--note 理由]`，`actor=user`，理由记 `resolve_note`；已 resolve 再 resolve = 拒；前端就地「已处理」按钮随前端波次接同一原语）；brief 只列 open。「下轮 ingest 自动消音」已否决——叫停信号只能由人解除，与人裁至上同源。
 - 无 task 的 run（`run exec` 裸跑）：task goal / contract_check 字段缺省即空，不造假。
-- 分歧集条数与 server `/disagreements` 同一计算（抽共享模块，不写第二份）；预算小计＝每个非 done experiment 一行，Σrun duration 对 Σtask budget。
+- 分歧集条数与 server `/disagreements` 同一计算（共享模块 `disagreements.py`，不写第二份）；预算小计＝每个非 done experiment 一行，Σrun duration 对 Σtask budget（无声明记 null 不记 0）。
 
 ## 对话 → 图：ops 块（受限写入）✅
 
@@ -145,7 +145,8 @@
 | 命令 | 转换 | 现状 |
 | --- | --- | --- |
 | `plan ingest <file>` | 文档→图 | ✅ |
-| `brief export` | 图→文档 | 🔲 S3 |
+| `brief export [--out <名>]` | 图→文档 | ✅ |
+| `note resolve <note>` | escalate 闭环（人解除） | ✅ |
 | `import torch` / `import baseline [--check]` | 模型→图 | ✅ |
 | `export model-explorer` | 图→可视化 | ✅ |
 | `run exec [--detach]` / `run status|wait|kill|reconcile` | 执行现场→图 | ✅ |

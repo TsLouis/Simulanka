@@ -80,7 +80,7 @@
 | 写计划文件并落图 | plan 块 + `plan ingest` | ✅ |
 | 起 run、干活、收 run（人挂 task 不经 agent） | run 括号（S1） | ✅ |
 | 从 metrics 收证据 | `evidence extract`（S2） | ✅ |
-| 导出简报、开下一轮蒸馏 | `brief export`（S3） | 🔲 |
+| 导出简报、开下一轮蒸馏 | `brief export`（S3） | ✅ |
 | 全过程前端可见 | 渲染器 / 下钻 / 侧栏 / SSE | ✅ 基础已有 |
 | 文件内容前端可读（通用查看器；深链出处、run 日志为其用例） | 前端（S4） | 🔲 |
 | 按轮下钻研究原子 + 卡片化信息密度 | 前端（S5；下钻机制已有，轮次目录随 ingest 已建） | 🔲 |

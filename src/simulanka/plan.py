@@ -41,7 +41,7 @@ from simulanka.layout.file_registry import managed_dir_node
 from simulanka.layout.project import ProjectLayout
 from simulanka.registry.file_kinds import FILE_KINDS
 from simulanka.schema.entities import Node
-from simulanka.storage.entity_store import iter_nodes
+from simulanka.storage.entity_store import iter_nodes, load_node
 
 
 class PlanError(ValueError):
@@ -472,9 +472,14 @@ def ingest_plan(layout: ProjectLayout, path: Path) -> IngestResult:
             attrs["note"] = hu.note
         ops.append(UpdateAttrsOp(target=node.id, attrs=attrs))
     if block.escalate is not None:
+        # `status` is the closure loop: born open, resolved only by an explicit
+        # human act (resolve_escalate) — never auto-muted by a later ingest.
         ops.append(CreateNodeOp(
             type="note", name="escalate", parent=parent,
-            attrs={"kind": "escalate", "body": block.escalate.reason, **stamp},
+            attrs={
+                "kind": "escalate", "body": block.escalate.reason,
+                "status": "open", **stamp,
+            },
         ))
 
     intent = PatchIntent(
@@ -499,3 +504,40 @@ def ingest_plan(layout: ProjectLayout, path: Path) -> IngestResult:
         receipt=receipt,
         escalate_reason=block.escalate.reason if block.escalate is not None else None,
     )
+
+
+# ---------------------------------------------------------------------------
+# Escalate closure (S3). The stop signal is born in ingest above; only an
+# explicit human act clears it — a later ingest never auto-mutes it.
+# ---------------------------------------------------------------------------
+
+def resolve_escalate(
+    layout: ProjectLayout,
+    selector: str,
+    *,
+    resolve_note: str | None = None,
+) -> Node:
+    """Mark an escalate note ``resolved`` (human act, ``actor="user"``)."""
+    try:
+        node = resolve_node(layout, selector)
+    except ValueError as exc:
+        raise PlanError(f"note selector {selector!r}: {exc}") from exc
+    if node.type != "note" or node.attrs.get("kind") != "escalate":
+        raise PlanError(
+            f"{selector!r} is not an escalate note "
+            f"(type={node.type!r}, kind={node.attrs.get('kind')!r})."
+        )
+    if node.attrs.get("status") == "resolved":
+        raise PlanError(f"escalate note {node.id} is already resolved.")
+
+    attrs: dict[str, Any] = {"status": "resolved"}
+    if resolve_note is not None:
+        attrs["resolve_note"] = resolve_note
+    intent = PatchIntent(
+        ops=[UpdateAttrsOp(target=node.id, attrs=attrs)],
+        actor="user",
+        base_graph_version=layout.load_manifest().graph_version,
+        note=f"escalate resolved: {node.id}",
+    )
+    apply_patch(layout, intent)
+    return load_node(layout, node.id)

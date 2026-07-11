@@ -21,6 +21,7 @@ from simulanka.agent.harness import (
     OpenCodeTurn,
     run_opencode_turn,
 )
+from simulanka.disagreements import disagreement_list, edge_payload
 from simulanka.kernel.apply import apply_patch_now
 from simulanka.kernel.events import Event, iter_events
 from simulanka.kernel.intent import CreateEdgeOp, DeleteEdgeOp, Receipt, UpdateAttrsOp
@@ -35,7 +36,6 @@ from simulanka.storage.entity_store import (
     iter_nodes,
     iter_ports,
     load_edge,
-    load_node,
 )
 
 DEV_ORIGINS = (
@@ -278,7 +278,7 @@ def create_app(
         verify pass ruled wrong/uncertain, ③ disputed verdicts, ④ edges pulled
         in by hand. One edge can match several buckets — ``reasons`` lists all.
         """
-        return {"disagreements": _disagreement_list(layout)}
+        return {"disagreements": disagreement_list(layout)}
 
     # --- §13.6 discussion session: the agent op channel --------------------
     # One batch, one session (一批一场): /start snapshots the disagreement
@@ -308,7 +308,7 @@ def create_app(
         model = body.get("model")
         if model is not None and (not isinstance(model, str) or not model.strip()):
             raise HTTPException(status_code=422, detail="model must be a string")
-        disagreements = _disagreement_list(layout)
+        disagreements = disagreement_list(layout)
         if not disagreements:
             raise HTTPException(
                 status_code=422, detail="no disagreements — nothing to discuss"
@@ -459,9 +459,9 @@ def _build_payload(
         src_in = e.source_id in included
         dst_in = e.target_id in included
         if src_in and dst_in:
-            edges_payload.append(_edge_dict(e))
+            edges_payload.append(edge_payload(e))
         elif (src_in or dst_in) and root is not None:
-            boundary_payload.append(_edge_dict(e))
+            boundary_payload.append(edge_payload(e))
             external_ids.add(e.target_id if src_in else e.source_id)
             outside_port = e.target_port_id if src_in else e.source_port_id
             if outside_port is not None:
@@ -533,66 +533,6 @@ def _build_payload(
         "ports": ports_payload,
         "ancestors": ancestors,
     }
-
-
-def _edge_dict(e: Edge) -> dict[str, Any]:
-    return {
-        "id": e.id,
-        "type": e.type,
-        "src": e.source_id,
-        "dst": e.target_id,
-        "src_port": e.source_port_id,
-        "dst_port": e.target_port_id,
-        "attrs": e.attrs,
-    }
-
-
-def _disagreement_list(layout: ProjectLayout) -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
-    # Endpoint names ride along: the disagreement set spans the whole graph,
-    # so the frontend's current-view name map can't resolve edges from other
-    # views (they'd render as raw node ids), and the discussion opening
-    # context reads better with names than ULIDs.
-    names: dict[str, str] = {}
-
-    def node_name(node_id: str) -> str:
-        if node_id not in names:
-            try:
-                names[node_id] = load_node(layout, node_id).name
-            except FileNotFoundError:
-                names[node_id] = node_id
-        return names[node_id]
-
-    for e in iter_edges(layout):
-        if e.type != "data_flow":
-            continue
-        a = e.attrs
-        reasons: list[str] = []
-        if (
-            a.get("source") == "agent"
-            and a.get("status") == "proposed"
-            and a.get("verdict") == "wrong"
-            and a.get("verdict_by") == "user"
-        ):
-            reasons.append("user_rejected_ghost")
-        if (
-            a.get("source") == "user"
-            and a.get("verdict") in ("wrong", "uncertain")
-            and a.get("verdict_by") == "agent"
-        ):
-            reasons.append("agent_flagged_user_edge")
-        if a.get("verdict") == "disputed":
-            reasons.append("disputed")
-        if a.get("discuss") is True:
-            reasons.append("manual")
-        if reasons:
-            out.append({
-                **_edge_dict(e),
-                "reasons": reasons,
-                "src_name": node_name(e.source_id),
-                "dst_name": node_name(e.target_id),
-            })
-    return out
 
 
 # Prompt *wording* is Codex's editorial territory (issue #2); the server owns
