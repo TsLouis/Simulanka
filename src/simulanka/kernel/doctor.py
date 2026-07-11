@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
@@ -47,6 +48,7 @@ def run_doctor(layout: ProjectLayout) -> DoctorReport:
     issues.extend(_check_edge_registry(layout))
     issues.extend(_check_file_nodes(layout))
     issues.extend(_check_untracked_managed_files(layout))
+    issues.extend(_check_stale_running_runs(layout))
     issues.extend(_check_index(layout))
     return DoctorReport(ok=not issues, issues=issues)
 
@@ -322,6 +324,57 @@ def _check_untracked_managed_files(layout: ProjectLayout) -> list[Issue]:
                         f"--kind {spec.name}`."
                     ),
                 ))
+    return out
+
+
+_STALE_RUN_FALLBACK_SECONDS = 24 * 3600.0
+
+
+def _check_stale_running_runs(layout: ProjectLayout) -> list[Issue]:
+    """Flag runs stuck in ``running`` past their budget (or 24h without one).
+
+    Orphaned brackets (`run begin` whose harness died) and detached runs whose
+    markers were lost both surface here; closing them stays a human act —
+    ``run end --status failed`` / ``run status`` — doctor only points.
+    """
+    out: list[Issue] = []
+    now = datetime.now(timezone.utc)
+    for n in iter_nodes(layout):
+        if n.type != "run" or n.attrs.get("status") != "running":
+            continue
+        started_raw = n.attrs.get("started_at")
+        if not isinstance(started_raw, str):
+            continue
+        try:
+            started = datetime.fromisoformat(started_raw.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        age = (now - started).total_seconds()
+
+        budget: float | None = None
+        contract = n.attrs.get("contract")
+        if isinstance(contract, dict):
+            raw_budget = contract.get("budget_time_seconds")
+            if isinstance(raw_budget, int | float):
+                budget = float(raw_budget)
+        threshold = budget if budget is not None else _STALE_RUN_FALLBACK_SECONDS
+        if age <= threshold:
+            continue
+
+        over = "its time budget" if budget is not None else "24h"
+        fix = (
+            f"`simulanka run end {n.id} --status failed`"
+            if n.attrs.get("bracket") is True
+            else f"`simulanka run status {n.id}`"
+        )
+        out.append(Issue(
+            code="stale_running_run",
+            severity="warn",
+            message=(
+                f"run `{n.id}` ({n.name}) has been `running` for {age:.0f}s, "
+                f"past {over}. If it is dead, close it with {fix}."
+            ),
+        ))
     return out
 
 

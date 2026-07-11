@@ -30,6 +30,8 @@ from simulanka.layout.project import ProjectLayout
 from simulanka.runner import (
     RunnerError,
     RunNotFound,
+    begin_run,
+    end_run,
     exec_run,
     kill_run,
     reconcile_run,
@@ -297,6 +299,103 @@ def run_agent_cmd(
     typer.echo(f"  duration      = {result.duration_seconds:.2f}s")
     typer.echo(f"  run_dir       = {result.run_dir}")
     typer.echo(f"  prompt        = {result.prompt_path}")
+    typer.echo(f"  changes       = {result.changes_path}")
+    typer.echo(
+        f"  files: +{len(result.files_added)} "
+        f"~{len(result.files_modified)} -{len(result.files_deleted)}"
+    )
+    if result.contract_check is not None:
+        cc = result.contract_check
+        typer.echo(f"  contract      = {cc.status}")
+        if cc.out_of_scope_files:
+            typer.echo(f"    out_of_scope = {cc.out_of_scope_files}")
+        if cc.acceptance_exit_code is not None:
+            typer.echo(f"    acceptance_exit = {cc.acceptance_exit_code}")
+    if result.status != "done":
+        raise typer.Exit(code=1)
+    if result.contract_check is not None and result.contract_check.status != "passed":
+        raise typer.Exit(code=3)
+
+
+# ---------------------------------------------------------------------------
+# Execution bracket: begin / end
+# ---------------------------------------------------------------------------
+
+@run_app.command("begin")
+def run_begin(
+    task: Annotated[
+        str,
+        typer.Option(
+            "--task",
+            help="Task node selector (id or /abs/path) this run fulfills.",
+        ),
+    ],
+    parent: Annotated[
+        str | None,
+        typer.Option(
+            "--parent",
+            "-p",
+            help=(
+                "Selector of the directory or experiment that owns this run. "
+                "Defaults to the task's own parent."
+            ),
+        ),
+    ] = None,
+    name: Annotated[
+        str | None,
+        typer.Option("--name", "-n", help="Name for the run node (unique within parent)."),
+    ] = None,
+    workdir: Annotated[
+        Path | None,
+        typer.Option(
+            "--workdir",
+            "-w",
+            help="Workspace to snapshot/diff. Defaults to the project root.",
+        ),
+    ] = None,
+) -> None:
+    """Open an execution bracket: snapshot the workspace, mirror the contract, go."""
+    layout = ProjectLayout.require()
+    try:
+        result = begin_run(
+            layout, task=task, parent=parent, name=name, workdir=workdir,
+        )
+    except (RunnerError, ValueError) as exc:
+        typer.echo(f"Runner error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    typer.echo(result.run_node_id)
+    typer.echo(f"  fulfills task  = {result.task_node_id}")
+    typer.echo(f"  workdir        = {result.workdir}")
+    typer.echo(f"  snapshot       = {result.snapshot_files} files")
+    if result.git_head is not None:
+        typer.echo(f"  git_head       = {result.git_head}")
+        typer.echo(f"  baseline_dirty = {result.baseline_dirty}")
+    typer.echo(f"  run_dir        = {result.run_dir}")
+    typer.echo(f"  close with     = simulanka run end {result.run_node_id}")
+
+
+@run_app.command("end")
+def run_end(
+    target: Annotated[
+        str, typer.Argument(help="Run node selector (id or absolute path)."),
+    ],
+    status: Annotated[
+        str,
+        typer.Option("--status", help="Outcome claim: done or failed."),
+    ] = "done",
+) -> None:
+    """Close a bracket: diff against the begin snapshot, run acceptance, seal the run."""
+    layout = ProjectLayout.require()
+    try:
+        result = end_run(layout, run=target, status=status)
+    except RunnerError as exc:
+        typer.echo(f"Runner error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    typer.echo(f"Run ended: {result.run_node_id}")
+    typer.echo(f"  status        = {result.status}")
+    typer.echo(f"  duration      = {result.duration_seconds:.2f}s")
     typer.echo(f"  changes       = {result.changes_path}")
     typer.echo(
         f"  files: +{len(result.files_added)} "

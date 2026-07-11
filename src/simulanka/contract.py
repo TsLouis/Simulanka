@@ -11,6 +11,7 @@ acceptance command. The agent layer wires it together.
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 from dataclasses import dataclass
@@ -88,6 +89,34 @@ def contract_from_task_attrs(attrs: dict[str, Any]) -> TaskContract:
             else None
         ),
     )
+
+
+def write_contract_snapshot(
+    run_dir: Path, *, task_node_id: str, contract: TaskContract,
+) -> Path:
+    """Persist the resolved contract into ``<run_dir>/contract.json`` for audit.
+
+    Every bracket that fulfills a task writes this snapshot at launch; checks
+    at close time read it back — never the live task node — so editing the
+    task later cannot retro-rewrite what a run is judged against.
+    """
+    contract_path = run_dir / "contract.json"
+    contract_path.write_text(
+        json.dumps(
+            {"task_node_id": task_node_id, **contract.model_dump()},
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    return contract_path
+
+
+def load_contract_snapshot(run_dir: Path) -> tuple[str, TaskContract]:
+    """Read back a ``contract.json`` snapshot. Returns (task_node_id, contract)."""
+    raw = json.loads((run_dir / "contract.json").read_text(encoding="utf-8"))
+    task_node_id = str(raw.pop("task_node_id", ""))
+    return task_node_id, TaskContract.model_validate(raw)
 
 
 _GLOB_CACHE: dict[str, re.Pattern[str]] = {}

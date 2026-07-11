@@ -19,25 +19,24 @@ from pathlib import Path
 
 from simulanka.agent.wrapper import (
     _check_attrs,
-    _diff,
     _fill,
     _resolve_prompt_and_contract,
     _resolve_scope,
     _resolve_template,
-    _snapshot,
-    write_contract_snapshot,
 )
 from simulanka.contract import (
     ContractCheckResult,
     TaskContract,
     check_contract,
     task_node_attrs,
+    write_contract_snapshot,
 )
 from simulanka.kernel.apply import apply_patch_now
 from simulanka.kernel.intent import CreateEdgeOp, UpdateAttrsOp
 from simulanka.layout.project import ProjectLayout
 from simulanka.runner import start_run
 from simulanka.schema.entities import Node
+from simulanka.workspace import diff_snapshots, snapshot_workspace
 
 
 @dataclass(frozen=True)
@@ -94,7 +93,7 @@ def start_agent_run(
 
     effective_workdir = (workdir or layout.root).resolve()
     scope_dirs = _resolve_scope(effective_workdir, track_scope)
-    before = _snapshot(scope_dirs)
+    before = snapshot_workspace(scope_dirs)
 
     started = start_run(
         layout,
@@ -211,8 +210,8 @@ def finalize_agent_diff(
             )
         before: dict[str, str] = {str(k): str(v) for k, v in before_raw.items()}
         scope_dirs = [Path(p) for p in meta.get("track_scope", [])]
-        after = _snapshot(scope_dirs)
-        diff = _diff(before, after, base=layout.root)
+        after = snapshot_workspace(scope_dirs)
+        diff = diff_snapshots(before, after, base=layout.root)
         changes_path.write_text(
             json.dumps(
                 {

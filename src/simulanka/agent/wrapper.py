@@ -23,7 +23,6 @@ shell-quoted string with ``{prompt}`` as the placeholder).
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import shlex
@@ -36,12 +35,14 @@ from simulanka.contract import (
     check_contract,
     contract_from_task_attrs,
     task_node_attrs,
+    write_contract_snapshot,
 )
 from simulanka.kernel.apply import apply_patch_now
 from simulanka.kernel.intent import CreateEdgeOp, UpdateAttrsOp
 from simulanka.layout.project import ProjectLayout
 from simulanka.runner import exec_run
 from simulanka.storage.entity_store import load_node
+from simulanka.workspace import diff_snapshots, resolve_scope, snapshot_workspace
 
 # ``{prompt}`` is substituted positionally (no shell interpolation). Override
 # via env var ``SIMULANKA_AGENT_<UPPERCASE_NAME>_ARGV`` when an agent CLI
@@ -50,12 +51,6 @@ AGENT_TEMPLATES: dict[str, list[str]] = {
     "codex": ["codex", "exec", "{prompt}"],
     "claude": ["claude", "-p", "{prompt}"],
 }
-
-_DEFAULT_DIFF_IGNORE = frozenset({
-    ".simulanka", ".git", ".hg", ".svn",
-    "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
-    "node_modules", ".venv", "venv", ".tox",
-})
 
 
 class AgentError(RuntimeError):
@@ -116,7 +111,7 @@ def run_agent(
 
     effective_workdir = (workdir or layout.root).resolve()
     scope_dirs = _resolve_scope(effective_workdir, track_scope)
-    before = _snapshot(scope_dirs)
+    before = snapshot_workspace(scope_dirs)
 
     exec_result = exec_run(
         layout,
@@ -129,8 +124,8 @@ def run_agent(
         actor=actor,
     )
 
-    after = _snapshot(scope_dirs)
-    diff = _diff(before, after, base=layout.root)
+    after = snapshot_workspace(scope_dirs)
+    diff = diff_snapshots(before, after, base=layout.root)
 
     prompt_path = exec_result.run_dir / "prompt.txt"
     prompt_path.write_text(resolved_prompt, encoding="utf-8")
@@ -199,22 +194,6 @@ def _resolve_prompt_and_contract(
     raise AgentError(
         "Exactly one of `prompt` or `task_node_id` must be provided.",
     )
-
-
-def write_contract_snapshot(
-    run_dir: Path, *, task_node_id: str, contract: TaskContract,
-) -> Path:
-    """Persist the resolved contract next to ``prompt.txt`` for audit. Returns the path."""
-    contract_path = run_dir / "contract.json"
-    contract_path.write_text(
-        json.dumps(
-            {"task_node_id": task_node_id, **contract.model_dump()},
-            indent=2,
-            sort_keys=True,
-        ),
-        encoding="utf-8",
-    )
-    return contract_path
 
 
 def _apply_contract(
@@ -301,76 +280,10 @@ def _fill(template_part: str, prompt: str) -> str:
 
 
 def _resolve_scope(workdir: Path, scope: list[str] | None) -> list[Path]:
-    if not scope:
-        return [workdir]
-    base = workdir.resolve()
-    out: list[Path] = []
-    for s in scope:
-        p = (workdir / s).resolve()
-        if not p.is_relative_to(base):
-            raise AgentError(f"track_scope entry {s!r} escapes workdir {workdir}.")
-        if not p.exists():
-            raise AgentError(f"track_scope entry {s!r} does not exist under {workdir}.")
-        out.append(p)
-    return out
-
-
-def _snapshot(roots: list[Path]) -> dict[str, str]:
-    """Hash every file under each root. Returns {abs_path: sha256-hex}."""
-    out: dict[str, str] = {}
-    for root in roots:
-        if not root.exists():
-            continue
-        if root.is_file():
-            out[str(root)] = _file_hash(root)
-            continue
-        for entry in root.rglob("*"):
-            if not entry.is_file():
-                continue
-            if _is_ignored(entry, root):
-                continue
-            out[str(entry)] = _file_hash(entry)
-    return out
-
-
-def _is_ignored(entry: Path, root: Path) -> bool:
     try:
-        rel_parts = entry.relative_to(root).parts
-    except ValueError:
-        return False
-    return any(part in _DEFAULT_DIFF_IGNORE for part in rel_parts)
-
-
-def _file_hash(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def _diff(
-    before: dict[str, str], after: dict[str, str], *, base: Path,
-) -> dict[str, list[str]]:
-    before_keys = set(before)
-    after_keys = set(after)
-    added = sorted(after_keys - before_keys)
-    deleted = sorted(before_keys - after_keys)
-    modified = sorted(
-        p for p in (before_keys & after_keys) if before[p] != after[p]
-    )
-
-    def rel(p: str) -> str:
-        try:
-            return str(Path(p).relative_to(base)).replace("\\", "/")
-        except ValueError:
-            return p
-
-    return {
-        "added": [rel(p) for p in added],
-        "modified": [rel(p) for p in modified],
-        "deleted": [rel(p) for p in deleted],
-    }
+        return resolve_scope(workdir, scope)
+    except ValueError as exc:
+        raise AgentError(str(exc)) from exc
 
 
 def build_command(agent: str, prompt: str, extra_args: list[str] | None = None) -> str:

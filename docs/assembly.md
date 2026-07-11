@@ -2,7 +2,7 @@
 
 > 分篇之二（入口见 `overview.md`）。统一抽象：**文档、模型、执行现场都是外部原文，图是它们的可检查投影**。
 > 每种转换都是确定性工具——同样的原文必得同样的图。人和任何模型只读写原文，不直接操作图。
-> 标注 🔲 的小节是已定稿、未施工的规格（子任务 S1–S3、S8；编号见 overview 施工清单）。
+> 标注 🔲 的小节是已定稿、未施工的规格（子任务 S2–S3、S8；编号见 overview 施工清单）。
 
 ## 铭章约定（attrs 语义词表）
 
@@ -102,15 +102,14 @@
 - **`run exec --detach` + status/wait/kill/reconcile** ✅ 异步：子进程独立会话存活，run 节点先记 `running`，收尾**惰性 reconcile**（wrapper 脚本写 finished 标记，下次查询时 `update_attrs` 补账；进程死而无标记 = failed）。graph 查询命令不偷偷 reconcile。
 - **`task create/inspect`** ✅ TaskContract：`goal` + `allowed_outputs`（gitignore 风格 glob）+ `acceptance.command` + `budget.time_seconds`，平铺进 task 节点 attrs。
 - **契约检查** ✅（`contract.py`）：diff 对 `allowed_outputs` 越界 → `out_of_scope`；acceptance 非零 → `acceptance_failed`；判定优先级 out_of_scope > acceptance_failed > passed；acceptance 日志入 run_dir。
-- 现状限制：**run 挂 task（fulfills + 契约检查）目前只有 `run agent` 一条路**——这正是切片②要解开的。
 
-**🔲 `run begin` / `run end`（S1）**——执行括号，系统只在两端测量，中间干活的是人还是 agent 不管：
+**`run begin` / `run end`（S1）✅**——执行括号（`runner/bracket.py`，实测于 `tests/test_run_bracket.py`），系统只在两端测量，中间干活的是人还是 agent 不管：
 
-- `run begin --task <sel> [--parent <dir>] [--name <n>] [--workdir <path>]`：建 run 节点（`status=running`）；镜像契约（`contract` attr + `<run_dir>/contract.json` 快照 + `fulfills` 边）；**diff 机制＝wrapper 快照比对**（2026-07-09 裁定：begin 拍工作区快照存盘、end 比对，全系统统一为这一条测量路径；作废原 §14.8「porcelain 清单集合差」——集合差漏掉「begin 时已脏、run 中又改」的文件，快照比对不漏且不依赖 git）。git HEAD 与脏文件清单（`git status --porcelain -uall` 文件粒度）仍在 begin 时记录为**诚实性元数据**（`baseline_dirty=true`），不作 diff 机制。打印 run id，harness 自持，**不设「当前 run」环境态**。`--parent` 缺省 = task 的父 experiment。
-- **diff 粒度（2026-07-10 定）＝路径清单**：快照只存 `{路径: hash}` 不留内容——系统永久回答「动了哪些文件」（漏不掉），不回答「改了什么内容」；内容对比靠 workdir 为 git 仓时兜底（baseline 工作流 worktree-per-run 天然满足），彩排首撞「必须看内容」再议，不预做。快照存盘 `<run_dir>/snapshot.json`；`_snapshot/_diff` 从 agent wrapper 抽成共享模块（「一条测量路径」的实体化）。
+- `run begin --task <sel> [--parent <dir>] [--name <n>] [--workdir <path>]`：建 run 节点（`status=running`, `bracket=true`）+ 镜像契约（`contract` attr + `<run_dir>/contract.json` 快照 + `fulfills` 边），单 PatchIntent 原子落地。**diff 机制＝快照比对**（2026-07-09 裁定：begin 拍工作区快照存盘、end 比对，全系统统一为这一条测量路径；作废原 §14.8「porcelain 清单集合差」——集合差漏掉「begin 时已脏、run 中又改」的文件，快照比对不漏且不依赖 git）。git HEAD 与脏文件清单（`git status --porcelain -uall` 文件粒度）在 begin 时记录为**诚实性元数据**（`git_head` / `baseline_dirty` / `git_dirty_files`，workdir 非 git 仓则不记），不作 diff 机制。首行裸打 run id，harness 自持，**不设「当前 run」环境态**。`--parent` 缺省 = task 的父节点；`--name` 缺省 = `run-<handle>`。
+- **diff 粒度（2026-07-10 定）＝路径清单**：快照只存 `{路径: hash}` 不留内容——系统永久回答「动了哪些文件」（漏不掉），不回答「改了什么内容」；内容对比靠 workdir 为 git 仓时兜底（baseline 工作流 worktree-per-run 天然满足），彩排首撞「必须看内容」再议，不预做。快照存盘 `<run_dir>/snapshot.json`；共享测量模块＝`workspace.py`（snapshot/diff/scope，wrapper、detached、bracket 三处同源——「一条测量路径」的实体化）。
 - 人肉括号不造 stdout/stderr file 节点（人在自己终端干活，系统看不见就不假装记录；acceptance.log 照旧入 run_dir）。同 workdir 并发 run 的 diff 互染 v1 不设防（靠 worktree-per-run 约定）。预算超时不打失败章——duration 如实记录，值不值归分析者。
-- `run end <run> [--status done|failed] [--metrics <file>]`：① 对基线算 diff（复用 wrapper 的 workspace diff 路径）→ ② 按 contract.json 快照跑 acceptance → ③ 写 `contract_check` → ④ 有 metrics 则触发切片③ → ⑤ `ended_at`/`duration_seconds`/`status`。已 end 再 end = 拒。
-- 孤儿 run（begin 后 harness 崩）：v1 人工 `run end --status failed` + doctor 增一检（`running` 超预算或 24h 即提示）。
+- `run end <run> [--status done|failed]`：① 对 begin 快照算 diff（写 `<run_dir>/changes.json`）→ ② 按 contract.json 快照跑 acceptance（判的是 begin 时的契约，改 task 不改历史）→ ③ 写 `contract_check` → ④ `ended_at`/`duration_seconds`/`status` 单 patch 收口。已 end 再 end = 拒；`--status failed` 照样测量（人的主张不改测量）。`--metrics` 随 S2 一起落地。
+- 孤儿 run（begin 后 harness 崩）：人工 `run end --status failed`；doctor 增 `stale_running_run` 检查（`running` 超预算、无预算超 24h 即提示，bracket 提示 end、detached 提示 status）。
 - intent 一律 `actor="system"`（测量归系统）。
 
 **🔲 `evidence extract <run>`（S2，`run end` 内也触发）**：
@@ -133,7 +132,7 @@
 
 2026-07-09 grill 定，2026-07-10 编号提级为独立子任务。四件：
 
-1. **run agent 骑到 run 括号上**——消掉「wrapper 快照 diff」与「run end 测量」两套并行真相，全系统一条测量路径（动 `agent/wrapper.py`，属 Codex 线，规格 Claude 出；S1 抽出的共享快照模块是其地基）。
+1. **run agent 骑到 run 括号上**——消掉「wrapper 快照 diff」与「run end 测量」两套并行真相，全系统一条测量路径（动 `agent/wrapper.py`，属 Codex 线，规格 Claude 出；S1 抽出的共享测量模块 `workspace.py` 是其地基）。
 2. **`--actor operator`** 在 CLI 机械写命令上贯通。
 3. **前端内嵌自由 agent 会话**走结构化事件流路线（见 frontend.md S8）。
 4. **锚定会话 UI**——核对/讨论会话的就地化壳（S7 面板退役的配套件；一批一场、写权闸机制不变）。
@@ -149,7 +148,7 @@
 | `import torch` / `import baseline [--check]` | 模型→图 | ✅ |
 | `export model-explorer` | 图→可视化 | ✅ |
 | `run exec [--detach]` / `run status|wait|kill|reconcile` | 执行现场→图 | ✅ |
-| `run begin --task` / `run end` | 执行现场→图 | 🔲 S1 |
+| `run begin --task` / `run end` | 执行现场→图 | ✅ |
 | `evidence extract <run>` | 执行现场→图 | 🔲 S2 |
 | `task create|inspect` | 契约 | ✅ |
 | `run agent` / `propose` | agent 插座 | ✅ |

@@ -78,7 +78,7 @@
 | 导入 baseline 模型结构 | manifest + import | ✅ |
 | 人画数据流边 + 人终裁 | 前端 + 写权矩阵 | ✅（S7 起人终裁改走就地锚定裁决，面板退役） |
 | 写计划文件并落图 | plan 块 + `plan ingest` | ✅ |
-| 起 run、干活、收 run（人挂 task 不经 agent） | run 括号（S1） | 🔲 |
+| 起 run、干活、收 run（人挂 task 不经 agent） | run 括号（S1） | ✅ |
 | 从 metrics 收证据 | `evidence extract`（S2） | 🔲 |
 | 导出简报、开下一轮蒸馏 | `brief export`（S3） | 🔲 |
 | 全过程前端可见 | 渲染器 / 下钻 / 侧栏 / SSE | ✅ 基础已有 |
