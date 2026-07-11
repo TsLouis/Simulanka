@@ -50,7 +50,7 @@ All three must stay green. Torch is an optional extra (`pip install -e '.[torch]
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **Simulanka** (3303 symbols, 5026 relationships, 67 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **Simulanka** (3341 symbols, 5094 relationships, 67 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
