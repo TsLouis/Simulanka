@@ -16,12 +16,14 @@
     setDiscuss,
     startDiscussion,
     type DiscussionTurn,
+    type FileOpenRequest,
     type Positions,
   } from './lib/api'
   import { subscribeEvents, type EventSubscription } from './lib/events'
   import { buildLiteGraph } from './lib/litegraph-adapter'
   import { applyNightSky } from './lib/theme'
   import DiscussPanel, { type ChatMsg } from './lib/DiscussPanel.svelte'
+  import FileViewer from './lib/FileViewer.svelte'
   import NodeInspector from './lib/NodeInspector.svelte'
   import VerifyPanel from './lib/VerifyPanel.svelte'
   import type { DisagreementDTO, EdgeDTO, NodeDTO, PortDTO } from './lib/types'
@@ -47,6 +49,10 @@
   let selectedId: string | null = null
   let selectedNode: NodeDTO | null = null
   let portsById: Map<string, PortDTO> = new Map()
+
+  // S4 file viewer: non-null = the drawer is open on this request. Assigning a
+  // new request re-loads in place (e.g. jumping 出处 from another atom).
+  let fileRequest: FileOpenRequest | null = null
 
   // §13.6 verify-discuss panel state. currentEdges/namesById mirror the last
   // payload so the panel can render ghosts without re-fetching.
@@ -522,7 +528,14 @@
 
 <main class:with-inspector={selectedNode !== null}>
   <canvas bind:this={canvasEl}></canvas>
-  <NodeInspector node={selectedNode} {portsById} />
+  <NodeInspector
+    node={selectedNode}
+    {portsById}
+    onOpenFile={(req) => (fileRequest = req)}
+  />
+  {#if fileRequest}
+    <FileViewer request={fileRequest} onClose={() => (fileRequest = null)} />
+  {/if}
   {#if verifyOpen}
     <VerifyPanel
       edges={currentEdges}
@@ -710,6 +723,8 @@
     display: flex;
     width: 100vw;
     height: calc(100vh - 44px);
+    /* FileViewer 抽屉以此为定位容器（position: absolute; right: 0） */
+    position: relative;
   }
   canvas {
     display: block;

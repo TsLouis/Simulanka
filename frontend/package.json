@@ -21,6 +21,8 @@
   },
   "dependencies": {
     "dagre": "^0.8.5",
-    "litegraph.js": "^0.7.18"
+    "dompurify": "^3.4.11",
+    "litegraph.js": "^0.7.18",
+    "marked": "^18.0.6"
   }
 }

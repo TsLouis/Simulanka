@@ -36,6 +36,7 @@ from simulanka.storage.entity_store import (
     iter_nodes,
     iter_ports,
     load_edge,
+    load_node,
 )
 
 DEV_ORIGINS = (
@@ -44,6 +45,10 @@ DEV_ORIGINS = (
 )
 
 SSE_POLL_INTERVAL = 0.25  # seconds between event_log polls
+
+# S4 file viewer: one human reads one page — a 1 MiB head is plenty, and a
+# runaway training log must not take the browser down with it.
+FILE_CONTENT_CAP = 1_048_576
 
 
 
@@ -270,6 +275,78 @@ def create_app(
             note="frontend: toggle discuss",
         )
         return {"edge_id": edge_id, "graph_version": receipt.graph_version}
+
+    @app.get("/file/content")
+    def get_file_content(
+        node: str | None = Query(default=None),
+        path: str | None = Query(default=None),
+    ) -> dict[str, Any]:
+        """Read a registered file node's content (S4 universal file viewer).
+
+        Exactly one of ``node`` (file node id) or ``path`` (project-relative
+        ``fs_path``, as stamped in attrs like ``plan_file``) selects the file.
+        The graph stays the authority on what is readable: an unregistered
+        path 404s even if it exists on disk. Binary and over-cap files are
+        reported honestly rather than mangled.
+        """
+        if (node is None) == (path is None):
+            raise HTTPException(
+                status_code=422, detail="pass exactly one of `node` / `path`",
+            )
+        if node is not None:
+            try:
+                file_node = load_node(layout, node)
+            except FileNotFoundError:
+                raise HTTPException(
+                    status_code=404, detail=f"no node {node!r}",
+                ) from None
+            if file_node.type != "file":
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"node {node!r} is `{file_node.type}`, not `file`",
+                )
+        else:
+            found = next(
+                (
+                    n for n in iter_nodes(layout)
+                    if n.type == "file" and n.attrs.get("fs_path") == path
+                ),
+                None,
+            )
+            if found is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"no registered file node with fs_path {path!r}",
+                )
+            file_node = found
+
+        fs_path = file_node.attrs.get("fs_path")
+        if not isinstance(fs_path, str):
+            raise HTTPException(
+                status_code=404,
+                detail=f"file node {file_node.id} has no fs_path attr",
+            )
+        abs_path = layout.root / fs_path
+        if not abs_path.is_file():
+            raise HTTPException(
+                status_code=404,
+                detail=f"`{fs_path}` is not a regular file on disk",
+            )
+
+        size = abs_path.stat().st_size
+        with abs_path.open("rb") as f:
+            data = f.read(FILE_CONTENT_CAP)
+        binary = b"\x00" in data
+        return {
+            "id": file_node.id,
+            "name": file_node.name,
+            "kind": file_node.attrs.get("kind"),
+            "fs_path": fs_path,
+            "size_bytes": size,
+            "binary": binary,
+            "truncated": size > len(data),
+            "content": None if binary else data.decode("utf-8", errors="replace"),
+        }
 
     @app.get("/disagreements")
     def get_disagreements() -> dict[str, Any]:

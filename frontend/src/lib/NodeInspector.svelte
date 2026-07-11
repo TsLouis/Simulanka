@@ -1,11 +1,24 @@
 <script lang="ts">
+  import type { FileOpenRequest } from './api'
   import type { NodeDTO, PortDTO } from './types'
 
   export let node: NodeDTO | null
   export let portsById: Map<string, PortDTO>
+  // S4: open the read-only file viewer. file 节点=打开自身；plan_file 深链=
+  // 打开出处并高亮 lid；run 日志=打开 stdout/stderr file 节点。
+  export let onOpenFile: (req: FileOpenRequest) => void = () => {}
 
   $: ports = node ? node.ports.map(id => portsById.get(id)).filter(Boolean) as PortDTO[] : []
   $: attrEntries = node ? Object.entries(node.attrs) : []
+
+  const strAttr = (n: NodeDTO | null, key: string): string | null =>
+    n && typeof n.attrs[key] === 'string' ? (n.attrs[key] as string) : null
+
+  $: planFile = strAttr(node, 'plan_file')
+  $: planLid = strAttr(node, 'plan_lid')
+  $: stdoutPath = strAttr(node, 'stdout_path')
+  $: stderrPath = strAttr(node, 'stderr_path')
+  $: metricsPath = strAttr(node, 'metrics_path')
 
   const portLabel = (p: PortDTO): string | null =>
     typeof p.attrs.label === 'string' ? p.attrs.label : null
@@ -35,6 +48,44 @@
       <h2>{node.name}</h2>
       <code class="id">{node.id}</code>
     </header>
+
+    {#if node.type === 'file' || planFile || stdoutPath || stderrPath || metricsPath}
+      <section>
+        <h3>Files</h3>
+        <div class="file-actions">
+          {#if node.type === 'file'}
+            <button class="file-btn" on:click={() => onOpenFile({ node: node!.id })}>
+              📄 打开文件
+            </button>
+          {/if}
+          {#if planFile}
+            <button
+              class="file-btn"
+              title={planFile + (planLid ? ` · ${planLid}` : '')}
+              on:click={() =>
+                onOpenFile({ path: planFile!, highlight: planLid ?? undefined })}
+            >
+              ↗ 出处 {planLid ?? ''}
+            </button>
+          {/if}
+          {#if stdoutPath}
+            <button class="file-btn" on:click={() => onOpenFile({ path: stdoutPath! })}>
+              stdout
+            </button>
+          {/if}
+          {#if stderrPath}
+            <button class="file-btn" on:click={() => onOpenFile({ path: stderrPath! })}>
+              stderr
+            </button>
+          {/if}
+          {#if metricsPath}
+            <button class="file-btn" on:click={() => onOpenFile({ path: metricsPath! })}>
+              metrics
+            </button>
+          {/if}
+        </div>
+      </section>
+    {/if}
 
     {#if node.parent_id}
       <section>
@@ -162,6 +213,28 @@
   }
   .muted {
     color: var(--muted);
+  }
+  .file-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .file-btn {
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--hairline);
+    border-radius: 4px;
+    padding: 3px 10px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 11px;
+    transition:
+      border-color 0.15s,
+      color 0.15s;
+  }
+  .file-btn:hover {
+    border-color: var(--gold-dim);
+    color: var(--ivory);
   }
   .ports {
     list-style: none;

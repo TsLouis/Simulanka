@@ -138,6 +138,39 @@ export async function fetchDiscussionState(): Promise<DiscussionState> {
   return (await resp.json()) as DiscussionState
 }
 
+// --- S4 universal file viewer ----------------------------------------------
+
+// A request to open the viewer: exactly one of node (file node id) / path
+// (project-relative fs_path, e.g. an atom's plan_file attr). `highlight` is
+// the generic open-and-highlight-a-term parameter (deep-link passes plan_lid).
+export interface FileOpenRequest {
+  node?: string
+  path?: string
+  highlight?: string
+}
+
+export interface FileContentDTO {
+  id: string
+  name: string
+  kind: string | null
+  fs_path: string
+  size_bytes: number
+  binary: boolean
+  truncated: boolean
+  content: string | null
+}
+
+export async function fetchFileContent(req: FileOpenRequest): Promise<FileContentDTO> {
+  const params = new URLSearchParams()
+  if (req.node) params.set('node', req.node)
+  else if (req.path) params.set('path', req.path)
+  const resp = await fetch(`/file/content?${params}`)
+  if (!resp.ok) {
+    throw new Error(`GET /file/content failed: ${resp.status} ${await resp.text()}`)
+  }
+  return (await resp.json()) as FileContentDTO
+}
+
 // Per-view-root maps of node id → [x, y]. "top" is the top-level view key.
 export type Positions = Record<string, Record<string, [number, number]>>
 

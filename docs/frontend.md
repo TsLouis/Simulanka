@@ -1,7 +1,7 @@
 # 前端
 
 > 分篇之三（入口见 `overview.md`）。人的唯一检查面与裁决面——把关人不读代码，读画布。
-> 对着 `src/simulanka/server/` 与 `frontend/src/` 写成。标注 🔲 的是已定稿、未施工的规格（子任务 S4–S8；编号见 overview 施工清单）。
+> 对着 `src/simulanka/server/` 与 `frontend/src/` 写成。标注 🔲 的是已定稿、未施工的规格（子任务 S5–S8；编号见 overview 施工清单）。
 
 ## 技术栈与启动
 
@@ -20,7 +20,8 @@
 | `POST /edge/{id}/verdict` | 人裁决：correct/wrong/disputed，**note 必填**（辩护即学习时刻）；拒 ghost 不删边，留在分歧队列 |
 | `POST /edge/{id}/accept` | 接受 ghost（同意无需辩护；仅人可点——写权矩阵） |
 | `POST /edge/{id}/discuss` | 手动拉边进/出讨论集 |
-| `GET /disagreements` | 分歧集（纯 attrs 计算，无额外状态）：人拒的 ghost / agent 打 wrong-uncertain 的人边 / disputed / 手动 |
+| `GET /disagreements` | 分歧集（共享模块 `disagreements.py`，与 brief 同一计算）：人拒的 ghost / agent 打 wrong-uncertain 的人边 / disputed / 手动 |
+| `GET /file/content?node|path` | S4 文件查看器：按 file 节点读内容（node=节点 id / path=fs_path 反查，二选一）；未登记路径 404（图是「什么可读」的权威）；binary/truncated 如实标记，上限 1 MiB |
 | `POST /discussion/start|message` · `GET /discussion` | 一批一场讨论：start 快照分歧集 + 打 `discussion-start` 恢复 tag + 开 opencode session；每轮 ops 块过写权闸 |
 
 ## 渲染器（litegraph-adapter）
@@ -55,12 +56,12 @@
 
 ## 待实现（静态验收缺口）
 
-**S4 通用文件查看器 + 深链文档出处** 🔲（2026-07-09 用户指正：按「所有文件」抽象，勿按触发用例特化——能力的自然宿主是 file 节点，不是 plan 文件）：
+**S4 通用文件查看器 + 深链文档出处 ✅**（2026-07-09 用户指正：按「所有文件」抽象，勿按触发用例特化——能力的自然宿主是 file 节点，不是 plan 文件。实现：`FileViewer.svelte` + `GET /file/content`，server 侧实测于 `tests/test_server_file_content.py`）：
 
-- server 一个「按 file 节点读内容」端点，**任何 kind 通吃**（plan/brief/doc/config/run 日志……都是 file 节点）。
-- 前端一个只读文档抽屉：markdown 渲染，其余纯文本/代码预格式化；「打开并高亮一个词」做成通用参数。
-- **深链出处＝特例**：研究原子带 `plan_file`+`plan_lid` → 打开该文件、高亮 lid。图是文档的有损投影，这条链是投影可逆性的人面保证。
-- **run 日志（stdout/stderr file 节点）由此免费前端可读**——人肉彩排「全程前端可见」的闭环件。
+- server「按 file 节点读内容」端点，**任何 kind 通吃**（plan/brief/doc/config/run 日志……都是 file 节点）；`path` 变体按 `fs_path` 反查 file 节点——未登记的路径即使在盘上也 404，图保持「什么可读」的权威。
+- 前端只读文档抽屉（右侧展开，Esc 关）：`.md` 走 marked 渲染（DOMPurify 消毒——plan 文件可能出自 agent 之手），其余纯文本预格式化；「打开并高亮一个词」为通用参数（先试 JSON 引号形 `"lid"` 再试裸词，命中即 `<mark>` 滚动定位）。
+- **深链出处＝特例**：带 `plan_file`+`plan_lid` 的原子在 NodeInspector 出「↗ 出处」按钮 → 打开该文件、高亮 lid。图是文档的有损投影，这条链是投影可逆性的人面保证。
+- **run 日志（stdout/stderr file 节点）由此免费前端可读**（inspector 上 stdout/stderr 按钮）——人肉彩排「全程前端可见」的闭环件；evidence 的 metrics 按钮同理（未登记则如实报 404）。
 - **不做**：编辑、双向同步、逐条精确锚定（匹配不到退化开顶部）；跳编辑器按钮不预做。
 
 **S5 按轮下钻 + 卡片化信息密度** 🔲：ingest 已按计划建轮次目录（`research/<plan-stem>/`），下钻机制现成。呈现要求（2026-07-09 用户定为硬需求）：**日常所需信息大多数不点开侧栏就能从画布读到**。每类研究原子一张卡片：question/claim=正文摘要+状态徽记、hypothesis=正文+verdict 徽记、experiment=goal+status、task=goal+契约摘要、run=状态/时长/exit code、evidence=关键 metrics 数值。字段清单=可调项（首版 Claude 定，彩排中按用户反馈迭代）。
