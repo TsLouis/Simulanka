@@ -384,11 +384,22 @@ def run_end(
         str,
         typer.Option("--status", help="Outcome claim: done or failed."),
     ] = "done",
+    metrics: Annotated[
+        Path | None,
+        typer.Option(
+            "--metrics",
+            "-m",
+            help=(
+                "Metrics file (flat JSON scalar dict) to extract as evidence. "
+                "Without it, <workdir>/metrics.json is extracted iff present."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Close a bracket: diff against the begin snapshot, run acceptance, seal the run."""
     layout = ProjectLayout.require()
     try:
-        result = end_run(layout, run=target, status=status)
+        result = end_run(layout, run=target, status=status, metrics=metrics)
     except RunnerError as exc:
         typer.echo(f"Runner error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
@@ -408,6 +419,11 @@ def run_end(
             typer.echo(f"    out_of_scope = {cc.out_of_scope_files}")
         if cc.acceptance_exit_code is not None:
             typer.echo(f"    acceptance_exit = {cc.acceptance_exit_code}")
+    if result.evidence_node_id is not None:
+        marker = "" if result.evidence_created else " (already extracted)"
+        typer.echo(f"  evidence      = {result.evidence_node_id}{marker}")
+    if result.metrics_error is not None:
+        typer.echo(f"  metrics       = REJECTED: {result.metrics_error}")
     if result.status != "done":
         raise typer.Exit(code=1)
     if result.contract_check is not None and result.contract_check.status != "passed":

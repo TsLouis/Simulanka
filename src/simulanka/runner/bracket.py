@@ -73,6 +73,9 @@ class EndResult:
     files_modified: list[str]
     files_deleted: list[str]
     contract_check: ContractCheckResult | None
+    evidence_node_id: str | None = None
+    evidence_created: bool | None = None
+    metrics_error: str | None = None
 
 
 def begin_run(
@@ -186,12 +189,19 @@ def end_run(
     *,
     run: str,
     status: str = "done",
+    metrics: Path | None = None,
 ) -> EndResult:
     """Close a bracket: diff against the begin snapshot, check the contract, seal the run.
 
     ``status`` is the caller's claim about the work (``done``/``failed``); the
     measurements (diff, acceptance) run the same either way. A run that has
     already ended is rejected — history is not rewritten.
+
+    Metrics: an explicit ``metrics`` path is extracted into an evidence node
+    (same path as ``evidence extract``); without one, ``<workdir>/metrics.json``
+    is extracted iff it exists. Extraction failure never blocks the close —
+    it is reported in the result (and, for invalid content, stamped on the
+    run node as ``metrics_error``).
     """
     if status not in ("done", "failed"):
         raise RunnerError(f"--status must be `done` or `failed`, got {status!r}.")
@@ -253,6 +263,10 @@ def end_run(
         note=f"run end: {run_node.name} -> {status}",
     )
 
+    evidence_node_id, evidence_created, metrics_error = _extract_metrics(
+        layout, run_node_id=run_node.id, metrics=metrics,
+    )
+
     return EndResult(
         run_node_id=run_node.id,
         status=status,
@@ -262,12 +276,40 @@ def end_run(
         files_modified=diff["modified"],
         files_deleted=diff["deleted"],
         contract_check=contract_check,
+        evidence_node_id=evidence_node_id,
+        evidence_created=evidence_created,
+        metrics_error=metrics_error,
     )
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _extract_metrics(
+    layout: ProjectLayout, *, run_node_id: str, metrics: Path | None,
+) -> tuple[str | None, bool | None, str | None]:
+    """Run evidence extraction as part of the close; never let it block the seal.
+
+    Returns (evidence_node_id, created, error_message).
+    """
+    from simulanka.evidence import (
+        EvidenceError,
+        default_metrics_path,
+        extract_evidence,
+    )
+
+    if metrics is None:
+        # No explicit claim — extract the conventional file iff present.
+        run_node = load_node(layout, run_node_id)
+        if not default_metrics_path(layout, run_node).is_file():
+            return None, None, None
+    try:
+        result = extract_evidence(layout, run=run_node_id, metrics=metrics)
+    except EvidenceError as exc:
+        return None, None, str(exc)
+    return result.evidence_node_id, result.created, None
+
 
 def _resolve_task(layout: ProjectLayout, selector: str) -> Node:
     try:

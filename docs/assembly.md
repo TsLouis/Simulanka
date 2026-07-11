@@ -2,7 +2,7 @@
 
 > 分篇之二（入口见 `overview.md`）。统一抽象：**文档、模型、执行现场都是外部原文，图是它们的可检查投影**。
 > 每种转换都是确定性工具——同样的原文必得同样的图。人和任何模型只读写原文，不直接操作图。
-> 标注 🔲 的小节是已定稿、未施工的规格（子任务 S2–S3、S8；编号见 overview 施工清单）。
+> 标注 🔲 的小节是已定稿、未施工的规格（子任务 S3、S8；编号见 overview 施工清单）。
 
 ## 铭章约定（attrs 语义词表）
 
@@ -108,17 +108,18 @@
 - `run begin --task <sel> [--parent <dir>] [--name <n>] [--workdir <path>]`：建 run 节点（`status=running`, `bracket=true`）+ 镜像契约（`contract` attr + `<run_dir>/contract.json` 快照 + `fulfills` 边），单 PatchIntent 原子落地。**diff 机制＝快照比对**（2026-07-09 裁定：begin 拍工作区快照存盘、end 比对，全系统统一为这一条测量路径；作废原 §14.8「porcelain 清单集合差」——集合差漏掉「begin 时已脏、run 中又改」的文件，快照比对不漏且不依赖 git）。git HEAD 与脏文件清单（`git status --porcelain -uall` 文件粒度）在 begin 时记录为**诚实性元数据**（`git_head` / `baseline_dirty` / `git_dirty_files`，workdir 非 git 仓则不记），不作 diff 机制。首行裸打 run id，harness 自持，**不设「当前 run」环境态**。`--parent` 缺省 = task 的父节点；`--name` 缺省 = `run-<handle>`。
 - **diff 粒度（2026-07-10 定）＝路径清单**：快照只存 `{路径: hash}` 不留内容——系统永久回答「动了哪些文件」（漏不掉），不回答「改了什么内容」；内容对比靠 workdir 为 git 仓时兜底（baseline 工作流 worktree-per-run 天然满足），彩排首撞「必须看内容」再议，不预做。快照存盘 `<run_dir>/snapshot.json`；共享测量模块＝`workspace.py`（snapshot/diff/scope，wrapper、detached、bracket 三处同源——「一条测量路径」的实体化）。
 - 人肉括号不造 stdout/stderr file 节点（人在自己终端干活，系统看不见就不假装记录；acceptance.log 照旧入 run_dir）。同 workdir 并发 run 的 diff 互染 v1 不设防（靠 worktree-per-run 约定）。预算超时不打失败章——duration 如实记录，值不值归分析者。
-- `run end <run> [--status done|failed]`：① 对 begin 快照算 diff（写 `<run_dir>/changes.json`）→ ② 按 contract.json 快照跑 acceptance（判的是 begin 时的契约，改 task 不改历史）→ ③ 写 `contract_check` → ④ `ended_at`/`duration_seconds`/`status` 单 patch 收口。已 end 再 end = 拒；`--status failed` 照样测量（人的主张不改测量）。`--metrics` 随 S2 一起落地。
+- `run end <run> [--status done|failed] [--metrics <file>]`：① 对 begin 快照算 diff（写 `<run_dir>/changes.json`）→ ② 按 contract.json 快照跑 acceptance（判的是 begin 时的契约，改 task 不改历史）→ ③ 写 `contract_check` → ④ `ended_at`/`duration_seconds`/`status` 单 patch 收口 → ⑤ 触发 evidence 提取（S2 同一条路；显式 `--metrics` 或 workdir `metrics.json` 存在即提，提取失败不挡收口）。已 end 再 end = 拒；`--status failed` 照样测量（人的主张不改测量）。
 - 孤儿 run（begin 后 harness 崩）：人工 `run end --status failed`；doctor 增 `stale_running_run` 检查（`running` 超预算、无预算超 24h 即提示，bracket 提示 end、detached 提示 status）。
 - intent 一律 `actor="system"`（测量归系统）。
 
-**🔲 `evidence extract <run>`（S2，`run end` 内也触发）**：
+**`evidence extract <run>`（S2）✅**（`evidence.py`，实测于 `tests/test_evidence_extract.py`；`run end` 内也触发，同一条路）：
 
 - 约定：metrics 文件 = **平铺 JSON 标量字典**（`--metrics` 或 workdir `metrics.json`；task 的 `allowed_outputs` 应涵盖它）。
-- 产出：`evidence` 节点（parent=run），attrs `source="machine"`、`metrics`、`metrics_path`、`body`=一行摘要；`produces` 边 run→evidence。**不连 supports/contradicts**——语义判断归分析者。
-- 解析失败/非标量 → 不造 evidence，run 记 `metrics_error`（宁可缺不可假）。
-- 标量边界（2026-07-10 定）：str / int / float / bool 算标量；null 或嵌套 dict/list 出现即整文件拒，不做部分提取。
-- 幂等（2026-07-10 定）：同一 run 重复 extract，metrics 内容相同＝无操作（报既有 evidence id）；内容变了＝新造 evidence 节点，不覆盖旧的（历史不改写）。`run end` 触发与手动同一条路。
+- 产出：`evidence` 节点（parent=run，名 `evidence-<序号>`），attrs `source="machine"`、`metrics`、`metrics_path`、`body`=一行摘要；`produces` 边 run→evidence，单 PatchIntent。**不连 supports/contradicts**——语义判断归分析者。
+- 解析失败/非标量 → 不造 evidence，run 记 `metrics_error`（宁可缺不可假）；后续提取成功则清为 null。文件不存在＝用法错误，不盖 `metrics_error`（从未主张过测量）。
+- 标量边界（2026-07-10 定）：str / int / float / bool 算标量；null 或嵌套 dict/list 出现即整文件拒，不做部分提取；空对象也拒。
+- 幂等（2026-07-10 定）：同一 run 重复 extract，metrics 内容相同＝无操作（报既有 evidence id）；内容变了＝新造 evidence 节点，不覆盖旧的（历史不改写）。
+- intent `actor="system"`（测量归系统）。
 
 ## agent 调用（插座）✅
 
@@ -149,6 +150,6 @@
 | `export model-explorer` | 图→可视化 | ✅ |
 | `run exec [--detach]` / `run status|wait|kill|reconcile` | 执行现场→图 | ✅ |
 | `run begin --task` / `run end` | 执行现场→图 | ✅ |
-| `evidence extract <run>` | 执行现场→图 | 🔲 S2 |
+| `evidence extract <run>` | 执行现场→图 | ✅ |
 | `task create|inspect` | 契约 | ✅ |
 | `run agent` / `propose` | agent 插座 | ✅ |

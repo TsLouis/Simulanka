@@ -6,6 +6,7 @@ from typing import Annotated
 import typer
 
 from simulanka import __version__
+from simulanka.cli.evidence import evidence_app
 from simulanka.cli.export import export_app
 from simulanka.cli.graph import graph_app
 from simulanka.cli.import_ import import_app
@@ -24,6 +25,7 @@ app.add_typer(export_app, name="export")
 app.add_typer(run_app, name="run")
 app.add_typer(task_app, name="task")
 app.add_typer(plan_app, name="plan")
+app.add_typer(evidence_app, name="evidence")
 app.add_typer(serve_app, name="serve")
 
 
