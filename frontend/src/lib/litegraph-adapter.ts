@@ -5,6 +5,7 @@
 
 import dagre from 'dagre'
 import { LiteGraph, LGraph, type LGraphNode } from 'litegraph.js'
+import { CARD_LINE_H, CARD_WIDTH, cardLines, type CardLine } from './cards'
 import {
   EDGE_COLORS,
   GHOST_COLOR,
@@ -187,6 +188,10 @@ export function buildLiteGraph(
     ;(lgnode as unknown as { onConnectionsChange: typeof onConnectionsChange })
       .onConnectionsChange = onConnectionsChange
 
+    // S5 卡片：attr 驱动的展示模板（cards.ts 是唯一的字段清单来源）。
+    const card = cardLines(n)
+    if (card.length > 0) attachCard(lgnode, card)
+
     const pos = persistedPositions[n.id] ?? autoPos.get(n.id) ?? [80, 80]
     lgnode.pos = [pos[0], pos[1]]
 
@@ -229,6 +234,74 @@ export function buildLiteGraph(
 
   building = false
   return { graph, byNode }
+}
+
+// --- S5 card rendering -------------------------------------------------------
+// One drawing skeleton for every atom type; cards.ts owns the per-type field
+// lists. The card area sits below the slot rows; node height is expanded to
+// make room, and onDrawForeground paints the lines.
+
+interface CardStash {
+  lines: CardLine[]
+  top: number
+}
+
+function attachCard(lgnode: LGraphNode, lines: CardLine[]): void {
+  const base = lgnode.computeSize()
+  const top = base[1] + 6
+  lgnode.size = [Math.max(base[0], CARD_WIDTH), top + lines.length * CARD_LINE_H + 8]
+  ;(lgnode as unknown as { simulanka_card: CardStash }).simulanka_card = { lines, top }
+  ;(lgnode as unknown as {
+    onDrawForeground: (ctx: CanvasRenderingContext2D) => void
+  }).onDrawForeground = drawCardForeground
+}
+
+function drawCardForeground(this: LGraphNode, ctx: CanvasRenderingContext2D): void {
+  const self = this as unknown as {
+    simulanka_card?: CardStash
+    flags?: { collapsed?: boolean }
+  }
+  const stash = self.simulanka_card
+  if (!stash || self.flags?.collapsed) return
+  let y = stash.top + 11
+  ctx.save()
+  ctx.textAlign = 'left'
+  ctx.textBaseline = 'alphabetic'
+  for (const line of stash.lines) {
+    if (line.kind === 'badges') {
+      let x = 10
+      ctx.font = "600 9px 'Noto Sans SC', ui-sans-serif, sans-serif"
+      for (const b of line.badges) {
+        const tw = ctx.measureText(b.text).width
+        const bw = tw + 12
+        ctx.beginPath()
+        ctx.roundRect(x, y - 9.5, bw, 13, 6.5)
+        ctx.fillStyle = withAlpha(b.color, 0.16)
+        ctx.fill()
+        ctx.strokeStyle = withAlpha(b.color, 0.55)
+        ctx.lineWidth = 1
+        ctx.stroke()
+        ctx.fillStyle = b.color
+        ctx.fillText(b.text, x + 6, y + 0.5)
+        x += bw + 6
+      }
+    } else {
+      ctx.font = line.mono
+        ? '10px ui-monospace, monospace'
+        : "11px 'Noto Sans SC', ui-sans-serif, sans-serif"
+      ctx.fillStyle = line.dim ? '#8d99b5' : '#c9d2e4'
+      ctx.fillText(line.text, 10, y + 1)
+    }
+    y += CARD_LINE_H
+  }
+  ctx.restore()
+}
+
+function withAlpha(hex: string, alpha: number): string {
+  const r = parseInt(hex.slice(1, 3), 16)
+  const g = parseInt(hex.slice(3, 5), 16)
+  const b = parseInt(hex.slice(5, 7), 16)
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`
 }
 
 // Stamp a LiteGraph link with the persisted edge's identity and provenance
@@ -459,7 +532,12 @@ function computeAutoLayout(payload: GraphPayload): Map<string, [number, number]>
   g.setDefaultEdgeLabel(() => ({}))
 
   for (const n of payload.nodes) {
-    g.setNode(n.id, { width: NODE_W, height: NODE_H })
+    // Card lines grow the node vertically — feed dagre the real footprint so
+    // stacked (edge-less) atoms don't overlap.
+    g.setNode(n.id, {
+      width: NODE_W,
+      height: NODE_H + cardLines(n).length * CARD_LINE_H,
+    })
   }
   // Only real (both-endpoints-in) edges drive layout. Contains/structural edges
   // are implicit in nesting and shouldn't affect rank.
