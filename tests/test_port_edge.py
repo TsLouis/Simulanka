@@ -13,6 +13,7 @@ from simulanka.kernel.intent import (
     CreateNodeOp,
     CreatePortOp,
     DeleteEdgeOp,
+    DeleteNodeOp,
     PatchIntent,
 )
 from simulanka.kernel.resolver import resolve_port
@@ -23,8 +24,11 @@ from simulanka.storage.entity_store import (
     edge_exists,
     find_port,
     iter_edges,
+    iter_nodes,
     list_ports_of,
     load_edge,
+    node_exists,
+    port_exists,
 )
 
 
@@ -371,6 +375,137 @@ def test_create_edge_unknown_endpoint_is_validation_error(tmp_path: Path) -> Non
             ),
         )
     assert "source" in str(ei.value)
+
+
+def test_tunnel_edges_across_own_boundary(tmp_path: Path) -> None:
+    """§12.4 subgraph IO (2026-07-14): a container's in-port may feed its own
+    child (parent.in → child.in) and a child may feed the container's out-port
+    (child.out → parent.out) — exactly one containment level. The plain
+    direction rule still refuses in→in between siblings."""
+    layout = init_project(tmp_path, with_scaffold=False).layout
+    _seed_two_modules(layout)
+    apply_patch(
+        layout,
+        PatchIntent(
+            ops=[
+                CreatePortOp(node="/models/TinyNet", name="x", direction="in"),
+                CreatePortOp(node="/models/TinyNet", name="y", direction="out"),
+                CreatePortOp(node="/models/TinyNet/conv1", name="in0", direction="in"),
+                CreatePortOp(node="/models/TinyNet/conv1", name="out0", direction="out"),
+                CreatePortOp(node="/models/TinyNet/bn1", name="in0", direction="in"),
+            ],
+            actor="user",
+            base_graph_version=layout.load_manifest().graph_version,
+        ),
+    )
+
+    # parent.in → child.in (tunnel in) and child.out → parent.out (tunnel out).
+    receipt = apply_patch(
+        layout,
+        PatchIntent(
+            ops=[
+                CreateEdgeOp(
+                    type="data_flow",
+                    source="/models/TinyNet.x",
+                    target="/models/TinyNet/conv1.in0",
+                ),
+                CreateEdgeOp(
+                    type="data_flow",
+                    source="/models/TinyNet/conv1.out0",
+                    target="/models/TinyNet.y",
+                ),
+            ],
+            actor="user",
+            base_graph_version=layout.load_manifest().graph_version,
+        ),
+    )
+    assert len(receipt.edges) == 2
+    assert run_doctor(layout).ok
+
+    # Siblings get no exemption: conv1.in0 → bn1.in0 is still a direction error.
+    with pytest.raises(ValidationError) as ei:
+        apply_patch(
+            layout,
+            PatchIntent(
+                ops=[
+                    CreateEdgeOp(
+                        type="data_flow",
+                        source="/models/TinyNet/conv1.in0",
+                        target="/models/TinyNet/bn1.in0",
+                    ),
+                ],
+                actor="user",
+                base_graph_version=layout.load_manifest().graph_version,
+            ),
+        )
+    assert "direction" in str(ei.value)
+
+
+def test_delete_node_cascades_ports_and_incident_edges(tmp_path: Path) -> None:
+    """Deleting a leaf module takes its ports, its data_flow edges, and the
+    parent's contains edge with it — the store stays doctor-clean, and the
+    sibling is untouched."""
+    layout = init_project(tmp_path, with_scaffold=False).layout
+    edge_id = _seed_data_flow_edge(layout)
+    conv1 = next(n for n in iter_nodes(layout) if n.name == "conv1")
+    conv1_ports = [p.id for p in list_ports_of(layout, conv1.id)]
+    contains = next(
+        e for e in iter_edges(layout)
+        if e.type == "contains" and e.target_id == conv1.id
+    )
+
+    before = layout.load_manifest().graph_version
+    receipt = apply_patch(
+        layout,
+        PatchIntent(
+            ops=[DeleteNodeOp(node=conv1.id)],
+            actor="user",
+            base_graph_version=before,
+        ),
+    )
+    assert receipt.deleted_nodes == [conv1.id]
+    assert set(receipt.deleted_ports) == set(conv1_ports)
+    assert set(receipt.deleted_edges) == {edge_id, contains.id}
+    assert receipt.graph_version == before + 1
+
+    assert not node_exists(layout, conv1.id)
+    assert all(not port_exists(layout, pid) for pid in conv1_ports)
+    assert not edge_exists(layout, edge_id)
+    assert not edge_exists(layout, contains.id)
+    # Sibling and parent survive; the store is structurally healthy.
+    assert any(n.name == "bn1" for n in iter_nodes(layout))
+    assert run_doctor(layout).ok
+
+
+def test_delete_node_refuses_children(tmp_path: Path) -> None:
+    layout = init_project(tmp_path, with_scaffold=False).layout
+    _seed_two_modules(layout)
+    tiny = next(n for n in iter_nodes(layout) if n.name == "TinyNet")
+    with pytest.raises(ValidationError) as ei:
+        apply_patch(
+            layout,
+            PatchIntent(
+                ops=[DeleteNodeOp(node=tiny.id)],
+                actor="user",
+                base_graph_version=layout.load_manifest().graph_version,
+            ),
+        )
+    assert "children" in str(ei.value)
+    assert node_exists(layout, tiny.id)  # untouched
+
+
+def test_delete_node_missing_rejected(tmp_path: Path) -> None:
+    layout = init_project(tmp_path, with_scaffold=False).layout
+    _seed_two_modules(layout)
+    with pytest.raises(ValidationError):
+        apply_patch(
+            layout,
+            PatchIntent(
+                ops=[DeleteNodeOp(node="nod_doesnotexist")],
+                actor="user",
+                base_graph_version=layout.load_manifest().graph_version,
+            ),
+        )
 
 
 def test_delete_edge_missing_id_rejected(tmp_path: Path) -> None:

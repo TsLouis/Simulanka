@@ -6,14 +6,14 @@
 ## 技术栈与启动
 
 - 后端：FastAPI（`simulanka serve`），单用户本地服务；启动时激活 `.simulanka/` 内嵌 git 检查点仓（agent 写权只从 server 进入，安全网先于风险就位）。
-- 前端：Svelte + Vite + LiteGraph.js；dev 模式 vite 代理 API（**注意：新增后端路由必须同步加进 vite proxy 名单**——`/ui`、`/discussion` 两次踩坑）。
+- 前端：Svelte + Vite + LiteGraph.js；dev 模式 vite 代理 API（**注意：新增后端路由必须同步加进 vite proxy 名单**——`/ui`、`/discussion` 两次踩坑；**且 proxy 键是前缀匹配**：`'/node'` 会吞掉 `/node_modules/**` 打死全部模块加载，短路由名必须写正则键 `'^/node(/|$)'`——2026-07-12 第三坑）。
 - 实时：SSE（`/events`），轮询事件日志，按 commit 推送受影响实体 id，前端只刷相关视图。
 
 ## 服务端 API
 
 | 端点 | 用途 |
 | --- | --- |
-| `GET /graph?root&depth` | 子图载荷：nodes（含 `child_count`）、edges、**boundary_edges**（恰一端在视图内）、external_nodes、ports、ancestors（面包屑） |
+| `GET /graph?root` | 单容器视图载荷：nodes=root 的**直接孩子**（含 `child_count`；root 本人永不入 nodes，其名片在 `root_info`）、edges、**boundary_edges**（恰一端在视图内，contains 除外——root 端口连向孩子的边落在此，即子图输入/输出括号）、external_nodes、ports、ancestors（面包屑）。无 depth 旋钮：视图永不混层（2026-07-12 定） |
 | `GET /events` | SSE：每 commit 一条 `{graph_version, actor, nodes/edges/ports}` 受影响集 |
 | `GET/POST /ui/positions` | 节点位置持久化（按视图分桶，`.simulanka/ui/positions.json`） |
 | `POST /edge` · `DELETE /edge/{id}` | 人画/删 data_flow 边（`source=user`，可带画线时 `shape_check`） |
@@ -22,20 +22,27 @@
 | `POST /edge/{id}/discuss` | 手动拉边进/出讨论集 |
 | `GET /disagreements` | 分歧集（共享模块 `disagreements.py`，与 brief 同一计算）：人拒的 ghost / agent 打 wrong-uncertain 的人边 / disputed / 手动 |
 | `GET /file/content?node|path` | S4 文件查看器：按 file 节点读内容（node=节点 id / path=fs_path 反查，二选一）；未登记路径 404（图是「什么可读」的权威）；binary/truncated 如实标记，上限 1 MiB |
-| `POST /discussion/start|message` · `GET /discussion` | 一批一场讨论：start 快照分歧集 + 打 `discussion-start` 恢复 tag + 开 opencode session；每轮 ops 块过写权闸 |
+| `POST /node` | 画布加节点（右键菜单）：`{type, name, parent?, attrs?, ports?}`，actor=user；parent=当前视图 root；同胞重名自动 `_2` 后缀（菜单连放三个 Conv2d 必须直接成）；ports 走第二个 patch（resolver 看不见未提交节点，与 importer 同型）；kernel 容器矩阵违规→422 |
+| `POST /node/{id}/rename` | 改名（RenameNodeOp）；file/directory 拒改（name ↔ fs_path 是 FileRegistry 领地）；重名冲突 422 |
+| `DELETE /node/{id}` | 删**空**节点（kernel DeleteNodeOp：级联自身端口+关联边+父 contains——后者是建点双写的合法逆操作；有孩子 422 先清空）；画布策略=仅 module/model（file/directory 绑磁盘、研究原子血缘不可断）。Delete 键与右键「删除」同走此路——画布永不本地假删 |
+| `GET/POST /ui/templates` · `DELETE /ui/templates/{name}` | 自定义节点模板（`.simulanka/ui/templates.json`，按名 keyed、可覆写）；UI 态非图实体——图只记真正放置过的东西 |
+| `POST /discussion/start|message` · `GET /discussion` | **会话=语言原语（2026-07-14 解耦）**：start 无分歧也可开（空批次=通用图助手开场）；有分歧则批次开场（一批一场保留）。均打 `discussion-start` 恢复 tag + 开 opencode session；每轮 ops 块过写权闸。消息可带锚定戳（锚定：…）。**空批次会话固定走仓库级无工具 agent `graph-chat`**（`.opencode/agent/graph-chat.md`；agent 选择存进会话状态随轮次沿用）——opencode 默认 build agent 带全套工具，会对着代码库跑几分钟（慢的真凶）；批次核对线保留默认 agent（引证需要读码）。实测默认模型 ~7-9s/轮。「整页卡死」的真凶另在前端：Svelte 5 下 `$:` 里调 `tick()`（=微任务+flushSync）会无限重入刷新循环，ChatNode 挂载即冻死主线程——已改 `afterUpdate`/`queueMicrotask`，**禁止在响应式语句里调 tick()**（无头浏览器复现+调试器中断实证 2026-07-14） |
 
 ## 渲染器（litegraph-adapter）
 
-- **统一 node-edge-port 渲染**：任何类型的节点同一套画法；`child_count > 0` 即可**双击下钻**，面包屑由服务端 ancestors 重建（下钻/跳转/深链一致）。
-- **跨层边界端口投影**（§12.4）：恰一端在视图内的边投影到虚拟 boundary 节点——纯渲染，虚拟节点永不进图。
+- **统一 node-edge-port 渲染**：任何类型的节点同一套画法；**任意节点双击可进入**（叶子的内部=合法空视图，右键加节点即在其中生长——空容器由此可填充；child_count 是徽记不是闸门），面包屑由服务端 ancestors + root_info 重建（下钻/跳转/深链一致）。
+- **跨层边界端口投影**（§12.4）：恰一端在视图内的边投影到虚拟 boundary 节点——纯渲染，虚拟节点永不进图。**root 自身端口=子图声明的 IO，常驻投影为左右括号**（左=in 朝内、右=out；model/module 层空括号也显示=「尚无声明 IO」）；跨界边落在括号槽位或按 (external, direction) 聚合的 boundary 节点上。**括号可连线（2026-07-14）**：槽位携带 root 真端口 id，画线走 POST /edge，kernel **隧道规则**放行（父.in→子.in、子.out→父.out，恰一层；validator 与 doctor 同一规则）。
 - **布局**：dagre 自动布局，人工拖动的位置持久化并覆盖 dagre 结果。
 - **边语义染色**（夜空主题 theme.ts）：user=金、agent=紫、ghost（proposed 未决）=灰蓝虚线、人拒=绯红；trace 边与「constructed 可信」同源同色（星蓝）。
 - 画线时即时 shape 校验（match/mismatch/unknown），人的确认意图随边记录。
+- **右键菜单**（2026-07-12，自绘 Svelte 层，LiteGraph 内建菜单/搜索框已灭）：空白处=加节点（搜索 + 分类目录：torch.nn 精选约 45 项按卷积/线性/归一化/激活/池化/注意力/循环/损失/形状/张量运算分组 + 通用容器 + 我的模板）；节点上=进入子图/重命名/存为模板/删除（仅 module/model 出现此项）。菜单收起=window 捕获相 mousedown（LiteGraph 在画布层吃掉冒泡，常规监听收不到——2026-07-14 修）。
+- **鼠标/导航（2026-07-14）**：视图历史前进/后退（顶栏 ‹ › + Alt+←/→ + 鼠标侧键；一切导航走 navigateTo 单入口）；框选=引擎原生 **Ctrl+拖**、加选=Shift+点。更成熟的整套手感（左键框选、reroute 等）归引擎换血片（@comfyorg/litegraph）。菜单按 **kernel 容器矩阵过滤**（前端镜像 `registry/builtin.py` 的 allow_parents：module 只在 model/module 内出现、model 只在 directory 内、顶层只有 directory）——kernel 422 仍是硬闸，菜单只是不出注定被拒的项。手放节点=与 importer 同种（type=module + class_name/class_module 约定），端口无 confidence（诚实标注：草图没有观测）。落点=右键处（先记位置再等 SSE 重载）。**研究原子不进菜单**——它们的正路是 plan ingest（§14）。
 
 ## 面板
 
 - **NodeInspector**：属性侧栏，选中实体的全部 attrs。
-- **VerifyPanel / DiscussPanel——已定退役（2026-07-10）**：专用面板壳不再投入，核对与讨论统一改走锚定原语（S7 就地裁决 + 导航清单；锚定会话随 S8）。server 侧机制与 UI 无关、全部保留复用：分歧集计算、一批一场 session、ops 块写权闸、git checkpoint。S7 落地前旧面板仍可当测试面用。
+- **消息面（2026-07-12 用户定向、07-14 落地并框架化）**：设计原则=**不出现单一用途按钮，agent→人的一切都是消息**。**框架先行（用户 07-14 再定向）**：现阶段只建语言，不实现子功能——分歧/待裁卡片已从面上剥离（server 端点 `/edge/{id}/verdict|accept|discuss`、`/disagreements` 保留，前端绑定随「消息类型」功能回归）。落地两件：**底部常驻输入条 ChatDock**（只做输入；锚定 chip=选中集优先、否则当前容器，锚定戳随消息发给 agent）+ **会话节点 ChatNode**（画布浮动 node 观感消息面、可拖；纯消息流，错误也进流——状态栏低语被彩排证实读作卡死）。首条消息自动开 opencode 会话；消息本体在会话文件，不进图（图皮文件芯）。
+- **VerifyPanel / DiscussPanel——已删除（2026-07-14）**：顶栏「核对」按钮一并退役。S7 余项（选中边就地裁决、跳转选中）未做。
 
 ## 写权矩阵（执行点在此层）
 
@@ -87,12 +94,10 @@
 - v1 不做：数值分数（伪精度）、跨实体折叠聚合、question 可信级（提问不是断言）、快检章的矩阵强制。
 - 边的染色归属（2026-07-10 定）：画布上边仍按既有 source/verdict 语义染色；trust 染色只作用于**节点体**；边的 trust 仅在血缘链视图逐跳展示——画布不叠两套边色。
 
-**S7 锚定核对：就地裁决 + 导航清单，面板退役** 🔲（2026-07-10 grill 定）：
+**S7 锚定核对（口径已修订）** 🔶 部分落地：
 
-- 选中边/节点 → **就地裁决动作**（verdict / accept ghost / 拉入讨论）锚定在选择处；写权矩阵与既有端点不变，只换 UI 入口。
-- **薄清单只做导航**：分歧与待裁 ghost 列表（头部徽记已有谓词 `verify.ts`），点击＝跳转并选中（跨下钻层级可达），清单本身不承载任何写动作。
-- escalate note 的就地「已处理」按钮（`status→resolved`，`actor=user`，可附 `resolve_note`；server 增 note 状态端点）——S3 brief 只列 open 的前提。
-- VerifyPanel / DiscussPanel 退役；「一批一场」讨论机制保留，UI 改为**锚定会话＝多选锚**，随 S8 落地。
+- **2026-07-12 用户修订口径**：「核对也是一种消息」——原「薄清单只导航、不承载写动作」被**消息卡片（带裁决动作）**取代，落进会话节点（见「面板」节，07-14 已落地）；VerifyPanel / DiscussPanel 已删除。
+- 余项 🔲：选中边→**就地裁决动作**锚定在选择处（边选中能力未做）；卡片点击＝跳转并选中（跨下钻层级可达）；escalate note 的就地「已处理」按钮（`status→resolved`，`actor=user`，可附 `resolve_note`；server 增 note 状态端点）——S3 brief 只列 open 的前提。
 - 人肉彩排的「人终裁」步骤走本件。
 
 **S8 内嵌 agent 会话（插座子任务，静态末位）** 🔲（2026-07-09 grill 定）：前端起一个自由 agent 会话——agent 像在自己的 harness 里一样做任何事，界面是前端。技术路线＝**结构化事件流 + 原生会话面板**：用 harness 无头流式接口（opencode JSON / `claude -p --output-format stream-json`），渲染为对话气泡 + 工具调用卡片 + 流式输出；每 harness 一个薄展示适配器（只薄在展示层，调用与写权仍 harness 无关），先只接 opencode（免费模型现成）。写图仍只经 CLI/写权闸；会话干 task 时自己调 `run begin/end` 打卡（打卡即会话的图身份）。

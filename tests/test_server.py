@@ -98,11 +98,12 @@ def test_get_graph_no_root_returns_top_level(tmp_path: Path) -> None:
     layout = _seed_project(tmp_path)
     client = TestClient(create_app(layout))
 
-    resp = client.get("/graph", params={"depth": 0})
+    resp = client.get("/graph")
     assert resp.status_code == 200
     payload = resp.json()
     assert payload["root"] is None
-    # depth=0, no root: top-level directories only — no Net (it lives under baselines).
+    assert payload["root_info"] is None
+    # No root: top-level directories only — no Net (it lives under baselines).
     types = {n["type"] for n in payload["nodes"]}
     assert types == {"directory"}
     assert all(n["parent_id"] is None for n in payload["nodes"])
@@ -110,18 +111,22 @@ def test_get_graph_no_root_returns_top_level(tmp_path: Path) -> None:
     assert payload["ancestors"] == []
 
 
-def test_get_graph_root_depth_1_includes_children(tmp_path: Path) -> None:
+def test_get_graph_root_returns_children_only(tmp_path: Path) -> None:
+    """The view is the inside of one container: direct children only. The root
+    itself never appears among nodes (it lives in root_info for the crumb),
+    and its contains edges to the children are implicit in the view."""
     layout = _seed_project(tmp_path)
     net_id = next(n.id for n in iter_nodes(layout) if n.name == "Net" and n.type == "model")
 
     client = TestClient(create_app(layout))
-    resp = client.get("/graph", params={"root": net_id, "depth": 1})
+    resp = client.get("/graph", params={"root": net_id})
     assert resp.status_code == 200
     payload = resp.json()
 
     assert payload["root"] == net_id
+    assert payload["root_info"] == {"id": net_id, "type": "model", "name": "Net"}
     names = sorted(n["name"] for n in payload["nodes"])
-    assert names == ["Net", "dec", "enc"]
+    assert names == ["dec", "enc"]
 
     flows = [e for e in payload["edges"] if e["type"] == "data_flow"]
     assert len(flows) == 1
@@ -135,19 +140,14 @@ def test_get_graph_root_depth_1_includes_children(tmp_path: Path) -> None:
     sides = sorted(p["side"] for p in payload["ports"])
     assert sides == ["in", "out"]
 
-    # child_count is the direct-children count; Net has enc+dec, enc/dec are leaves.
     by_name = {n["name"]: n for n in payload["nodes"]}
-    assert by_name["Net"]["child_count"] == 2
     assert by_name["enc"]["child_count"] == 0
     assert by_name["dec"]["child_count"] == 0
 
-    # Inbound containment from baselines → Net counts as cross-boundary; data
-    # flows between enc and dec are internal.
-    assert len(payload["boundary_edges"]) == 1
-    incoming = payload["boundary_edges"][0]
-    assert incoming["type"] == "contains"
-    assert incoming["dst"] == net_id
-    assert {x["name"] for x in payload["external_nodes"]} == {"baselines"}
+    # Structural containment (baselines→Net, Net→enc/dec) never crosses into
+    # boundary_edges — the nesting itself conveys it.
+    assert payload["boundary_edges"] == []
+    assert payload["external_nodes"] == []
 
 
 def test_get_graph_ancestors_chain_from_root(tmp_path: Path) -> None:
@@ -160,7 +160,7 @@ def test_get_graph_ancestors_chain_from_root(tmp_path: Path) -> None:
     baselines_id = next(n.id for n in iter_nodes(layout) if n.name == "baselines")
 
     client = TestClient(create_app(layout))
-    resp = client.get("/graph", params={"root": enc_id, "depth": 0})
+    resp = client.get("/graph", params={"root": enc_id})
     payload = resp.json()
 
     names = [a["name"] for a in payload["ancestors"]]
@@ -169,37 +169,83 @@ def test_get_graph_ancestors_chain_from_root(tmp_path: Path) -> None:
     assert ids == [baselines_id, net_id]
 
 
-def test_get_graph_root_at_leaf_module_exposes_boundary_edge(tmp_path: Path) -> None:
-    """root=enc, depth=0 → only enc is included. Two edges cross the boundary:
-    the data_flow enc→dec (out to a sibling) and the contains Net→enc (in from
-    the parent). Frontend §12.4 then decides which to project as boundary
-    ports — only port-bearing edges qualify."""
+def test_get_graph_root_at_leaf_is_empty_view(tmp_path: Path) -> None:
+    """The inside of a leaf is empty: no nodes, no edges, no boundary. The
+    crumb still resolves via root_info/ancestors (deep links land here; the
+    UI itself only drills into child_count > 0)."""
     layout = _seed_project(tmp_path)
     enc_id = next(n.id for n in iter_nodes(layout) if n.name == "enc")
-    dec_id = next(n.id for n in iter_nodes(layout) if n.name == "dec")
-    net_id = next(n.id for n in iter_nodes(layout) if n.name == "Net" and n.type == "model")
 
     client = TestClient(create_app(layout))
-    resp = client.get("/graph", params={"root": enc_id, "depth": 0})
+    resp = client.get("/graph", params={"root": enc_id})
     assert resp.status_code == 200
     payload = resp.json()
 
     assert payload["root"] == enc_id
-    assert [n["name"] for n in payload["nodes"]] == ["enc"]
+    assert payload["root_info"]["name"] == "enc"
+    assert payload["nodes"] == []
+    assert payload["edges"] == []
+    assert payload["boundary_edges"] == []
+    assert [a["name"] for a in payload["ancestors"]] == ["baselines", "Net"]
+
+
+def test_get_graph_boundary_edge_projects_out_of_view_flow(tmp_path: Path) -> None:
+    """§12.4: a port-bearing edge from a node inside the view to one outside
+    lands in boundary_edges, with the far endpoint described in external_nodes
+    and its port riding along in `ports` for labelling. Contains edges from
+    the root never qualify."""
+    layout = _seed_project(tmp_path)
+    enc_id = next(n.id for n in iter_nodes(layout) if n.name == "enc")
+    dec_id = next(n.id for n in iter_nodes(layout) if n.name == "dec")
+
+    # Grow a child inside enc whose output feeds dec (outside enc's view).
+    apply_patch(
+        layout,
+        PatchIntent(
+            ops=[CreateNodeOp(type="module", name="inner", parent=enc_id, attrs={})],
+            actor="test",
+            base_graph_version=load_manifest(layout).graph_version,
+        ),
+    )
+    inner_id = next(n.id for n in iter_nodes(layout) if n.name == "inner")
+    apply_patch(
+        layout,
+        PatchIntent(
+            ops=[
+                CreatePortOp(node=inner_id, name="out0", direction="out", port_type="tensor"),
+                CreatePortOp(node=dec_id, name="in_b", direction="in", port_type="tensor"),
+            ],
+            actor="test",
+            base_graph_version=load_manifest(layout).graph_version,
+        ),
+    )
+    inner_out = find_port(layout, inner_id, "out0")
+    dec_in = find_port(layout, dec_id, "in_b")
+    assert inner_out is not None and dec_in is not None
+    apply_patch(
+        layout,
+        PatchIntent(
+            ops=[
+                CreateEdgeOp(type="data_flow", source=inner_out.id, target=dec_in.id, attrs={}),
+            ],
+            actor="test",
+            base_graph_version=load_manifest(layout).graph_version,
+        ),
+    )
+
+    client = TestClient(create_app(layout))
+    resp = client.get("/graph", params={"root": enc_id})
+    assert resp.status_code == 200
+    payload = resp.json()
+
+    assert [n["name"] for n in payload["nodes"]] == ["inner"]
     assert payload["edges"] == []
 
-    by_type = {e["type"]: e for e in payload["boundary_edges"]}
-    assert set(by_type) == {"data_flow", "contains"}
-
-    flow = by_type["data_flow"]
-    assert flow["src"] == enc_id and flow["dst"] == dec_id
-    assert flow["src_port"] is not None and flow["dst_port"] is not None
-
-    contains = by_type["contains"]
-    assert contains["src"] == net_id and contains["dst"] == enc_id
-
-    ext_names = {x["name"] for x in payload["external_nodes"]}
-    assert ext_names == {"dec", "Net"}
+    assert len(payload["boundary_edges"]) == 1
+    flow = payload["boundary_edges"][0]
+    assert flow["type"] == "data_flow"
+    assert flow["src"] == inner_id and flow["dst"] == dec_id
+    assert {x["name"] for x in payload["external_nodes"]} == {"dec"}
 
     # The outside port of the boundary data_flow rides along in `ports`, so
     # the frontend can label the far endpoint (dec's in-port) instead of '?'.
@@ -207,12 +253,34 @@ def test_get_graph_root_at_leaf_module_exposes_boundary_edge(tmp_path: Path) -> 
     assert flow["dst_port"] in port_ids
 
 
+def test_get_graph_root_own_ports_ride_in_ports(tmp_path: Path) -> None:
+    """The root's own ports are the subgraph's declared IO — they ride in
+    `ports` (frontend renders them as the view's input/output brackets) even
+    though the root itself is not among nodes."""
+    layout = _seed_project(tmp_path)
+    net_id = next(n.id for n in iter_nodes(layout) if n.name == "Net" and n.type == "model")
+    apply_patch(
+        layout,
+        PatchIntent(
+            ops=[CreatePortOp(node=net_id, name="x", direction="in", port_type="tensor")],
+            actor="test",
+            base_graph_version=load_manifest(layout).graph_version,
+        ),
+    )
+
+    client = TestClient(create_app(layout))
+    payload = client.get("/graph", params={"root": net_id}).json()
+    root_ports = [p for p in payload["ports"] if p["node_id"] == net_id]
+    assert [p["name"] for p in root_ports] == ["x"]
+    assert all(n["id"] != net_id for n in payload["nodes"])
+
+
 def test_get_graph_top_level_has_no_boundary_edges(tmp_path: Path) -> None:
     """At top-level there is no outside, so boundary_edges must stay empty
     even if cross-cutting edges exist elsewhere."""
     layout = _seed_project(tmp_path)
     client = TestClient(create_app(layout))
-    resp = client.get("/graph", params={"depth": 0})
+    resp = client.get("/graph")
     assert resp.status_code == 200
     payload = resp.json()
     assert payload["root"] is None
@@ -436,12 +504,159 @@ def test_delete_edge_endpoint_refuses_contains_422(tmp_path: Path) -> None:
     assert edge_exists(layout, contains.id)
 
 
+# --- canvas authoring: POST /node, rename, templates -------------------------
+
+
+def test_post_node_creates_node_with_ports(tmp_path: Path) -> None:
+    layout = _seed_project(tmp_path)
+    net_id = next(n.id for n in iter_nodes(layout) if n.name == "Net" and n.type == "model")
+    client = TestClient(create_app(layout))
+
+    resp = client.post(
+        "/node",
+        json={
+            "type": "module",
+            "name": "conv1",
+            "parent": net_id,
+            "attrs": {"class_name": "Conv2d", "class_module": "torch.nn"},
+            "ports": [
+                {"name": "input", "direction": "in", "port_type": "tensor"},
+                {"name": "output", "direction": "out", "port_type": "tensor"},
+            ],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    out = resp.json()
+    assert out["name"] == "conv1"
+    assert len(out["port_ids"]) == 2
+
+    node = next(n for n in iter_nodes(layout) if n.id == out["node_id"])
+    assert node.parent_id == net_id
+    assert node.attrs["class_name"] == "Conv2d"
+
+    # The new node shows up in its parent's view, ports wired.
+    payload = client.get("/graph", params={"root": net_id}).json()
+    by_name = {n["name"]: n for n in payload["nodes"]}
+    assert set(by_name["conv1"]["ports"]) == set(out["port_ids"])
+
+
+def test_post_node_sibling_collision_gets_suffix(tmp_path: Path) -> None:
+    layout = _seed_project(tmp_path)
+    net_id = next(n.id for n in iter_nodes(layout) if n.name == "Net" and n.type == "model")
+    client = TestClient(create_app(layout))
+
+    # "enc" already lives under Net — the menu drop must not 422.
+    resp = client.post("/node", json={"type": "module", "name": "enc", "parent": net_id})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["name"] == "enc_2"
+
+
+def test_post_node_validation(tmp_path: Path) -> None:
+    layout = _seed_project(tmp_path)
+    client = TestClient(create_app(layout))
+
+    assert client.post("/node", json={"name": "x"}).status_code == 422
+    assert client.post("/node", json={"type": "module"}).status_code == 422
+    assert (
+        client.post(
+            "/node", json={"type": "module", "name": "x", "parent": "nod_missing"}
+        ).status_code
+        == 404
+    )
+    resp = client.post(
+        "/node",
+        json={
+            "type": "module",
+            "name": "x",
+            "ports": [{"name": "p", "direction": "sideways"}],
+        },
+    )
+    assert resp.status_code == 422
+
+
+def test_rename_node_endpoint(tmp_path: Path) -> None:
+    layout = _seed_project(tmp_path)
+    enc_id = next(n.id for n in iter_nodes(layout) if n.name == "enc")
+    client = TestClient(create_app(layout))
+
+    resp = client.post(f"/node/{enc_id}/rename", json={"new_name": "encoder"})
+    assert resp.status_code == 200, resp.text
+    assert next(n.name for n in iter_nodes(layout) if n.id == enc_id) == "encoder"
+
+    # Sibling conflict → kernel 422.
+    assert (
+        client.post(f"/node/{enc_id}/rename", json={"new_name": "dec"}).status_code == 422
+    )
+    # file/directory names are bound to fs_path — refused here.
+    dir_id = next(n.id for n in iter_nodes(layout) if n.type == "directory")
+    assert (
+        client.post(f"/node/{dir_id}/rename", json={"new_name": "other"}).status_code == 422
+    )
+    assert client.post("/node/nod_missing/rename", json={"new_name": "x"}).status_code == 404
+
+
+def test_delete_node_endpoint(tmp_path: Path) -> None:
+    layout = _seed_project(tmp_path)
+    enc_id = next(n.id for n in iter_nodes(layout) if n.name == "enc")
+    net_id = next(n.id for n in iter_nodes(layout) if n.name == "Net" and n.type == "model")
+    client = TestClient(create_app(layout))
+
+    # Leaf module: gone, along with its ports and the enc→dec data_flow edge.
+    resp = client.delete(f"/node/{enc_id}")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["deleted"] == [enc_id]
+    assert all(n.id != enc_id for n in iter_nodes(layout))
+    assert all(e.type != "data_flow" for e in iter_edges(layout))
+
+    # Non-empty container → kernel 422 (empty it first).
+    resp = client.delete(f"/node/{net_id}")
+    assert resp.status_code == 422
+    assert "children" in resp.json()["detail"]
+
+    # Outside the sketch domain → policy 422; unknown id → 404.
+    dir_id = next(n.id for n in iter_nodes(layout) if n.type == "directory")
+    assert client.delete(f"/node/{dir_id}").status_code == 422
+    assert client.delete("/node/nod_missing").status_code == 404
+
+
+def test_templates_roundtrip(tmp_path: Path) -> None:
+    layout = _seed_project(tmp_path)
+    client = TestClient(create_app(layout))
+
+    assert client.get("/ui/templates").json() == {}
+
+    resp = client.post(
+        "/ui/templates",
+        json={
+            "name": "MyBlock",
+            "type": "module",
+            "category": "blocks",
+            "attrs": {"class_name": "MyBlock"},
+            "ports": [{"name": "input", "direction": "in"}],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    saved = client.get("/ui/templates").json()
+    assert saved["MyBlock"]["type"] == "module"
+    assert saved["MyBlock"]["category"] == "blocks"
+    assert saved["MyBlock"]["ports"][0]["port_type"] == "any"  # default rides in
+
+    # Overwrite in place; omitted category falls back to "custom".
+    client.post("/ui/templates", json={"name": "MyBlock", "type": "module"})
+    assert client.get("/ui/templates").json()["MyBlock"]["category"] == "custom"
+
+    assert client.delete("/ui/templates/MyBlock").status_code == 200
+    assert client.get("/ui/templates").json() == {}
+    assert client.delete("/ui/templates/MyBlock").status_code == 404
+
+    assert client.post("/ui/templates", json={"type": "module"}).status_code == 422
+
+
 def test_cors_allows_dev_origin(tmp_path: Path) -> None:
     layout = _seed_project(tmp_path)
     client = TestClient(create_app(layout))
     resp = client.get(
         "/graph",
-        params={"depth": 0},
         headers={"Origin": "http://localhost:5173"},
     )
     assert resp.status_code == 200

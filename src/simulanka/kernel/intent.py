@@ -81,7 +81,7 @@ class RenameNodeOp(BaseModel):
 
 
 class DeleteEdgeOp(BaseModel):
-    """Remove one edge by id. The only deletion op in the kernel (Alpha).
+    """Remove one edge by id.
 
     Refuses structural ``contains`` edges: they are dual-written with their
     child node and back the denormalised ``parent_id`` cache, so dropping one
@@ -98,13 +98,32 @@ class DeleteEdgeOp(BaseModel):
     edge: str  # edge id (e.g. "edg_…")
 
 
+class DeleteNodeOp(BaseModel):
+    """Remove one **empty** node, cascading everything that is *of* the node:
+    its ports, and every edge incident to it — including the structural
+    ``contains`` edge from its parent, whose removal here is the sanctioned
+    reversal of the create-time dual-write (a lone DeleteEdgeOp still refuses
+    it). A node with children is refused: subtree deletion must be explicit
+    and bottom-up, so one op can never silently take out a hierarchy.
+    Which node *types* a surface offers to delete is caller policy (the
+    server restricts the canvas to module/model); the kernel enforces only
+    structural integrity.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["delete_node"] = "delete_node"
+    node: str  # node selector: id or absolute path
+
+
 IntentOp = Annotated[
     CreateNodeOp
     | CreatePortOp
     | CreateEdgeOp
     | UpdateAttrsOp
     | RenameNodeOp
-    | DeleteEdgeOp,
+    | DeleteEdgeOp
+    | DeleteNodeOp,
     Field(discriminator="kind"),
 ]
 
@@ -127,3 +146,5 @@ class Receipt(BaseModel):
     updated_nodes: list[str] = Field(default_factory=list)
     updated_edges: list[str] = Field(default_factory=list)
     deleted_edges: list[str] = Field(default_factory=list)
+    deleted_nodes: list[str] = Field(default_factory=list)
+    deleted_ports: list[str] = Field(default_factory=list)

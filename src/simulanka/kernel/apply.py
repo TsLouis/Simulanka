@@ -11,6 +11,7 @@ from simulanka.kernel.intent import (
     CreateNodeOp,
     CreatePortOp,
     DeleteEdgeOp,
+    DeleteNodeOp,
     IntentOp,
     PatchIntent,
     Receipt,
@@ -32,6 +33,8 @@ from simulanka.schema.entities import Edge, Node, Port
 from simulanka.storage.checkpoint import maybe_checkpoint
 from simulanka.storage.entity_store import (
     delete_edge,
+    delete_node,
+    delete_port,
     list_ports_of,
     load_edge,
     save_edge,
@@ -53,6 +56,8 @@ class _Pending:
     updated_edges: list[Edge]
     canonical_ops: list[dict[str, Any]]
     deleted_edges: list[Edge]
+    deleted_nodes: list[Node]
+    deleted_ports: list[Port]
     refs: dict[str, Node]  # intent-local @ref handles → pending nodes
 
 
@@ -95,7 +100,8 @@ def apply_patch(layout: ProjectLayout, intent: PatchIntent) -> Receipt:
     now = datetime.now(timezone.utc)
     pending = _Pending(
         nodes=[], edges=[], ports=[], updated_nodes=[], updated_edges=[],
-        canonical_ops=[], deleted_edges=[], refs={},
+        canonical_ops=[], deleted_edges=[], deleted_nodes=[], deleted_ports=[],
+        refs={},
     )
     errors: list[str] = []
 
@@ -117,6 +123,10 @@ def apply_patch(layout: ProjectLayout, intent: PatchIntent) -> Receipt:
         save_edge(layout, edge)
     for edge in pending.deleted_edges:
         delete_edge(layout, edge.id)
+    for port in pending.deleted_ports:
+        delete_port(layout, port.id)
+    for node in pending.deleted_nodes:
+        delete_node(layout, node.id)
 
     new_version = manifest.graph_version + 1
     event = Event(
@@ -155,6 +165,8 @@ def apply_patch(layout: ProjectLayout, intent: PatchIntent) -> Receipt:
         updated_nodes=[n.id for n in pending.updated_nodes],
         updated_edges=[e.id for e in pending.updated_edges],
         deleted_edges=[e.id for e in pending.deleted_edges],
+        deleted_nodes=[n.id for n in pending.deleted_nodes],
+        deleted_ports=[p.id for p in pending.deleted_ports],
     )
 
 
@@ -180,6 +192,8 @@ def _apply_op(
         return _handle_rename_node(layout, op, pending, prefix=prefix)
     if isinstance(op, DeleteEdgeOp):
         return _handle_delete_edge(layout, op, pending, prefix=prefix)
+    if isinstance(op, DeleteNodeOp):
+        return _handle_delete_node(layout, op, pending, prefix=prefix)
     raise NotImplementedError(f"Unsupported op: {op!r}")  # pragma: no cover
 
 
@@ -544,6 +558,58 @@ def _handle_delete_edge(
             "type": edge.type,
             "source_id": edge.source_id,
             "target_id": edge.target_id,
+        }
+    )
+    return []
+
+
+def _handle_delete_node(
+    layout: ProjectLayout,
+    op: DeleteNodeOp,
+    pending: _Pending,
+    *,
+    prefix: str,
+) -> list[str]:
+    from simulanka.storage.entity_store import iter_edges, iter_nodes
+
+    try:
+        node = resolve_node(layout, op.node)
+    except ValueError as exc:
+        return [f"{prefix}: {exc}"]
+    if any(n.id == node.id for n in pending.deleted_nodes):
+        return []  # idempotent within a single patch
+
+    child_count = sum(1 for n in iter_nodes(layout) if n.parent_id == node.id)
+    if child_count > 0:
+        return [
+            f"{prefix}: node `{node.name}` has {child_count} children — "
+            "empty it first (subtree deletion must be explicit, bottom-up)."
+        ]
+
+    # Cascade what is *of* the node: its ports and every incident edge —
+    # including the parent's `contains` edge, whose removal here reverses the
+    # create-time dual-write (Edge.source_id/target_id are node ids, so the
+    # incident sweep also catches port-attached data_flow edges).
+    already = {e.id for e in pending.deleted_edges}
+    doomed_edges = [
+        e
+        for e in iter_edges(layout)
+        if (e.source_id == node.id or e.target_id == node.id) and e.id not in already
+    ]
+    ports = list_ports_of(layout, node.id)
+
+    pending.deleted_edges.extend(doomed_edges)
+    pending.deleted_ports.extend(ports)
+    pending.deleted_nodes.append(node)
+    pending.canonical_ops.append(
+        {
+            "kind": "delete_node",
+            "entity_id": node.id,
+            "type": node.type,
+            "name": node.name,
+            "parent_id": node.parent_id,
+            "deleted_ports": sorted(p.id for p in ports),
+            "deleted_edges": sorted(e.id for e in doomed_edges),
         }
     )
     return []

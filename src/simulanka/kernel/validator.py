@@ -102,12 +102,31 @@ def validate_edge(
                 f"Target port `{target_port.id}` does not belong to target node "
                 f"`{target_node.id}`."
             )
-        if spec.source_port_direction and source_port.direction != spec.source_port_direction:
+        # Tunnel exemption (§12.4 subgraph IO, 2026-07-14): a container's own
+        # port has two faces. From inside the container its in-port is a
+        # source (parent.in → child.in) and its out-port is a sink
+        # (child.out → parent.out) — exactly one containment level, the
+        # ComfyUI/UE5 subgraph-boundary semantics.
+        tunnel_in = (
+            source_port.direction == "in" and target_node.parent_id == source_node.id
+        )
+        tunnel_out = (
+            target_port.direction == "out" and source_node.parent_id == target_node.id
+        )
+        if (
+            spec.source_port_direction
+            and source_port.direction != spec.source_port_direction
+            and not tunnel_in
+        ):
             errors.append(
                 f"Source port `{source_port.name}` direction is "
                 f"`{source_port.direction}`, expected `{spec.source_port_direction}`."
             )
-        if spec.target_port_direction and target_port.direction != spec.target_port_direction:
+        if (
+            spec.target_port_direction
+            and target_port.direction != spec.target_port_direction
+            and not tunnel_out
+        ):
             errors.append(
                 f"Target port `{target_port.name}` direction is "
                 f"`{target_port.direction}`, expected `{spec.target_port_direction}`."

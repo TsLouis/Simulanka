@@ -127,15 +127,30 @@ def _ops_reply(*ops: dict[str, object]) -> str:
     return "Let me check.\n```simulanka-ops\n" + json.dumps({"ops": list(ops)}) + "\n```\n"
 
 
-def test_start_without_disagreements_is_422(tmp_path: Path) -> None:
+def test_start_without_disagreements_opens_general_session(tmp_path: Path) -> None:
+    """会话是语言原语（2026-07-14）：没有分歧也能开。空批次走通用图助手
+    开场，批次为空但 session 照常建立——分歧批次只是同一机制上的一个用法。"""
     layout, _ = _seed(tmp_path)
     runner, calls = _fake_runner(["hi"])
     client = TestClient(create_app(layout, opencode_runner=runner))
 
     resp = client.post("/discussion/start", json={})
-    assert resp.status_code == 422
-    assert calls == []  # never reached opencode
-    assert client.get("/discussion").json() == {"active": False}
+    assert resp.status_code == 200, resp.text
+    out = resp.json()
+    assert out["session_id"] == "ses_test"
+    assert out["batch"] == []
+    assert out["reply"] == "hi"
+    # The generic opening went out — not the verify-discuss batch template —
+    # and the turn rode the tool-less graph-chat agent (repo .opencode/agent).
+    sent = " ".join(calls[0])
+    assert "graph assistant" in sent
+    assert "Disagreement set" not in sent
+    assert "--agent graph-chat" in sent
+    assert client.get("/discussion").json()["active"] is True
+
+    # Follow-up messages stick to the same agent.
+    client.post("/discussion/message", json={"text": "还在吗"})
+    assert "--agent graph-chat" in " ".join(calls[1])
 
 
 def test_start_sends_context_and_enforces_matrix(tmp_path: Path) -> None:

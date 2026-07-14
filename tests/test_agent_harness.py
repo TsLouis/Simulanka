@@ -35,6 +35,26 @@ def test_assistant_text_handles_common_event_shapes() -> None:
     assert assistant_text(events) == "hello\n world\n!"
 
 
+def test_assistant_text_handles_part_stream_shape() -> None:
+    """2026-07 opencode stream: one event per completed part; only
+    part.type=="text" carries assistant text — step/tool parts are skipped
+    even if their state contains text-like fields."""
+    events: list[dict[str, object]] = [
+        {"type": "step_start", "sessionID": "ses_1", "part": {"type": "step-start"}},
+        {
+            "type": "tool",
+            "sessionID": "ses_1",
+            "part": {"type": "tool", "state": {"output": {"text": "tool noise"}}},
+        },
+        {
+            "type": "text",
+            "sessionID": "ses_1",
+            "part": {"type": "text", "text": "hello world", "time": {"start": 1, "end": 2}},
+        },
+    ]
+    assert assistant_text(events) == "hello world"
+
+
 def test_session_id_from_events() -> None:
     assert session_id_from_events([{"sessionID": "ses_1"}]) == "ses_1"
     assert session_id_from_events([{"session": {"id": "ses_2"}}]) == "ses_2"

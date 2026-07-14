@@ -50,7 +50,7 @@
 
 ## 唯一写路径
 
-一切图变更 = `PatchIntent{ops, actor, base_graph_version, note}` → `apply_patch` → `Receipt`。六种 op：
+一切图变更 = `PatchIntent{ops, actor, base_graph_version, note}` → `apply_patch` → `Receipt`。七种 op：
 
 | op | 行为 |
 | --- | --- |
@@ -59,8 +59,10 @@
 | create_edge | 建边，端点 = 节点/端口 selector 或 `@ref` |
 | update_attrs | **浅 merge** attrs（无删键语义）；目标是节点 selector 或边 id（`edg_…`） |
 | rename_node | 改名，同父之下兄弟唯一 |
-| delete_edge | 按 id 删边，唯一删除原语；拒删 `contains`（它背书层级） |
+| delete_edge | 按 id 删边；拒删 `contains`（它背书层级） |
+| delete_node | 删**空**节点（有孩子拒——子树删除必须显式自底向上）；级联删自身端口与全部关联边，含父 `contains`（建点双写的合法逆操作，2026-07-14 加）；哪些**类型**可删是调用方策略（画布限 module/model），kernel 只守结构完整性 |
 
+- **隧道规则（§12.4 子图 IO，2026-07-14）**：`data_flow` 的方向校验（source=out、target=in）有唯一豁免——**父.in → 子.in** 与 **子.out → 父.out**（恰一个包含层级，ComfyUI/UE5 子图边界语义）；validator 与 doctor 同一规则。
 - **原子性**：全部 op 先校验后落盘，任一错 = 整个 intent 拒，报错带 `op[i]` 定位。
 - **乐观并发**：`base_graph_version` 与当前不符 = `VersionConflict`，重读重发。
 - **名字保留字**：`nod_`/`edg_`/`prt_` 前缀与 `@` 开头的名字拒收（会被 selector 语法劫持）。

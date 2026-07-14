@@ -62,16 +62,25 @@ def run_opencode_turn(
     *,
     session_id: str | None = None,
     model: str | None = None,
+    agent: str | None = None,
     timeout: float = DEFAULT_TIMEOUT,
     runner: CommandRunner | None = None,
 ) -> OpenCodeTurn:
-    """Run one opencode turn and parse assistant text + structured op blocks."""
+    """Run one opencode turn and parse assistant text + structured op blocks.
+
+    ``agent`` selects an opencode agent definition (global or project-level
+    ``.opencode/agent/*.md``) — e.g. the repo's tool-less ``graph-chat`` for
+    canvas conversations, where the default ``build`` agent would wander off
+    running tools for minutes.
+    """
     if not message.strip():
         raise HarnessError("message must be non-empty.")
 
     args = ["opencode", "run", "--print-logs", "--format", "json"]
     if model:
         args.extend(["-m", model])
+    if agent:
+        args.extend(["--agent", agent])
     if session_id:
         args.extend(["-s", session_id])
     args.append(message)
@@ -127,6 +136,17 @@ def assistant_text(events: list[dict[str, Any]]) -> str:
     """Best-effort assistant text extraction from opencode JSON events."""
     chunks: list[str] = []
     for event in events:
+        # 2026-07 opencode stream shape: one event per completed part,
+        # {"type":"text","part":{"type":"text","text":...}}. Only text parts
+        # qualify; any other part-bearing event (step-start, tool) is skipped
+        # outright so the generic extractor can't dig text out of tool state.
+        part = event.get("part")
+        if isinstance(part, dict):
+            if part.get("type") == "text":
+                text = part.get("text")
+                if isinstance(text, str) and text:
+                    chunks.append(text)
+            continue
         role = _role(event)
         if role is not None and role != "assistant":
             continue

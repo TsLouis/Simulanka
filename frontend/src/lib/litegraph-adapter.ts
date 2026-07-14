@@ -195,7 +195,10 @@ export function buildLiteGraph(
     const pos = persistedPositions[n.id] ?? autoPos.get(n.id) ?? [80, 80]
     lgnode.pos = [pos[0], pos[1]]
 
-    if (isContainer && callbacks.onDrillDown) {
+    // Any node can be entered — the inside of a leaf is a valid (empty) view
+    // where add-node works, which is how a fresh container gets its first
+    // child. Container-ness (child_count) is a badge, not a gate.
+    if (callbacks.onDrillDown) {
       const cb = callbacks.onDrillDown
       ;(lgnode as unknown as { onDblClick: () => void }).onDblClick = () => {
         cb(n.id, n.name)
@@ -215,21 +218,12 @@ export function buildLiteGraph(
     if (link) decorateLink(link, e)
   }
 
-  // Cross-boundary edges → virtual boundary nodes (§12.4). One boundary node
-  // per (externalId, direction) pair; aggregates all edges to/from that
-  // external endpoint as slots.
-  if (payload.root !== null && payload.boundary_edges.length > 0) {
-    injectBoundary(
-      graph,
-      payload.boundary_edges,
-      payload.external_nodes,
-      byNode,
-      inSlot,
-      outSlot,
-      portsById,
-      callbacks,
-      onConnectionsChange,
-    )
+  // Boundary rendering (§12.4): the root's own ports project as the view's
+  // input/output brackets (ComfyUI-subgraph IO semantics — present even with
+  // no crossing edge yet), and cross-boundary edges to *other* externals get
+  // one virtual boundary node per (externalId, direction) pair.
+  if (payload.root !== null) {
+    injectBoundary(graph, payload, byNode, inSlot, outSlot, portsById, onConnectionsChange, callbacks)
   }
 
   building = false
@@ -388,13 +382,11 @@ interface BoundaryBucket {
 
 function injectBoundary(
   graph: LGraph,
-  boundaryEdges: EdgeDTO[],
-  externalNodes: ExternalNodeDTO[],
+  payload: GraphPayload,
   byNode: Map<string, LGraphNode>,
   inSlot: Map<string, number>,
   outSlot: Map<string, number>,
   portsById: Map<string, PortDTO>,
-  callbacks: AdapterCallbacks,
   onConnectionsChange: (
     this: LGraphNode,
     type: number,
@@ -402,22 +394,114 @@ function injectBoundary(
     connected: boolean,
     link: LiteLink | undefined,
   ) => void,
+  callbacks: AdapterCallbacks,
 ): void {
+  const rootId = payload.root as string
+  const rootName = payload.root_info?.name ?? rootId
   const externalById = new Map<string, ExternalNodeDTO>(
-    externalNodes.map(x => [x.id, x]),
+    payload.external_nodes.map(x => [x.id, x]),
   )
 
-  // Group by (external endpoint id, direction relative to subgraph). Only
-  // port-bearing edges qualify for boundary-port projection — structural
-  // edges (contains, supports) cross the boundary too, but they have no
-  // port to project onto and the nesting itself already conveys them.
+  // Lay out boundary nodes in columns hugging the real-node bounding box.
+  // Left column for inbound (external → internal), right column for outbound.
+  let minX = Infinity
+  let maxX = -Infinity
+  for (const ln of byNode.values()) {
+    const [x] = ln.pos
+    if (x < minX) minX = x
+    if (x > maxX) maxX = x
+  }
+  if (!Number.isFinite(minX)) { minX = 80; maxX = 80 }
+  const leftX = minX - 260
+  const rightX = maxX + NODE_W + 40
+
+  // --- Root brackets: the container's own ports are the subgraph's declared
+  // IO (what ComfyUI shows as the left/right bracket ports). in-ports face
+  // inward as OUTPUT slots on the left, out-ports as INPUT slots on the
+  // right. In the ported domain (model/module) the bracket pair is always
+  // present — an empty bracket reads as "no declared IO yet". Slots carry the
+  // root's real port ids, so drawing bracket↔child persists like any edge;
+  // the kernel's tunnel rule (parent.in→child.in, child.out→parent.out)
+  // accepts it.
+  const bracketSlots = new Map<string, { node: LGraphNode; slot: number }>()
+  const rootPorts = payload.ports.filter(p => p.node_id === rootId)
+  const rootType = payload.root_info?.type ?? ''
+  const alwaysBracket = rootType === 'model' || rootType === 'module'
+  let inboundY = 80
+  let outboundY = 80
+  const mkBracket = (title: string, ports: PortDTO[], side: 'in' | 'out'): void => {
+    if (ports.length === 0 && !alwaysBracket) return
+    const node = LiteGraph.createNode(
+      ensureRegistered(side === 'in' ? 'inputs' : 'outputs', BOUNDARY_PREFIX),
+    ) as LGraphNode
+    node.title = title
+    styleNode(node, 'boundary')
+    ;(node as unknown as { onConnectionsChange: typeof onConnectionsChange })
+      .onConnectionsChange = onConnectionsChange
+    const slotIds: string[] = []
+    ports.forEach((p, i) => {
+      if (side === 'in') node.addOutput(p.name, p.port_type || '*', slotExtra(p))
+      else node.addInput(p.name, p.port_type || '*', slotExtra(p))
+      bracketSlots.set(p.id, { node, slot: i })
+      slotIds[i] = p.id
+    })
+    // Slot→port-id maps for the draw-edge handler: the in-bracket's OUTPUT
+    // slots and the out-bracket's INPUT slots are the root's own ports.
+    if (side === 'in') {
+      ;(node as unknown as { simulanka_out_ports: string[] }).simulanka_out_ports = slotIds
+    } else {
+      ;(node as unknown as { simulanka_in_ports: string[] }).simulanka_in_ports = slotIds
+    }
+    node.size = node.computeSize()
+    if (side === 'in') {
+      node.pos = [leftX, inboundY]
+      inboundY += node.size[1] + 50
+    } else {
+      node.pos = [rightX, outboundY]
+      outboundY += node.size[1] + 50
+    }
+    graph.add(node)
+  }
+  mkBracket(`▷ ${rootName} 输入`, rootPorts.filter(p => p.side === 'in'), 'in')
+  mkBracket(`${rootName} 输出 ▷`, rootPorts.filter(p => p.side === 'out'), 'out')
+
+  // Group the remaining cross-boundary edges by (external endpoint id,
+  // direction relative to subgraph). Only port-bearing edges qualify for
+  // boundary-port projection — structural edges cross the boundary too, but
+  // they have no port to project onto and the nesting already conveys them.
+  // Edges whose outside endpoint is the root itself wire straight onto the
+  // bracket slot for that root port.
   const buckets = new Map<string, BoundaryBucket>()
-  for (const e of boundaryEdges) {
+  for (const e of payload.boundary_edges) {
     if (!e.src_port || !e.dst_port) continue
     const srcInside = byNode.has(e.src)
     const dstInside = byNode.has(e.dst)
     if (srcInside === dstInside) continue
     const externalId = srcInside ? e.dst : e.src
+
+    if (externalId === rootId) {
+      const outsidePort = srcInside ? e.dst_port : e.src_port
+      const bs = bracketSlots.get(outsidePort)
+      if (bs) {
+        let link: LiteLink | null = null
+        if (srcInside) {
+          const srcNode = byNode.get(e.src)
+          const out = outSlot.get(e.src_port)
+          if (srcNode && out !== undefined) {
+            link = srcNode.connect(out, bs.node, bs.slot) as unknown as LiteLink | null
+          }
+        } else {
+          const dstNode = byNode.get(e.dst)
+          const inp = inSlot.get(e.dst_port)
+          if (dstNode && inp !== undefined) {
+            link = bs.node.connect(bs.slot, dstNode, inp) as unknown as LiteLink | null
+          }
+        }
+        if (link) decorateLink(link, e)
+        continue
+      }
+    }
+
     const direction: 'in' | 'out' = srcInside ? 'out' : 'in'
     const key = `${direction}:${externalId}`
     const ext = externalById.get(externalId)
@@ -433,21 +517,6 @@ function injectBoundary(
     }
     bucket.edges.push(e)
   }
-
-  // Lay out boundary nodes in columns hugging the real-node bounding box.
-  // Left column for inbound (external → internal), right column for outbound.
-  let minX = Infinity
-  let maxX = -Infinity
-  for (const ln of byNode.values()) {
-    const [x] = ln.pos
-    if (x < minX) minX = x
-    if (x > maxX) maxX = x
-  }
-  if (!Number.isFinite(minX)) { minX = 80; maxX = 80 }
-  const leftX = minX - 260
-  const rightX = maxX + NODE_W + 40
-  let inboundIdx = 0
-  let outboundIdx = 0
 
   for (const bucket of buckets.values()) {
     const lgnode = LiteGraph.createNode(
@@ -484,9 +553,15 @@ function injectBoundary(
       }
     })
 
-    const col = bucket.direction === 'in' ? leftX : rightX
-    const row = 80 + (bucket.direction === 'in' ? inboundIdx++ : outboundIdx++) * 120
-    lgnode.pos = [col, row]
+    // Stack below the root brackets in the same column.
+    lgnode.size = lgnode.computeSize()
+    if (bucket.direction === 'in') {
+      lgnode.pos = [leftX, inboundY]
+      inboundY += lgnode.size[1] + 50
+    } else {
+      lgnode.pos = [rightX, outboundY]
+      outboundY += lgnode.size[1] + 50
+    }
 
     if (callbacks.onJumpExternal) {
       const cb = callbacks.onJumpExternal

@@ -49,6 +49,14 @@ def delete_edge(layout: ProjectLayout, edge_id: str) -> None:
     edge_path(layout, edge_id).unlink(missing_ok=True)
 
 
+def delete_node(layout: ProjectLayout, node_id: str) -> None:
+    node_path(layout, node_id).unlink(missing_ok=True)
+
+
+def delete_port(layout: ProjectLayout, port_id: str) -> None:
+    port_path(layout, port_id).unlink(missing_ok=True)
+
+
 def node_exists(layout: ProjectLayout, node_id: str) -> bool:
     return node_path(layout, node_id).is_file()
 

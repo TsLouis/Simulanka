@@ -24,7 +24,16 @@ from simulanka.agent.harness import (
 from simulanka.disagreements import disagreement_list, edge_payload
 from simulanka.kernel.apply import apply_patch_now
 from simulanka.kernel.events import Event, iter_events
-from simulanka.kernel.intent import CreateEdgeOp, DeleteEdgeOp, Receipt, UpdateAttrsOp
+from simulanka.kernel.intent import (
+    CreateEdgeOp,
+    CreateNodeOp,
+    CreatePortOp,
+    DeleteEdgeOp,
+    DeleteNodeOp,
+    Receipt,
+    RenameNodeOp,
+    UpdateAttrsOp,
+)
 from simulanka.kernel.manifest import load_manifest
 from simulanka.kernel.validator import ValidationError
 from simulanka.layout.project import ProjectLayout
@@ -80,11 +89,8 @@ def create_app(
     )
 
     @app.get("/graph")
-    def get_graph(
-        root: str | None = Query(default=None),
-        depth: int = Query(default=1, ge=0, le=5),
-    ) -> dict[str, Any]:
-        return _build_payload(layout, root, depth)
+    def get_graph(root: str | None = Query(default=None)) -> dict[str, Any]:
+        return _build_payload(layout, root)
 
     @app.get("/events")
     async def get_events(request: Request) -> StreamingResponse:
@@ -126,6 +132,51 @@ def create_app(
         bucket = existing.setdefault(root_key, {})
         bucket.update(cleaned)
         _save_positions(layout, existing)
+        return {"status": "ok"}
+
+    # --- custom node templates (add-node menu, UI state like positions) ----
+
+    @app.get("/ui/templates")
+    def get_templates() -> dict[str, dict[str, Any]]:
+        return _load_templates(layout)
+
+    @app.post("/ui/templates")
+    def post_template(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, str]:
+        """Save (or overwrite) one custom node template.
+
+        Body: ``{name, type, category?, attrs?, ports?}``. Templates are UI
+        state, not graph entities — the graph records only what was actually
+        placed. Keyed by name, so re-saving updates in place.
+        """
+        name = body.get("name")
+        node_type = body.get("type")
+        if not isinstance(name, str) or not name.strip():
+            raise HTTPException(status_code=422, detail="name is required")
+        if not isinstance(node_type, str) or not node_type.strip():
+            raise HTTPException(status_code=422, detail="type is required")
+        category = body.get("category")
+        attrs = body.get("attrs") or {}
+        if not isinstance(attrs, dict):
+            raise HTTPException(status_code=422, detail="attrs must be an object")
+        templates = _load_templates(layout)
+        templates[name.strip()] = {
+            "category": category.strip()
+            if isinstance(category, str) and category.strip()
+            else "custom",
+            "type": node_type.strip(),
+            "attrs": attrs,
+            "ports": _parse_ports(body.get("ports")),
+        }
+        _save_templates(layout, templates)
+        return {"status": "ok"}
+
+    @app.delete("/ui/templates/{name}")
+    def delete_template(name: str) -> dict[str, str]:
+        templates = _load_templates(layout)
+        if name not in templates:
+            raise HTTPException(status_code=404, detail=f"template {name!r} not found")
+        del templates[name]
+        _save_templates(layout, templates)
         return {"status": "ok"}
 
     @app.post("/edge")
@@ -180,6 +231,145 @@ def create_app(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return {
             "deleted": receipt.deleted_edges,
+            "graph_version": receipt.graph_version,
+        }
+
+    # --- canvas authoring: add / rename nodes -------------------------------
+
+    @app.post("/node")
+    def create_node(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+        """Create a node (plus its ports) from the canvas add-node menu.
+
+        Body: ``{type, name, parent?, attrs?, ports?}`` with ports as
+        ``[{name, direction, port_type?}]``. ``parent`` is the container the
+        user is standing in (None = top-level), so a node lands where it was
+        summoned. A sibling name collision gets a numeric suffix instead of a
+        422 — dropping three Conv2d from the menu must just work. Ports go in
+        a second patch: the disk resolver can't see pending nodes by design,
+        and the importer commits node-then-ports the same way.
+        """
+        node_type = body.get("type")
+        name = body.get("name")
+        if not isinstance(node_type, str) or not node_type.strip():
+            raise HTTPException(status_code=422, detail="type is required")
+        if not isinstance(name, str) or not name.strip():
+            raise HTTPException(status_code=422, detail="name is required")
+        parent = body.get("parent")
+        if parent is not None and not isinstance(parent, str):
+            raise HTTPException(status_code=422, detail="parent must be a node id")
+        attrs = body.get("attrs") or {}
+        if not isinstance(attrs, dict):
+            raise HTTPException(status_code=422, detail="attrs must be an object")
+        ports = _parse_ports(body.get("ports"))
+
+        nodes_by_id = {n.id: n for n in iter_nodes(layout)}
+        if parent is not None and parent not in nodes_by_id:
+            raise HTTPException(status_code=404, detail=f"parent {parent!r} not found")
+        siblings = {n.name for n in nodes_by_id.values() if n.parent_id == parent}
+        base = name.strip()
+        final = base
+        suffix = 2
+        while final in siblings:
+            final = f"{base}_{suffix}"
+            suffix += 1
+
+        try:
+            receipt = apply_patch_now(
+                layout,
+                ops=[CreateNodeOp(type=node_type.strip(), name=final, parent=parent, attrs=attrs)],
+                actor="user",
+                note=f"frontend: add node {final}",
+            )
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        node_id = receipt.nodes[0]
+
+        port_ids: list[str] = []
+        if ports:
+            try:
+                receipt = apply_patch_now(
+                    layout,
+                    ops=[
+                        CreatePortOp(
+                            node=node_id,
+                            name=p["name"],
+                            direction=p["direction"],
+                            port_type=p["port_type"],
+                        )
+                        for p in ports
+                    ],
+                    actor="user",
+                    note=f"frontend: ports for {final}",
+                )
+            except ValidationError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            port_ids = receipt.ports
+
+        return {
+            "node_id": node_id,
+            "name": final,
+            "port_ids": port_ids,
+            "graph_version": receipt.graph_version,
+        }
+
+    @app.post("/node/{node_id}/rename")
+    def rename_node(
+        node_id: str,
+        body: dict[str, Any] = Body(default_factory=dict),
+    ) -> dict[str, Any]:
+        """Rename a node from the canvas. file/directory nodes are refused —
+        their name is bound to ``fs_path`` (FileRegistry territory), and the
+        graph must not drift from the disk. Sibling-name conflicts surface as
+        the kernel's 422."""
+        new_name = body.get("new_name")
+        if not isinstance(new_name, str) or not new_name.strip():
+            raise HTTPException(status_code=422, detail="new_name is required")
+        node = next((n for n in iter_nodes(layout) if n.id == node_id), None)
+        if node is None:
+            raise HTTPException(status_code=404, detail=f"node {node_id!r} not found")
+        if node.type in ("file", "directory"):
+            raise HTTPException(
+                status_code=422,
+                detail="file/directory nodes rename via FileRegistry (name ↔ fs_path)",
+            )
+        try:
+            receipt = apply_patch_now(
+                layout,
+                ops=[RenameNodeOp(target=node_id, new_name=new_name.strip())],
+                actor="user",
+                note=f"frontend: rename {node.name} → {new_name.strip()}",
+            )
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"node_id": node_id, "graph_version": receipt.graph_version}
+
+    @app.delete("/node/{node_id}")
+    def delete_node_endpoint(node_id: str) -> dict[str, Any]:
+        """Delete an empty node from the canvas, cascading its ports and
+        incident edges (kernel DeleteNodeOp). Canvas policy: only the model-
+        sketch domain (module/model) is deletable here — file/directory are
+        disk-bound, research atoms carry lineage that must not silently break.
+        A node with children is the kernel's 422 (empty it first)."""
+        node = next((n for n in iter_nodes(layout) if n.id == node_id), None)
+        if node is None:
+            raise HTTPException(status_code=404, detail=f"node {node_id!r} not found")
+        if node.type not in ("module", "model"):
+            raise HTTPException(
+                status_code=422,
+                detail=f"canvas delete is limited to module/model nodes, not `{node.type}`",
+            )
+        try:
+            receipt = apply_patch_now(
+                layout,
+                ops=[DeleteNodeOp(node=node_id)],
+                actor="user",
+                note=f"frontend: delete node {node.name}",
+            )
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {
+            "deleted": receipt.deleted_nodes,
+            "deleted_edges": receipt.deleted_edges,
             "graph_version": receipt.graph_version,
         }
 
@@ -365,13 +555,18 @@ def create_app(
     # itself holds no write tools. Canvas updates ride the existing SSE.
 
     def _run_turn(
-        message: str, *, session_id: str | None, model: str | None
+        message: str,
+        *,
+        session_id: str | None,
+        model: str | None,
+        agent: str | None = None,
     ) -> OpenCodeTurn:
         try:
             return run_opencode_turn(
                 message,
                 session_id=session_id,
                 model=model,
+                agent=agent,
                 runner=opencode_runner,
             )
         except HarnessError as exc:
@@ -385,11 +580,10 @@ def create_app(
         model = body.get("model")
         if model is not None and (not isinstance(model, str) or not model.strip()):
             raise HTTPException(status_code=422, detail="model must be a string")
+        # 会话是语言原语（2026-07-14）：没有分歧也能开。空批次走通用图助手
+        # 开场；分歧批次只是骑在同一会话机制上的一个用法（§13.6 一批一场、
+        # 写权闸、checkpoint 全部不变）。
         disagreements = disagreement_list(layout)
-        if not disagreements:
-            raise HTTPException(
-                status_code=422, detail="no disagreements — nothing to discuss"
-            )
         # §13.6 撤回兜底: the round start is the recovery target. Best-effort,
         # same as per-commit checkpoints — a broken git must not block talk.
         if repo_exists(layout):
@@ -399,9 +593,16 @@ def create_app(
                 logging.getLogger(__name__).warning(
                     "discussion-start tag failed: %s", exc
                 )
-        turn = _run_turn(
-            _opening_message(disagreements), session_id=None, model=model
+        # Batch-less canvas chat rides the repo's tool-less `graph-chat` agent
+        # (.opencode/agent/) — the default `build` agent starts running tools
+        # against the codebase and a turn takes minutes (彩排实测=「卡死」).
+        # The batch (verify) flow keeps the default agent: citations need code
+        # access. The choice is per-session and sticks via state.
+        agent = None if disagreements else "graph-chat"
+        opening = (
+            _opening_message(disagreements) if disagreements else GENERAL_OPENING
         )
+        turn = _run_turn(opening, session_id=None, model=model, agent=agent)
         if not turn.session_id:
             raise HTTPException(
                 status_code=502, detail="opencode returned no session id"
@@ -409,6 +610,7 @@ def create_app(
         state = {
             "session_id": turn.session_id,
             "model": model,
+            "agent": agent,
             "batch": [d["id"] for d in disagreements],
         }
         _save_discussion(layout, state)
@@ -436,7 +638,10 @@ def create_app(
                 detail="no active discussion — POST /discussion/start first",
             )
         turn = _run_turn(
-            text, session_id=state["session_id"], model=state.get("model")
+            text,
+            session_id=state["session_id"],
+            model=state.get("model"),
+            agent=state.get("agent"),
         )
         applied, rejected = apply_agent_ops(layout, turn.ops)
         return {
@@ -485,19 +690,23 @@ def _apply_user_op(layout: ProjectLayout, op: UpdateAttrsOp, note: str) -> Recei
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-def _build_payload(
-    layout: ProjectLayout, root: str | None, depth: int
-) -> dict[str, Any]:
-    """Return the subgraph payload per docs/design.md §12.2 / §12.4.
+def _build_payload(layout: ProjectLayout, root: str | None) -> dict[str, Any]:
+    """Return the one-container view payload: the inside of ``root``.
 
-    Containment comes from Node.parent_id (denormalised cache of `contains`
-    edges). depth=N expands N hops of children below root (or below the
-    implicit top-level when root is None).
+    The canvas mental model is a subgraph view — one view shows the direct
+    children of one container, never the container itself and never deeper
+    levels (drill-down navigates; it doesn't flatten). Containment comes from
+    Node.parent_id (denormalised cache of `contains` edges).
 
-    - `edges`: both endpoints in the included set.
-    - `boundary_edges`: exactly one endpoint in the included set. Only filled
-      when root is given — at top-level there is no outside. The frontend
-      projects these onto virtual boundary ports (§12.4).
+    - `nodes`: direct children of root (top-level nodes when root is None).
+    - `root_info`: slim {id,type,name} of the container itself, for the
+      breadcrumb; None at top-level.
+    - `edges`: both endpoints in the view.
+    - `boundary_edges`: exactly one endpoint in the view — minus `contains`
+      edges, whose nesting the view itself already renders (§12.3). Only
+      filled when root is given — at top-level there is no outside. Edges
+      from the root's own ports to its children land here and project as the
+      subgraph's input/output brackets (§12.4).
     - `external_nodes`: slim {id,type,name} for the outside endpoints
       referenced by boundary_edges, so boundary ports can be labelled.
     - `child_count` on each node: count of direct children; the frontend uses
@@ -511,22 +720,7 @@ def _build_payload(
     for n in nodes_by_id.values():
         children_of.setdefault(n.parent_id, []).append(n.id)
 
-    included: set[str] = set()
-    if root is None:
-        frontier = list(children_of.get(None, []))
-    else:
-        included.add(root)
-        frontier = [root]
-    included.update(frontier)
-
-    for _ in range(depth):
-        next_frontier: list[str] = []
-        for nid in frontier:
-            next_frontier.extend(children_of.get(nid, []))
-        included.update(next_frontier)
-        frontier = next_frontier
-        if not frontier:
-            break
+    included = set(children_of.get(root, []))
 
     edges_payload: list[dict[str, Any]] = []
     boundary_payload: list[dict[str, Any]] = []
@@ -537,7 +731,7 @@ def _build_payload(
         dst_in = e.target_id in included
         if src_in and dst_in:
             edges_payload.append(edge_payload(e))
-        elif (src_in or dst_in) and root is not None:
+        elif (src_in or dst_in) and root is not None and e.type != "contains":
             boundary_payload.append(edge_payload(e))
             external_ids.add(e.target_id if src_in else e.source_id)
             outside_port = e.target_port_id if src_in else e.source_port_id
@@ -546,13 +740,15 @@ def _build_payload(
 
     # Included nodes' ports, plus the outside ports boundary edges point at —
     # without those the frontend can't label the far end of a cross-boundary
-    # edge (§12.4 boundary ports, §13.6 panel endpoints).
+    # edge (§12.4 boundary ports, §13.6 panel endpoints) — plus the root's own
+    # ports: they are the subgraph's declared IO, rendered as the view's
+    # input/output brackets even when no edge crosses yet.
     ports_of: dict[str, list[str]] = {}
     ports_payload: list[dict[str, Any]] = []
     for p in iter_ports(layout):
         if p.node_id in included:
             ports_of.setdefault(p.node_id, []).append(p.id)
-        elif p.id not in external_port_ids:
+        elif p.node_id != root and p.id not in external_port_ids:
             continue
         ports_payload.append(
             {
@@ -601,8 +797,14 @@ def _build_payload(
             cur = anc.parent_id
         ancestors.reverse()
 
+    root_info: dict[str, Any] | None = None
+    if root is not None:
+        rn = nodes_by_id[root]
+        root_info = {"id": rn.id, "type": rn.type, "name": rn.name}
+
     return {
         "root": root,
+        "root_info": root_info,
         "nodes": nodes_payload,
         "edges": edges_payload,
         "boundary_edges": boundary_payload,
@@ -611,6 +813,17 @@ def _build_payload(
         "ancestors": ancestors,
     }
 
+
+# Batch-less opening: the chat surface is a language primitive — it must open
+# without a disagreement set. Prompt *wording* is Codex's editorial territory
+# (issue #2); this generic opening is a mechanical placeholder riding the same
+# review.
+GENERAL_OPENING = """\
+You are the graph assistant of a Simulanka research project. The human chats
+from the graph canvas; a message may start with an anchor tag（锚定：…）naming
+the node or container they are looking at — treat it as the topic. Reply
+plainly and concretely. Do not fabricate graph state you were not shown.
+"""
 
 # Prompt *wording* is Codex's editorial territory (issue #2); the server owns
 # only the mechanical contract: context JSON in, simulanka-ops protocol out.
@@ -720,6 +933,12 @@ def _affected(event: Event) -> dict[str, list[str]]:
                 v = op.get(k)
                 if isinstance(v, str):
                     nodes[v] = None
+        elif kind == "delete_node":
+            nodes[eid] = None
+            # The parent's view is what visually changes.
+            v = op.get("parent_id")
+            if isinstance(v, str):
+                nodes[v] = None
         elif kind == "create_port":
             ports[eid] = None
             node_id = op.get("node_id")
@@ -804,6 +1023,68 @@ def _save_positions(
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(positions, fh)
+        os.replace(tmp, path)
+    except Exception:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmp)
+        raise
+
+
+def _parse_ports(raw: Any) -> list[dict[str, Any]]:
+    """Validate the ``ports`` array shared by POST /node and template bodies:
+    ``[{name, direction in|out, port_type?}]`` → cleaned copies, 422 on shape
+    errors."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise HTTPException(status_code=422, detail="ports must be a list")
+    cleaned: list[dict[str, Any]] = []
+    for i, p in enumerate(raw):
+        if not isinstance(p, dict):
+            raise HTTPException(status_code=422, detail=f"ports[{i}] must be an object")
+        pname = p.get("name")
+        direction = p.get("direction")
+        port_type = p.get("port_type", "any")
+        if not isinstance(pname, str) or not pname.strip():
+            raise HTTPException(status_code=422, detail=f"ports[{i}].name is required")
+        if direction not in ("in", "out"):
+            raise HTTPException(
+                status_code=422, detail=f"ports[{i}].direction must be 'in' or 'out'"
+            )
+        if not isinstance(port_type, str) or not port_type.strip():
+            port_type = "any"
+        cleaned.append(
+            {"name": pname.strip(), "direction": direction, "port_type": port_type.strip()}
+        )
+    return cleaned
+
+
+def _templates_path(layout: ProjectLayout) -> Path:
+    return layout.dot_dir / "ui" / "templates.json"
+
+
+def _load_templates(layout: ProjectLayout) -> dict[str, dict[str, Any]]:
+    path = _templates_path(layout)
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text("utf-8"))
+    except json.JSONDecodeError:
+        # Corrupt UI state shouldn't take down the API; pretend it's empty so
+        # the next save overwrites cleanly.
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return data
+
+
+def _save_templates(layout: ProjectLayout, templates: dict[str, dict[str, Any]]) -> None:
+    path = _templates_path(layout)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix="templates-", suffix=".json", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(templates, fh, ensure_ascii=False, indent=2)
         os.replace(tmp, path)
     except Exception:
         with contextlib.suppress(FileNotFoundError):

@@ -1,36 +1,40 @@
 <script lang="ts">
-  import { onDestroy, onMount, tick } from 'svelte'
+  import { onDestroy, onMount } from 'svelte'
+  // No litegraph.css: it only styles LiteGraph's DOM widgets (context menu,
+  // searchbox, dialogs), all of which we disabled in favour of our own chrome.
   import { LGraphCanvas, type LGraphNode } from 'litegraph.js'
-  import 'litegraph.js/css/litegraph.css'
   import {
-    acceptGhost,
     createEdge,
+    createNode,
     deleteEdge,
-    fetchDisagreements,
+    deleteNode,
+    deleteTemplate,
     fetchDiscussionState,
     fetchGraph,
     fetchPositions,
-    postVerdict,
+    fetchTemplates,
+    renameNode,
     savePositions,
+    saveTemplate,
     sendDiscussionMessage,
-    setDiscuss,
     startDiscussion,
+    type CustomTemplateDTO,
     type DiscussionTurn,
     type FileOpenRequest,
     type Positions,
   } from './lib/api'
   import { subscribeEvents, type EventSubscription } from './lib/events'
   import { buildLiteGraph } from './lib/litegraph-adapter'
+  import { buildGroups, type NodeTemplate } from './lib/templates'
   import { applyNightSky } from './lib/theme'
-  import DiscussPanel, { type ChatMsg } from './lib/DiscussPanel.svelte'
+  import ChatDock from './lib/ChatDock.svelte'
+  import ChatNode, { type ChatMsg } from './lib/ChatNode.svelte'
+  import ContextMenu from './lib/ContextMenu.svelte'
   import FileViewer from './lib/FileViewer.svelte'
   import NodeInspector from './lib/NodeInspector.svelte'
-  import VerifyPanel from './lib/VerifyPanel.svelte'
-  import type { DisagreementDTO, EdgeDTO, NodeDTO, PortDTO } from './lib/types'
-  import { isPendingGhost } from './lib/verify'
+  import type { NodeDTO, PortDTO } from './lib/types'
 
   let canvasEl: HTMLCanvasElement
-  let depth = 1
   let status = 'idle'
   let nodeCount = 0
   let edgeCount = 0
@@ -54,12 +58,25 @@
   // new request re-loads in place (e.g. jumping 出处 from another atom).
   let fileRequest: FileOpenRequest | null = null
 
-  // §13.6 verify-discuss panel state. currentEdges/namesById mirror the last
-  // payload so the panel can render ghosts without re-fetching.
-  let verifyOpen = false
-  let disagreements: DisagreementDTO[] = []
-  let currentEdges: EdgeDTO[] = []
-  let namesById: Map<string, string> = new Map()
+  // Right-click menu: non-null = open. graphPos is where the click landed in
+  // graph coordinates — a node added from the menu drops exactly there.
+  let menu: {
+    x: number
+    y: number
+    mode: 'add' | 'node'
+    node: NodeDTO | null
+    graphPos: [number, number]
+  } | null = null
+  let customTemplates: Record<string, CustomTemplateDTO> = {}
+  // Type of the container the view is inside (null = top-level). The add-node
+  // menu only offers templates the kernel's containment matrix would accept
+  // here — torch modules inside model/module, containers inside directories.
+  let currentRootType: string | null = null
+  $: templateGroups = buildGroups(customTemplates, currentRootType)
+
+  // Message surface state: chatPanelOpen = the floating 会话节点 is visible;
+  // the dock toggles it and an incoming turn opens it.
+  let chatPanelOpen = false
 
   // Set of node ids currently rendered; used to decide whether an SSE commit
   // is relevant to the active view.
@@ -72,36 +89,13 @@
   $: rootKey = currentRootId ?? 'top'
   $: viewPositions = positions[rootKey] ?? {}
 
-  // Refresh the disagreement set. Never rejects: a failure is reported as a
-  // message for the status bar (or null on success) so callers decide when to
-  // show it — load() must not let it be overwritten by the view status.
-  async function refreshDisagreements(): Promise<string | null> {
-    try {
-      disagreements = await fetchDisagreements()
-      return null
-    } catch (err) {
-      return `disagreements load failed: ${(err as Error).message}`
-    }
-  }
-
   async function load() {
     status = 'loading…'
     try {
-      // Fire both fetches together — the disagreement set must not serialize
-      // behind the graph payload on every SSE-triggered reload.
-      const disDone = refreshDisagreements()
-      const payload = await fetchGraph(currentRootId, depth)
+      const payload = await fetchGraph(currentRootId)
       const { graph } = buildLiteGraph(payload, {
-        onDrillDown: (id) => {
-          currentRootId = id
-          selectedId = null
-          void load()
-        },
-        onJumpExternal: (id) => {
-          currentRootId = id
-          selectedId = null
-          void load()
-        },
+        onDrillDown: (id) => navigateTo(id),
+        onJumpExternal: (id) => navigateTo(id),
         onCreateEdge: async (srcPort, dstPort, shapeCheck) => {
           // System only hints; the human (and later the agent) adjudicate. A
           // shape mismatch is fine when a reshape/flatten/pool sits between the
@@ -134,6 +128,7 @@
         wireSelection(lgcanvas)
         wireNodeMoved(lgcanvas)
         wireGhostLinks(lgcanvas)
+        wireContextMenu(lgcanvas)
       }
       graph.start()
       nodeCount = payload.nodes.length
@@ -141,16 +136,15 @@
       boundaryCount = payload.boundary_edges.length
       status = payload.root ? `root=${payload.root}` : 'top-level'
 
-      // Derive breadcrumb from server-provided ancestor chain. The active root
-      // becomes the trailing crumb (resolve its name from payload.nodes, where
-      // it appears as an included node).
-      const activeRoot = payload.root
-        ? payload.nodes.find(n => n.id === payload.root)
-        : null
-      crumbs = activeRoot
+      // Derive breadcrumb from server-provided ancestor chain; the active root
+      // (root_info) becomes the trailing crumb. The root never appears among
+      // payload.nodes — the canvas is the inside of the container, not the
+      // container plus its children.
+      crumbs = payload.root_info
         ? [...payload.ancestors.map(a => ({ id: a.id, name: a.name })),
-           { id: activeRoot.id, name: activeRoot.name }]
+           { id: payload.root_info.id, name: payload.root_info.name }]
         : []
+      currentRootType = payload.root_info?.type ?? null
 
       portsById = new Map(payload.ports.map(p => [p.id, p]))
       selectedNode = selectedId
@@ -158,47 +152,13 @@
         : null
       if (!selectedNode) selectedId = null
 
+      // Root included: a commit touching the container itself (rename, an
+      // edge from its ports to a child) must refresh this view too.
       currentNodeIds = new Set(payload.nodes.map(n => n.id))
-
-      // Verify-panel inputs. Boundary edges included: a cross-boundary ghost
-      // is still reviewable from inside the drill-down view.
-      currentEdges = [...payload.edges, ...payload.boundary_edges]
-      namesById = new Map(
-        [...payload.nodes, ...payload.external_nodes].map(n => [n.id, n.name]),
-      )
-      const disErr = await disDone
-      if (disErr) status = disErr
+      if (payload.root) currentNodeIds.add(payload.root)
     } catch (err) {
       status = `error: ${(err as Error).message}`
     }
-  }
-
-  // Panel actions are fire-and-forget: the kernel commit comes back over SSE
-  // and reloads the view (the edge-update event carries the endpoint node ids,
-  // so touchesView matches). Failures surface in the status bar.
-  // busyEdges is the in-flight lock: without it the SSE roundtrip gap reads as
-  // "the click did nothing" and invites click storms (彩排实测 21 连发同一边).
-  let busyEdges: Set<string> = new Set()
-  function withBusy(edgeId: string, p: Promise<unknown>, what: string) {
-    busyEdges = new Set(busyEdges).add(edgeId)
-    void p
-      .catch(err => {
-        status = `${what} failed: ${(err as Error).message}`
-      })
-      .finally(() => {
-        const next = new Set(busyEdges)
-        next.delete(edgeId)
-        busyEdges = next
-      })
-  }
-  function panelAccept(edgeId: string) {
-    withBusy(edgeId, acceptGhost(edgeId), 'accept')
-  }
-  function panelReject(edgeId: string, note: string) {
-    withBusy(edgeId, postVerdict(edgeId, 'wrong', note), 'reject')
-  }
-  function panelDiscuss(edgeId: string, discuss: boolean) {
-    withBusy(edgeId, setDiscuss(edgeId, discuss), 'discuss toggle')
   }
 
   // §13.6 discussion chat state. Lives here, not in the panel: closing the
@@ -213,35 +173,45 @@
       ...chatMessages,
       { role: 'agent', text: turn.reply, applied: turn.applied, rejected: turn.rejected },
     ]
+    chatPanelOpen = true
     if (turn.op_errors.length > 0) {
       status = `agent op-block errors: ${turn.op_errors.join('; ')}`
     }
   }
-  function chatStart(model: string | null) {
-    chatBusy = true
-    startDiscussion(model ?? undefined)
-      .then(t => {
-        discussionActive = true
-        chatTurn(t)
-      })
-      .catch(err => {
-        status = `discussion start failed: ${(err as Error).message}`
-      })
-      .finally(() => {
-        chatBusy = false
-      })
-  }
-  function chatSend(text: string) {
+
+  // 锚定标签(§13.6):选中集优先,否则当前容器。随消息一起送给 agent,
+  // 也显示在 dock 上——人和 agent 对「在谈什么」保持同一认知。
+  $: anchorLabel = selectedNode
+    ? `${selectedNode.type}:${selectedNode.name}`
+    : crumbs.length > 0
+      ? `容器:${crumbs[crumbs.length - 1].name}`
+      : '全图'
+
+  // One send path: first message auto-starts the opencode session (the
+  // opening turn snapshots the disagreement set server-side), then the text
+  // goes out with its anchor stamped in front.
+  async function chatSend(text: string) {
+    const stamped = `（锚定：${anchorLabel}）\n${text}`
     chatMessages = [...chatMessages, { role: 'user', text }]
+    chatPanelOpen = true
     chatBusy = true
-    sendDiscussionMessage(text)
-      .then(chatTurn)
-      .catch(err => {
-        status = `discussion failed: ${(err as Error).message}`
-      })
-      .finally(() => {
-        chatBusy = false
-      })
+    try {
+      if (!discussionActive) {
+        const opening = await startDiscussion()
+        discussionActive = true
+        chatTurn(opening)
+      }
+      chatTurn(await sendDiscussionMessage(stamped))
+    } catch (err) {
+      // Failures land in the stream itself — a status-bar whisper reads as a
+      // dead click (彩排实测: user perceived it as a freeze).
+      chatMessages = [
+        ...chatMessages,
+        { role: 'agent', text: `⚠ 会话失败: ${(err as Error).message}` },
+      ]
+    } finally {
+      chatBusy = false
+    }
   }
 
   // §13.5.3: render ghost links (agent proposals, status="proposed") dashed.
@@ -313,6 +283,141 @@
     ctx.textBaseline = 'middle'
     ctx.fillText(text, pos[0] - w / 2, pos[1])
     ctx.restore()
+  }
+
+  // Right-click is ours: LiteGraph's built-in context menu (and its dbl-click
+  // searchbox) list internal registered type names and create canvas-only
+  // phantom nodes that never enter the graph. Neutralise both and route the
+  // DOM contextmenu event to our own menu, which persists through the kernel.
+  function wireContextMenu(canvas: LGraphCanvas) {
+    ;(canvas as unknown as { processContextMenu: () => void }).processContextMenu =
+      () => {}
+    ;(canvas as unknown as { allow_searchbox: boolean }).allow_searchbox = false
+    // Delete/Backspace: LiteGraph's own deleteSelectedNodes removes nodes from
+    // the canvas only — a phantom delete that lies about graph state and
+    // resurrects on reload. Route it through the kernel instead.
+    ;(canvas as unknown as { deleteSelectedNodes: () => void }).deleteSelectedNodes =
+      () => {
+        const sel = (canvas as unknown as {
+          selected_nodes?: Record<string, LGraphNode>
+        }).selected_nodes
+        if (!sel) return
+        for (const key of Object.keys(sel)) {
+          const dto = (sel[key] as unknown as { simulanka?: NodeDTO }).simulanka
+          if (dto) requestDeleteNode(dto)
+        }
+      }
+    canvasEl.addEventListener('contextmenu', onCanvasContextMenu)
+  }
+
+  function onCanvasContextMenu(e: MouseEvent) {
+    e.preventDefault()
+    if (!lgcanvas) return
+    const pos = (lgcanvas as unknown as {
+      convertEventToCanvasOffset: (e: MouseEvent) => [number, number]
+    }).convertEventToCanvasOffset(e)
+    const g = lgcanvas.graph as unknown as {
+      getNodeOnPos?: (x: number, y: number) => LGraphNode | null
+    } | null
+    const hit = g?.getNodeOnPos?.(pos[0], pos[1]) ?? null
+    // Boundary stubs carry no `simulanka` DTO — treat them like empty canvas.
+    const dto = hit ? ((hit as unknown as { simulanka?: NodeDTO }).simulanka ?? null) : null
+    menu = {
+      x: e.clientX,
+      y: e.clientY,
+      mode: dto ? 'node' : 'add',
+      node: dto,
+      graphPos: [Math.round(pos[0]), Math.round(pos[1])],
+    }
+  }
+
+  async function menuAddNode(t: NodeTemplate) {
+    const at = menu?.graphPos ?? [120, 120]
+    menu = null
+    try {
+      const res = await createNode({
+        type: t.type,
+        name: t.name,
+        parent: currentRootId,
+        attrs: t.attrs,
+        ports: t.ports,
+      })
+      // Drop the node where the user clicked: record the position before the
+      // SSE-triggered reload, so dagre doesn't fling it elsewhere.
+      recordMove(res.node_id, at[0], at[1])
+    } catch (err) {
+      status = `add node failed: ${(err as Error).message}`
+    }
+  }
+
+  function menuEnter() {
+    if (!menu?.node) return
+    const id = menu.node.id
+    menu = null
+    navigateTo(id)
+  }
+
+  async function menuRename() {
+    if (!menu?.node) return
+    const n = menu.node
+    menu = null
+    const newName = window.prompt('新名字', n.name)
+    if (!newName || !newName.trim() || newName.trim() === n.name) return
+    try {
+      await renameNode(n.id, newName.trim())
+    } catch (err) {
+      status = `rename failed: ${(err as Error).message}`
+    }
+  }
+
+  async function menuSaveTemplate() {
+    if (!menu?.node) return
+    const n = menu.node
+    menu = null
+    const name = window.prompt('模板名', n.name)
+    if (!name || !name.trim()) return
+    // Instance-specific importer stamps don't belong in a reusable template.
+    const attrs = { ...n.attrs }
+    delete attrs.fqn
+    delete attrs.num_params
+    delete attrs.source_file
+    const ports = n.ports
+      .map(pid => portsById.get(pid))
+      .filter((p): p is PortDTO => !!p)
+      .map(p => ({ name: p.name, direction: p.side, port_type: p.port_type }))
+    try {
+      await saveTemplate(name.trim(), { category: 'custom', type: n.type, attrs, ports })
+      customTemplates = await fetchTemplates()
+      status = `模板已存: ${name.trim()}`
+    } catch (err) {
+      status = `save template failed: ${(err as Error).message}`
+    }
+  }
+
+  // One deletion path for menu and Delete key alike: the kernel decides, the
+  // canvas never forks from graph state. Refusals (non-empty, out-of-domain)
+  // surface in the status bar; success comes back over SSE.
+  function requestDeleteNode(dto: NodeDTO) {
+    void deleteNode(dto.id).catch(err => {
+      status = `delete failed: ${(err as Error).message}`
+    })
+  }
+
+  function menuDelete() {
+    if (!menu?.node) return
+    const n = menu.node
+    menu = null
+    requestDeleteNode(n)
+  }
+
+  async function menuDeleteTemplate(name: string) {
+    // Menu stays open — the groups prop refreshes reactively.
+    try {
+      await deleteTemplate(name)
+      customTemplates = await fetchTemplates()
+    } catch (err) {
+      status = `delete template failed: ${(err as Error).message}`
+    }
   }
 
   function wireSelection(canvas: LGraphCanvas) {
@@ -398,11 +503,63 @@
     lgcanvas?.draw(true, true)
   }
 
-  function goTo(idx: number) {
-    // idx = -1 → top-level; otherwise jump to crumbs[idx] as the new root.
-    currentRootId = idx < 0 ? null : crumbs[idx].id
+  // Browser-like view history: every navigation (drill-down, jump, crumb)
+  // goes through navigateTo, so mouse back/forward buttons and Alt+arrows
+  // walk the trail. SSE reloads keep the current root and don't touch it.
+  let navBack: (string | null)[] = []
+  let navFwd: (string | null)[] = []
+
+  function navigateTo(root: string | null) {
+    if (root === currentRootId) return
+    navBack = [...navBack, currentRootId]
+    navFwd = []
+    currentRootId = root
     selectedId = null
     void load()
+  }
+
+  function goBack() {
+    if (navBack.length === 0) return
+    navFwd = [...navFwd, currentRootId]
+    currentRootId = navBack[navBack.length - 1]
+    navBack = navBack.slice(0, -1)
+    selectedId = null
+    void load()
+  }
+
+  function goForward() {
+    if (navFwd.length === 0) return
+    navBack = [...navBack, currentRootId]
+    currentRootId = navFwd[navFwd.length - 1]
+    navFwd = navFwd.slice(0, -1)
+    selectedId = null
+    void load()
+  }
+
+  // Mouse side buttons (3=back, 4=forward) and Alt+←/→.
+  function onNavMouse(e: MouseEvent) {
+    if (e.button === 3) {
+      e.preventDefault()
+      goBack()
+    } else if (e.button === 4) {
+      e.preventDefault()
+      goForward()
+    }
+  }
+  function onNavKey(e: KeyboardEvent) {
+    if (!e.altKey) return
+    if (e.key === 'ArrowLeft') {
+      e.preventDefault()
+      goBack()
+    } else if (e.key === 'ArrowRight') {
+      e.preventDefault()
+      goForward()
+    }
+  }
+
+  function goTo(idx: number) {
+    // idx = -1 → top-level; otherwise jump to crumbs[idx] as the new root.
+    navigateTo(idx < 0 ? null : crumbs[idx].id)
   }
 
   let subscription: EventSubscription | null = null
@@ -413,6 +570,11 @@
     } catch (err) {
       console.warn('fetchPositions failed; starting with empty layout cache', err)
     }
+    void fetchTemplates()
+      .then(t => {
+        customTemplates = t
+      })
+      .catch(() => undefined)
     // An opencode session survives a page reload (state file + session id);
     // history doesn't — the transcript lives in the session, not the server.
     void fetchDiscussionState()
@@ -437,13 +599,6 @@
           msg.nodes.some(id => currentNodeIds.has(id))
         if (touchesView) {
           void load()
-        } else if (msg.edges.length > 0) {
-          // Edge verdicts can land outside the current view (agent verify
-          // pass writes anywhere) — keep the disagreement set and badge
-          // fresh without rebuilding the canvas.
-          void refreshDisagreements().then(e => {
-            if (e) status = e
-          })
         }
       },
       onError: () => {
@@ -452,6 +607,8 @@
     })
     window.addEventListener('resize', resizeCanvas)
     window.addEventListener('pagehide', beaconFlush)
+    window.addEventListener('mouseup', onNavMouse)
+    window.addEventListener('keydown', onNavKey)
     document.addEventListener('visibilitychange', flushIfHidden)
   })
 
@@ -478,25 +635,28 @@
 
   onDestroy(() => {
     subscription?.close()
+    canvasEl?.removeEventListener('contextmenu', onCanvasContextMenu)
     window.removeEventListener('resize', resizeCanvas)
     window.removeEventListener('pagehide', beaconFlush)
+    window.removeEventListener('mouseup', onNavMouse)
+    window.removeEventListener('keydown', onNavKey)
     document.removeEventListener('visibilitychange', flushIfHidden)
     beaconFlush()
   })
 
-  // When the inspector opens/closes the canvas width changes — give the DOM a
-  // tick to reflow, then resize the canvas backing buffer to match.
-  $: if (selectedNode !== undefined) void tick().then(resizeCanvas)
-  $: if (verifyOpen !== undefined) void tick().then(resizeCanvas)
-
-  // Header badge: work waiting in the verify loop (pending ghosts + the
-  // disagreement set). Same shared predicate as the panel list.
-  $: pendingCount =
-    currentEdges.filter(isPendingGhost).length + disagreements.length
+  // When the inspector opens/closes the canvas width changes — resize the
+  // canvas backing buffer after the DOM settles. queueMicrotask, NOT tick():
+  // Svelte 5's tick() flushSyncs, and calling it from a legacy `$:` re-enters
+  // the flush loop forever (the ChatNode freeze had exactly this shape).
+  $: if (selectedNode !== undefined) queueMicrotask(resizeCanvas)
 </script>
 
 <header>
   <strong class="brand"><span class="brand-star">✦</span>Simulanka</strong>
+  <span class="nav-btns">
+    <button on:click={goBack} disabled={navBack.length === 0} title="后退(Alt+← / 鼠标侧键)">‹</button>
+    <button on:click={goForward} disabled={navFwd.length === 0} title="前进(Alt+→ / 鼠标侧键)">›</button>
+  </span>
   <nav class="crumbs">
     <button class="crumb" on:click={() => goTo(-1)} class:active={crumbs.length === 0}>
       top
@@ -513,12 +673,7 @@
       </button>
     {/each}
   </nav>
-  <label>depth <input type="number" min="0" max="5" bind:value={depth} on:change={load} /></label>
   <button on:click={load}>Reload</button>
-  <button class:panel-on={verifyOpen} on:click={() => (verifyOpen = !verifyOpen)}>
-    核对
-    {#if pendingCount > 0}<span class="badge">{pendingCount}</span>{/if}
-  </button>
   <span class="status">
     <span class="live" class:on={liveOk} title={liveOk ? `live · v${liveVersion}` : 'disconnected'}></span>
     {status} · {nodeCount}n / {edgeCount}e
@@ -536,27 +691,36 @@
   {#if fileRequest}
     <FileViewer request={fileRequest} onClose={() => (fileRequest = null)} />
   {/if}
-  {#if verifyOpen}
-    <VerifyPanel
-      edges={currentEdges}
-      {disagreements}
-      {namesById}
-      {portsById}
-      {selectedId}
-      {busyEdges}
-      onAccept={panelAccept}
-      onReject={panelReject}
-      onDiscuss={panelDiscuss}
-    >
-      <DiscussPanel
-        messages={chatMessages}
-        active={discussionActive}
-        busy={chatBusy}
-        disagreementCount={disagreements.length}
-        onStart={chatStart}
-        onSend={chatSend}
-      />
-    </VerifyPanel>
+  {#if menu}
+    <ContextMenu
+      x={menu.x}
+      y={menu.y}
+      mode={menu.mode}
+      node={menu.node}
+      groups={templateGroups}
+      onClose={() => (menu = null)}
+      onPick={menuAddNode}
+      onEnter={menuEnter}
+      onRename={menuRename}
+      onSaveTemplate={menuSaveTemplate}
+      onDelete={menuDelete}
+      onDeleteTemplate={menuDeleteTemplate}
+    />
+  {/if}
+  <ChatDock
+    {anchorLabel}
+    busy={chatBusy}
+    panelOpen={chatPanelOpen}
+    onSend={t => void chatSend(t)}
+    onTogglePanel={() => (chatPanelOpen = !chatPanelOpen)}
+  />
+  {#if chatPanelOpen}
+    <ChatNode
+      messages={chatMessages}
+      active={discussionActive}
+      busy={chatBusy}
+      onClose={() => (chatPanelOpen = false)}
+    />
   {/if}
 </main>
 
@@ -616,26 +780,6 @@
       text-shadow: 0 0 12px var(--gold-glow);
     }
   }
-  header label {
-    color: var(--muted);
-  }
-  header input {
-    background: var(--panel-3);
-    color: var(--text);
-    border: 1px solid var(--hairline);
-    border-radius: 4px;
-    padding: 3px 7px;
-    font-family: inherit;
-    font-size: 13px;
-  }
-  header input:focus {
-    outline: none;
-    border-color: var(--gold-dim);
-    box-shadow: 0 0 0 2px rgba(217, 186, 125, 0.15);
-  }
-  header input[type='number'] {
-    width: 50px;
-  }
   header button {
     background: var(--panel-2);
     color: var(--text);
@@ -653,22 +797,18 @@
     border-color: var(--gold-dim);
     color: var(--ivory);
   }
-  header button.panel-on {
-    border-color: var(--gold);
-    color: var(--gold-bright);
-    box-shadow:
-      inset 0 0 12px rgba(217, 186, 125, 0.12),
-      0 0 8px rgba(217, 186, 125, 0.18);
+  .nav-btns {
+    display: flex;
+    gap: 4px;
   }
-  .badge {
-    display: inline-block;
-    margin-left: 6px;
-    background: var(--crimson);
-    color: #fff8f0;
-    border-radius: 8px;
-    padding: 0 6px;
-    font-size: 11px;
-    box-shadow: 0 0 8px rgba(224, 122, 104, 0.5);
+  .nav-btns button {
+    padding: 2px 9px;
+    font-size: 15px;
+    line-height: 1;
+  }
+  .nav-btns button:disabled {
+    opacity: 0.35;
+    cursor: default;
   }
   .crumbs {
     display: flex;

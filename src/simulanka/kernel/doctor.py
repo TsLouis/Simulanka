@@ -229,7 +229,20 @@ def _check_edge_registry(layout: ProjectLayout) -> list[Issue]:
                     message=f"edge `{e.id}` type=`{e.type}` requires ports.",
                 ))
                 continue
-            if spec.source_port_direction and sp.direction != spec.source_port_direction:
+            # Tunnel exemption — same rule as validator.validate_edge (§12.4
+            # subgraph IO): parent.in → child.in and child.out → parent.out
+            # are legal across exactly one containment level.
+            tunnel_in = (
+                sp.direction == "in" and tgt is not None and tgt.parent_id == e.source_id
+            )
+            tunnel_out = (
+                tp.direction == "out" and src is not None and src.parent_id == e.target_id
+            )
+            if (
+                spec.source_port_direction
+                and sp.direction != spec.source_port_direction
+                and not tunnel_in
+            ):
                 out.append(Issue(
                     code="edge_source_direction",
                     severity="error",
@@ -238,7 +251,11 @@ def _check_edge_registry(layout: ProjectLayout) -> list[Issue]:
                         f"!= `{spec.source_port_direction}`."
                     ),
                 ))
-            if spec.target_port_direction and tp.direction != spec.target_port_direction:
+            if (
+                spec.target_port_direction
+                and tp.direction != spec.target_port_direction
+                and not tunnel_out
+            ):
                 out.append(Issue(
                     code="edge_target_direction",
                     severity="error",
