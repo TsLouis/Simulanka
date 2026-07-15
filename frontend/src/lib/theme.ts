@@ -20,6 +20,15 @@ export const REJECTED_GHOST_COLOR = '#e07a68'
 export const VERIFIED_COLOR = '#7ecfa5'
 export const INFERRED_COLOR = '#77839c'
 
+/** S6 可信级五色（frontend.md 映射表）：只染节点体，边色不叠加。 */
+export const TRUST_COLORS: Record<string, string> = {
+  human: '#e3b566', // 金 —— 人裁
+  constructed: '#8fb8e8', // 星蓝 —— 机器观测（与 trace 边同色）
+  reviewed: '#7ecfa5', // 玉 —— 分析者 distill 复核
+  checked: '#d9ba7d', // 琥珀 —— 快检章（动态线词表先定）
+  unreviewed: '#77839c', // 灰 —— 「未定」应显眼地不显眼
+}
+
 /** 星卡配色：LiteGraph node.color = 标题条，bgcolor = 卡身，boxcolor = 徽点。 */
 interface NodeStyle {
   color: string

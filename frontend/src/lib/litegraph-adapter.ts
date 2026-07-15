@@ -12,6 +12,7 @@ import {
   INFERRED_COLOR,
   REJECTED_GHOST_COLOR,
   styleNode,
+  TRUST_COLORS,
   VERIFIED_COLOR,
 } from './theme'
 import type {
@@ -21,6 +22,7 @@ import type {
   NodeDTO,
   PortDTO,
   ShapeCheck,
+  TrustLevel,
 } from './types'
 
 // LiteGraph link object (untyped in @types). We stash our edge id on it so a
@@ -189,8 +191,9 @@ export function buildLiteGraph(
       .onConnectionsChange = onConnectionsChange
 
     // S5 卡片：attr 驱动的展示模板（cards.ts 是唯一的字段清单来源）。
+    // S6 trust 描边共用同一 foreground 钩子——只染节点体，边色不叠加。
     const card = cardLines(n)
-    if (card.length > 0) attachCard(lgnode, card)
+    if (card.length > 0 || n.trust) attachCard(lgnode, card, n.trust)
 
     const pos = persistedPositions[n.id] ?? autoPos.get(n.id) ?? [80, 80]
     lgnode.pos = [pos[0], pos[1]]
@@ -238,16 +241,51 @@ export function buildLiteGraph(
 interface CardStash {
   lines: CardLine[]
   top: number
+  trust: TrustLevel | null
 }
 
-function attachCard(lgnode: LGraphNode, lines: CardLine[]): void {
+function attachCard(
+  lgnode: LGraphNode,
+  lines: CardLine[],
+  trust: TrustLevel | null,
+): void {
   const base = lgnode.computeSize()
   const top = base[1] + 6
-  lgnode.size = [Math.max(base[0], CARD_WIDTH), top + lines.length * CARD_LINE_H + 8]
-  ;(lgnode as unknown as { simulanka_card: CardStash }).simulanka_card = { lines, top }
+  if (lines.length > 0) {
+    lgnode.size = [Math.max(base[0], CARD_WIDTH), top + lines.length * CARD_LINE_H + 8]
+  }
+  ;(lgnode as unknown as { simulanka_card: CardStash }).simulanka_card = {
+    lines,
+    top,
+    trust,
+  }
   ;(lgnode as unknown as {
     onDrawForeground: (ctx: CanvasRenderingContext2D) => void
   }).onDrawForeground = drawCardForeground
+}
+
+// S6 trust 描边：环住整张星卡（含标题条）。unreviewed 刻意最淡——
+// 「未定」应显眼地不显眼；其余四级按 theme 五色发一圈微光。
+function drawTrustRing(
+  ctx: CanvasRenderingContext2D,
+  size: [number, number] | Float32Array,
+  trust: TrustLevel,
+): void {
+  const color = TRUST_COLORS[trust]
+  if (!color) return
+  const titleH = (LiteGraph as unknown as { NODE_TITLE_HEIGHT: number }).NODE_TITLE_HEIGHT
+  ctx.save()
+  ctx.beginPath()
+  ctx.roundRect(-1.5, -titleH - 1.5, size[0] + 3, size[1] + titleH + 3, 8)
+  ctx.strokeStyle = color
+  ctx.globalAlpha = trust === 'unreviewed' ? 0.3 : 0.8
+  ctx.lineWidth = 1.5
+  if (trust !== 'unreviewed') {
+    ctx.shadowColor = color
+    ctx.shadowBlur = 6
+  }
+  ctx.stroke()
+  ctx.restore()
 }
 
 function drawCardForeground(this: LGraphNode, ctx: CanvasRenderingContext2D): void {
@@ -257,6 +295,7 @@ function drawCardForeground(this: LGraphNode, ctx: CanvasRenderingContext2D): vo
   }
   const stash = self.simulanka_card
   if (!stash || self.flags?.collapsed) return
+  if (stash.trust) drawTrustRing(ctx, this.size, stash.trust)
   let y = stash.top + 11
   ctx.save()
   ctx.textAlign = 'left'

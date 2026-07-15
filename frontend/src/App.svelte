@@ -4,6 +4,7 @@
   // searchbox, dialogs), all of which we disabled in favour of our own chrome.
   import { LGraphCanvas, type LGraphNode } from 'litegraph.js'
   import {
+    acceptGhost,
     createEdge,
     createNode,
     deleteEdge,
@@ -11,16 +12,21 @@
     deleteTemplate,
     fetchDiscussionState,
     fetchGraph,
+    fetchNodeInfo,
     fetchPositions,
     fetchTemplates,
+    postVerdict,
     renameNode,
+    resolveNote,
     savePositions,
     saveTemplate,
     sendDiscussionMessage,
+    setDiscuss,
     startDiscussion,
     type CustomTemplateDTO,
     type DiscussionTurn,
     type FileOpenRequest,
+    type HumanVerdict,
     type Positions,
   } from './lib/api'
   import { subscribeEvents, type EventSubscription } from './lib/events'
@@ -30,9 +36,10 @@
   import ChatDock from './lib/ChatDock.svelte'
   import ChatNode, { type ChatMsg } from './lib/ChatNode.svelte'
   import ContextMenu from './lib/ContextMenu.svelte'
+  import EdgeMenu from './lib/EdgeMenu.svelte'
   import FileViewer from './lib/FileViewer.svelte'
   import NodeInspector from './lib/NodeInspector.svelte'
-  import type { NodeDTO, PortDTO } from './lib/types'
+  import type { EdgeDTO, NodeDTO, PortDTO } from './lib/types'
 
   let canvasEl: HTMLCanvasElement
   let status = 'idle'
@@ -53,6 +60,16 @@
   let selectedId: string | null = null
   let selectedNode: NodeDTO | null = null
   let portsById: Map<string, PortDTO> = new Map()
+
+  // 跳转并选中原语（S6 血缘链逐跳 / S7 卡片点击共用）：先问 locator 拿父容器，
+  // 视图到位后在 load() 末尾兑现选中——跨下钻层级可达。
+  let byNodeMap: Map<string, LGraphNode> = new Map()
+  let pendingSelectId: string | null = null
+
+  // S7 就地裁决：当前视图的边 DTO 与端点名字表；edgeMenu 非空 = 菜单开着。
+  let edgesById: Map<string, EdgeDTO> = new Map()
+  let namesById: Map<string, string> = new Map()
+  let edgeMenu: { x: number; y: number; edge: EdgeDTO } | null = null
 
   // S4 file viewer: non-null = the drawer is open on this request. Assigning a
   // new request re-loads in place (e.g. jumping 出处 from another atom).
@@ -93,7 +110,7 @@
     status = 'loading…'
     try {
       const payload = await fetchGraph(currentRootId)
-      const { graph } = buildLiteGraph(payload, {
+      const { graph, byNode } = buildLiteGraph(payload, {
         onDrillDown: (id) => navigateTo(id),
         onJumpExternal: (id) => navigateTo(id),
         onCreateEdge: async (srcPort, dstPort, shapeCheck) => {
@@ -129,8 +146,20 @@
         wireNodeMoved(lgcanvas)
         wireGhostLinks(lgcanvas)
         wireContextMenu(lgcanvas)
+        wireLinkMenu(lgcanvas)
       }
       graph.start()
+      byNodeMap = byNode
+      edgesById = new Map(
+        [...payload.edges, ...payload.boundary_edges].map(e => [e.id, e]),
+      )
+      namesById = new Map([
+        ...payload.nodes.map(n => [n.id, n.name] as [string, string]),
+        ...payload.external_nodes.map(n => [n.id, n.name] as [string, string]),
+        ...(payload.root_info ? [[payload.root_info.id, payload.root_info.name] as [string, string]] : []),
+      ])
+      // 视图刷新后旧边菜单可能指着已变/已删的边——保守收起。
+      edgeMenu = null
       nodeCount = payload.nodes.length
       edgeCount = payload.edges.length
       boundaryCount = payload.boundary_edges.length
@@ -156,8 +185,105 @@
       // edge from its ports to a child) must refresh this view too.
       currentNodeIds = new Set(payload.nodes.map(n => n.id))
       if (payload.root) currentNodeIds.add(payload.root)
+
+      applyPendingSelect()
     } catch (err) {
       status = `error: ${(err as Error).message}`
+    }
+  }
+
+  // --- 跳转并选中（S6/S7 共用原语） -----------------------------------------
+
+  async function jumpToEntity(id: string) {
+    try {
+      const info = await fetchNodeInfo(id)
+      pendingSelectId = id
+      if (info.parent_id !== currentRootId) {
+        navigateTo(info.parent_id)
+      } else {
+        applyPendingSelect()
+      }
+    } catch (err) {
+      status = `跳转失败: ${(err as Error).message}`
+    }
+  }
+
+  function applyPendingSelect() {
+    if (!pendingSelectId || !lgcanvas) return
+    const ln = byNodeMap.get(pendingSelectId)
+    pendingSelectId = null
+    if (!ln) return
+    const c = lgcanvas as unknown as {
+      selectNodes?: (ns: LGraphNode[]) => void
+      centerOnNode?: (n: LGraphNode) => void
+    }
+    c.selectNodes?.([ln])
+    c.centerOnNode?.(ln)
+    const dto = (ln as unknown as { simulanka?: NodeDTO }).simulanka
+    if (dto) {
+      selectedId = dto.id
+      selectedNode = dto
+    }
+  }
+
+  // --- S7 就地裁决：链接中心点点击 → 锚定菜单 → server 人侧端点 --------------
+
+  // LiteGraph 原生把「点中链接中心点」路由到 showLinkMenu(默认弹它自己的
+  // 菜单)——覆写成我们的锚定菜单。设一次即可,随 setGraph 存活。
+  function wireLinkMenu(canvas: LGraphCanvas) {
+    ;(canvas as unknown as {
+      showLinkMenu: (link: unknown, e: MouseEvent) => void
+    }).showLinkMenu = (link, e) => {
+      const id = (link as { simulanka_edge_id?: string }).simulanka_edge_id
+      const dto = id ? edgesById.get(id) : undefined
+      // 裁决只对 data_flow 有意义(server 422 同一条线)。
+      if (!dto || dto.type !== 'data_flow') return
+      edgeMenu = { x: e.clientX, y: e.clientY, edge: dto }
+    }
+  }
+
+  async function edgeVerdict(edge: EdgeDTO, verdict: HumanVerdict) {
+    edgeMenu = null
+    // note 必填——辩护即学习时刻(§13.6);取消 prompt = 放弃裁决。
+    const note = window.prompt('辩护理由（必填）：我认为…因为…')
+    if (note === null) return
+    if (!note.trim()) {
+      status = '裁决需要理由 —— 未提交'
+      return
+    }
+    try {
+      await postVerdict(edge.id, verdict, note.trim())
+    } catch (err) {
+      status = `verdict failed: ${(err as Error).message}`
+    }
+  }
+
+  async function edgeAccept(edge: EdgeDTO) {
+    edgeMenu = null
+    try {
+      await acceptGhost(edge.id)
+    } catch (err) {
+      status = `accept failed: ${(err as Error).message}`
+    }
+  }
+
+  async function edgeToggleDiscuss(edge: EdgeDTO) {
+    edgeMenu = null
+    try {
+      await setDiscuss(edge.id, edge.attrs.discuss !== true)
+    } catch (err) {
+      status = `discuss failed: ${(err as Error).message}`
+    }
+  }
+
+  // S7 escalate 就地「已处理」:唯一能解除停止信号的人为动作(取消 = 不动)。
+  async function resolveEscalate(nodeId: string) {
+    const note = window.prompt('处理说明（可选，留空跳过）', '')
+    if (note === null) return
+    try {
+      await resolveNote(nodeId, note.trim() || undefined)
+    } catch (err) {
+      status = `resolve failed: ${(err as Error).message}`
     }
   }
 
@@ -687,9 +813,24 @@
     node={selectedNode}
     {portsById}
     onOpenFile={(req) => (fileRequest = req)}
+    onJumpTo={(id) => void jumpToEntity(id)}
+    onResolveNote={(id) => void resolveEscalate(id)}
   />
   {#if fileRequest}
     <FileViewer request={fileRequest} onClose={() => (fileRequest = null)} />
+  {/if}
+  {#if edgeMenu}
+    <EdgeMenu
+      x={edgeMenu.x}
+      y={edgeMenu.y}
+      edge={edgeMenu.edge}
+      srcName={namesById.get(edgeMenu.edge.src) ?? edgeMenu.edge.src}
+      dstName={namesById.get(edgeMenu.edge.dst) ?? edgeMenu.edge.dst}
+      onClose={() => (edgeMenu = null)}
+      onVerdict={(v) => void edgeVerdict(edgeMenu!.edge, v)}
+      onAccept={() => void edgeAccept(edgeMenu!.edge)}
+      onToggleDiscuss={() => void edgeToggleDiscuss(edgeMenu!.edge)}
+    />
   {/if}
   {#if menu}
     <ContextMenu

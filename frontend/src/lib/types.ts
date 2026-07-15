@@ -13,6 +13,9 @@ export interface PortDTO {
   attrs: Record<string, unknown>
 }
 
+// S6 可信级（服务端查询时算，不落盘）。null = 研究域之外，无徽记。
+export type TrustLevel = 'human' | 'constructed' | 'reviewed' | 'checked' | 'unreviewed'
+
 export interface NodeDTO {
   id: string
   type: string
@@ -21,6 +24,7 @@ export interface NodeDTO {
   attrs: Record<string, unknown>
   ports: string[]
   child_count: number
+  trust: TrustLevel | null
 }
 
 export interface EdgeDTO {

@@ -166,7 +166,10 @@ def begin_run(
                 attrs=run_attrs,
                 ref="run",
             ),
-            CreateEdgeOp(type="fulfills", source="@run", target=task_node.id),
+            CreateEdgeOp(
+                type="fulfills", source="@run", target=task_node.id,
+                attrs={"source": "machine"},
+            ),
         ],
         actor=_SYSTEM_ACTOR,
         note=f"run begin: {run_name} fulfills task {task_node.name}",

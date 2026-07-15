@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { FileOpenRequest } from './api'
+  import { fetchProvenance, type FileOpenRequest, type ProvenanceHop } from './api'
   import type { NodeDTO, PortDTO } from './types'
 
   export let node: NodeDTO | null
@@ -7,6 +7,9 @@
   // S4: open the read-only file viewer. file 节点=打开自身；plan_file 深链=
   // 打开出处并高亮 lid；run 日志=打开 stdout/stderr file 节点。
   export let onOpenFile: (req: FileOpenRequest) => void = () => {}
+  // S6 血缘链逐跳可点 / S7 escalate 就地已处理——动作由宿主执行。
+  export let onJumpTo: (id: string) => void = () => {}
+  export let onResolveNote: (id: string) => void = () => {}
 
   $: ports = node ? node.ports.map(id => portsById.get(id)).filter(Boolean) as PortDTO[] : []
   $: attrEntries = node ? Object.entries(node.attrs) : []
@@ -19,6 +22,31 @@
   $: stdoutPath = strAttr(node, 'stdout_path')
   $: stderrPath = strAttr(node, 'stderr_path')
   $: metricsPath = strAttr(node, 'metrics_path')
+
+  // S7: 未解决的 escalate note 才出「已处理」——唯一能解除停止信号的人为动作。
+  $: openEscalate =
+    node !== null &&
+    node.type === 'note' &&
+    strAttr(node, 'kind') === 'escalate' &&
+    strAttr(node, 'status') !== 'resolved'
+
+  // S6 血缘链：研究域节点（trust 非空）按需拉取；id 守卫防止 $: 重入循环。
+  let chain: ProvenanceHop[] = []
+  let chainFor: string | null = null
+  $: if (node && node.trust && node.id !== chainFor) void loadChain(node.id)
+  $: if (node === null || !node.trust) {
+    chain = []
+    chainFor = null
+  }
+  async function loadChain(id: string) {
+    chainFor = id
+    try {
+      const c = await fetchProvenance(id)
+      if (chainFor === id) chain = c
+    } catch {
+      if (chainFor === id) chain = []
+    }
+  }
 
   const portLabel = (p: PortDTO): string | null =>
     typeof p.attrs.label === 'string' ? p.attrs.label : null
@@ -45,9 +73,20 @@
   <aside class="inspector">
     <header>
       <span class="type-chip">{node.type}</span>
+      {#if node.trust}
+        <span class="trust-chip t-{node.trust}">{node.trust}</span>
+      {/if}
       <h2>{node.name}</h2>
       <code class="id">{node.id}</code>
     </header>
+
+    {#if openEscalate}
+      <section>
+        <button class="resolve-btn" on:click={() => onResolveNote(node!.id)}>
+          ✓ 已处理
+        </button>
+      </section>
+    {/if}
 
     {#if node.type === 'file' || planFile || stdoutPath || stderrPath || metricsPath}
       <section>
@@ -119,6 +158,36 @@
             </li>
           {/each}
         </ul>
+      </section>
+    {/if}
+
+    {#if chain.length > 1}
+      <section>
+        <h3>血缘链</h3>
+        <div class="chain">
+          {#each chain.slice(1) as hop (hop.id)}
+            <button class="hop" on:click={() => onJumpTo(hop.id)} title={hop.id}>
+              <span class="via">
+                ↳ {hop.via_edge}
+                {#if hop.via_edge_trust}
+                  <i class="t-chip t-{hop.via_edge_trust}">{hop.via_edge_trust}</i>
+                {/if}
+              </span>
+              <span class="hop-main">
+                <span class="hop-type">{hop.type}</span>
+                <span class="hop-name">{hop.name}</span>
+                {#if hop.trust}
+                  <i class="t-chip t-{hop.trust}">{hop.trust}</i>
+                {/if}
+              </span>
+            </button>
+          {/each}
+        </div>
+      </section>
+    {:else if node.trust && chainFor === node.id}
+      <section>
+        <h3>血缘链</h3>
+        <span class="muted">(无上游)</span>
       </section>
     {/if}
 
@@ -203,6 +272,91 @@
     font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.06em;
+  }
+  /* S6 可信五色（= theme.ts TRUST_COLORS） */
+  .trust-chip,
+  .t-chip {
+    display: inline-block;
+    border-radius: 3px;
+    font-size: 9px;
+    font-style: normal;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 1px 5px;
+    margin-left: 5px;
+    border: 1px solid currentColor;
+    background: var(--panel-3);
+  }
+  .t-human {
+    color: var(--amber);
+  }
+  .t-constructed {
+    color: var(--star);
+  }
+  .t-reviewed {
+    color: var(--jade);
+  }
+  .t-checked {
+    color: var(--gold);
+  }
+  .t-unreviewed {
+    color: var(--muted);
+  }
+  .resolve-btn {
+    width: 100%;
+    background: var(--jade-deep);
+    color: var(--jade);
+    border: 1px solid var(--jade);
+    border-radius: 4px;
+    padding: 6px 10px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 12px;
+    transition: box-shadow 0.15s;
+  }
+  .resolve-btn:hover {
+    box-shadow: 0 0 8px rgba(126, 207, 165, 0.4);
+  }
+  .chain {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .hop {
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    padding: 3px 6px;
+    text-align: left;
+    cursor: pointer;
+    font: inherit;
+    color: var(--text);
+  }
+  .hop:hover {
+    background: var(--panel-2);
+  }
+  .hop .via {
+    display: block;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 10px;
+  }
+  .hop-main {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding-left: 12px;
+  }
+  .hop-type {
+    color: var(--gold-dim);
+    font-size: 10px;
+    text-transform: uppercase;
+  }
+  .hop-name {
+    color: var(--ivory);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .id {
     display: block;

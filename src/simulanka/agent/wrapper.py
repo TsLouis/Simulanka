@@ -221,7 +221,10 @@ def _apply_contract(
                     },
                 },
             ),
-            CreateEdgeOp(type="fulfills", source=run_node_id, target=task_node_id),
+            CreateEdgeOp(
+                type="fulfills", source=run_node_id, target=task_node_id,
+                attrs={"source": "machine"},
+            ),
         ],
         actor=actor,
         note=f"agent: fulfills task {task_node_id}",

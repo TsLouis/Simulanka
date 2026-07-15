@@ -102,7 +102,12 @@ def extract_evidence(
             },
             ref="ev",
         ),
-        CreateEdgeOp(type="produces", source=run_node.id, target="@ev"),
+        # System lineage edges carry the same machine stamp as the node, so
+        # S6 trust reads them `constructed` instead of a dishonest `unreviewed`.
+        CreateEdgeOp(
+            type="produces", source=run_node.id, target="@ev",
+            attrs={"source": "machine"},
+        ),
     ]
     if run_node.attrs.get("metrics_error") is not None:
         ops.append(UpdateAttrsOp(target=run_node.id, attrs={"metrics_error": None}))

@@ -181,8 +181,14 @@ def start_run(
 
     edges_intent = PatchIntent(
         ops=[
-            CreateEdgeOp(type="produces", source=run_node_id, target=stdout_node_id),
-            CreateEdgeOp(type="produces", source=run_node_id, target=stderr_node_id),
+            CreateEdgeOp(
+                type="produces", source=run_node_id, target=stdout_node_id,
+                attrs={"source": "machine"},
+            ),
+            CreateEdgeOp(
+                type="produces", source=run_node_id, target=stderr_node_id,
+                attrs={"source": "machine"},
+            ),
             UpdateAttrsOp(
                 target=run_node_id,
                 attrs={

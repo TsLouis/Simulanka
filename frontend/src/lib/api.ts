@@ -1,4 +1,4 @@
-import type { GraphPayload, ShapeCheck } from './types'
+import type { GraphPayload, ShapeCheck, TrustLevel } from './types'
 
 // One view = the inside of one container (root's direct children); navigation
 // is drill-down/breadcrumb only. There is no depth knob — the server contract
@@ -119,9 +119,100 @@ export async function deleteTemplate(name: string): Promise<void> {
   }
 }
 
+// --- S7 就地裁决:选中边上的人侧动作(写权矩阵的 user 行) -----------------
+
+export type HumanVerdict = 'correct' | 'wrong' | 'disputed'
+
+// 人裁决一条 data_flow 边。note 必填——辩护即学习时刻,server 422 兜底。
+export async function postVerdict(
+  edgeId: string,
+  verdict: HumanVerdict,
+  note: string,
+): Promise<void> {
+  const resp = await fetch(`/edge/${encodeURIComponent(edgeId)}/verdict`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ verdict, note }),
+  })
+  if (!resp.ok) {
+    throw new Error(`verdict failed: ${resp.status} ${await resp.text()}`)
+  }
+}
+
+// 接受一条 proposed ghost(同意无需辩护;仅人可点)。
+export async function acceptGhost(edgeId: string): Promise<void> {
+  const resp = await fetch(`/edge/${encodeURIComponent(edgeId)}/accept`, {
+    method: 'POST',
+  })
+  if (!resp.ok) {
+    throw new Error(`accept failed: ${resp.status} ${await resp.text()}`)
+  }
+}
+
+// 手动拉边进/出讨论集。
+export async function setDiscuss(edgeId: string, discuss: boolean): Promise<void> {
+  const resp = await fetch(`/edge/${encodeURIComponent(edgeId)}/discuss`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ discuss }),
+  })
+  if (!resp.ok) {
+    throw new Error(`discuss failed: ${resp.status} ${await resp.text()}`)
+  }
+}
+
+// S7 escalate 就地「已处理」:唯一能解除停止信号的人为动作。
+export async function resolveNote(nodeId: string, resolveNote?: string): Promise<void> {
+  const resp = await fetch(`/node/${encodeURIComponent(nodeId)}/resolve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(resolveNote ? { resolve_note: resolveNote } : {}),
+  })
+  if (!resp.ok) {
+    throw new Error(`resolve failed: ${resp.status} ${await resp.text()}`)
+  }
+}
+
+// --- 跳转并选中原语 + S6 血缘链 ----------------------------------------------
+
+// 选中一个实体先得打开它父容器的视图——这个 slim locator 就是为此。
+export interface NodeLocator {
+  id: string
+  type: string
+  name: string
+  parent_id: string | null
+}
+
+export async function fetchNodeInfo(nodeId: string): Promise<NodeLocator> {
+  const resp = await fetch(`/node/${encodeURIComponent(nodeId)}`)
+  if (!resp.ok) {
+    throw new Error(`GET /node failed: ${resp.status} ${await resp.text()}`)
+  }
+  return (await resp.json()) as NodeLocator
+}
+
+// 血缘链一跳:节点与边分别定级(supports 边是分析者判断、evidence 是机器
+// 测量,常不同级——这正是不折叠的理由)。结构跳(parent/plan_file)无边可级。
+export interface ProvenanceHop {
+  id: string
+  type: string
+  name: string
+  trust: TrustLevel | null
+  via_edge: string | null
+  via_edge_trust: TrustLevel | null
+}
+
+export async function fetchProvenance(nodeId: string): Promise<ProvenanceHop[]> {
+  const resp = await fetch(`/node/${encodeURIComponent(nodeId)}/provenance`)
+  if (!resp.ok) {
+    throw new Error(`GET provenance failed: ${resp.status} ${await resp.text()}`)
+  }
+  return (await resp.json()).chain as ProvenanceHop[]
+}
+
 // --- 会话(语言原语):opencode session,agent ops 过 server 写权闸 ---------
-// 裁决/分歧等 server 端点(/edge/{id}/verdict|accept|discuss、/disagreements)
-// 保留在后端;前端绑定随「消息类型」功能再回来——框架先行(2026-07-14)。
+// 分歧集端点(/disagreements)保留在后端;前端绑定随「消息类型」功能再回
+// 来——框架先行(2026-07-14)。裁决三端点已由上方 S7 就地裁决绑定。
 
 export interface DiscussionOpResult {
   op: Record<string, unknown>

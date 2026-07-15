@@ -1,7 +1,7 @@
 # 前端
 
 > 分篇之三（入口见 `overview.md`）。人的唯一检查面与裁决面——把关人不读代码，读画布。
-> 对着 `src/simulanka/server/` 与 `frontend/src/` 写成。标注 🔲 的是已定稿、未施工的规格（子任务 S6–S8；编号见 overview 施工清单）。
+> 对着 `src/simulanka/server/` 与 `frontend/src/` 写成。标注 🔲 的是已定稿、未施工的规格（仅余 S8；编号见 overview 施工清单）。
 
 ## 技术栈与启动
 
@@ -26,6 +26,9 @@
 | `POST /node/{id}/rename` | 改名（RenameNodeOp）；file/directory 拒改（name ↔ fs_path 是 FileRegistry 领地）；重名冲突 422 |
 | `DELETE /node/{id}` | 删**空**节点（kernel DeleteNodeOp：级联自身端口+关联边+父 contains——后者是建点双写的合法逆操作；有孩子 422 先清空）；画布策略=仅 module/model（file/directory 绑磁盘、研究原子血缘不可断）。Delete 键与右键「删除」同走此路——画布永不本地假删 |
 | `GET/POST /ui/templates` · `DELETE /ui/templates/{name}` | 自定义节点模板（`.simulanka/ui/templates.json`，按名 keyed、可覆写）；UI 态非图实体——图只记真正放置过的东西 |
+| `GET /node/{id}` | slim locator `{id,type,name,parent_id}`——「跳转并选中」原语的服务端半边：选中一个实体先得打开它父容器的视图（S6 血缘链逐跳 / S7 卡片点击共用） |
+| `GET /node/{id}/provenance` | S6 血缘链：固定边集回溯（claim/hypothesis ← supports/contradicts ← evidence ←(produces/parent)← run →fulfills→ task →parent→ experiment →plan_file→ 计划文件节点），每跳 `{id,type,name,trust,via_edge,via_edge_trust}`，节点与边分别定级；查询时算不落盘；visited 防环、按 id 排序 |
+| `POST /node/{id}/resolve` | S7 escalate 就地「已处理」：`status→resolved`、`actor=user`、可附 `resolve_note`（包 `plan.resolve_escalate`，与 CLI `note resolve` 同芯）；非 escalate note 422；重复 resolve 422——停止信号恰好解除一次 |
 | `POST /discussion/start|message` · `GET /discussion` | **会话=语言原语（2026-07-14 解耦）**：start 无分歧也可开（空批次=通用图助手开场）；有分歧则批次开场（一批一场保留）。均打 `discussion-start` 恢复 tag + 开 opencode session；每轮 ops 块过写权闸。消息可带锚定戳（锚定：…）。**空批次会话固定走仓库级无工具 agent `graph-chat`**（`.opencode/agent/graph-chat.md`；agent 选择存进会话状态随轮次沿用）——opencode 默认 build agent 带全套工具，会对着代码库跑几分钟（慢的真凶）；批次核对线保留默认 agent（引证需要读码）。实测默认模型 ~7-9s/轮。「整页卡死」的真凶另在前端：Svelte 5 下 `$:` 里调 `tick()`（=微任务+flushSync）会无限重入刷新循环，ChatNode 挂载即冻死主线程——已改 `afterUpdate`/`queueMicrotask`，**禁止在响应式语句里调 tick()**（无头浏览器复现+调试器中断实证 2026-07-14） |
 
 ## 渲染器（litegraph-adapter）
@@ -42,7 +45,7 @@
 
 - **NodeInspector**：属性侧栏，选中实体的全部 attrs。
 - **消息面（2026-07-12 用户定向、07-14 落地并框架化）**：设计原则=**不出现单一用途按钮，agent→人的一切都是消息**。**框架先行（用户 07-14 再定向）**：现阶段只建语言，不实现子功能——分歧/待裁卡片已从面上剥离（server 端点 `/edge/{id}/verdict|accept|discuss`、`/disagreements` 保留，前端绑定随「消息类型」功能回归）。落地两件：**底部常驻输入条 ChatDock**（只做输入；锚定 chip=选中集优先、否则当前容器，锚定戳随消息发给 agent）+ **会话节点 ChatNode**（画布浮动 node 观感消息面、可拖；纯消息流，错误也进流——状态栏低语被彩排证实读作卡死）。首条消息自动开 opencode 会话；消息本体在会话文件，不进图（图皮文件芯）。
-- **VerifyPanel / DiscussPanel——已删除（2026-07-14）**：顶栏「核对」按钮一并退役。S7 余项（选中边就地裁决、跳转选中）未做。
+- **VerifyPanel / DiscussPanel——已删除（2026-07-14）**：顶栏「核对」按钮一并退役。就地裁决/跳转选中已随 S7 余项落地（2026-07-15，见下）。
 
 ## 写权矩阵（执行点在此层）
 
@@ -74,7 +77,7 @@
 **S5 按轮下钻 + 卡片化信息密度 ✅**（实现：`cards.ts` 字段清单 + `litegraph-adapter.ts` 单一绘制骨架）：ingest 按计划建轮次目录（`research/<plan-stem>/`），下钻机制现成。呈现要求（2026-07-09 用户定为硬需求）：**日常所需信息大多数不点开侧栏就能从画布读到**。首版字段清单（可调项，彩排中按用户反馈迭代）：question=正文摘要、hypothesis=verdict 徽记+正文、claim=status 徽记+正文、experiment=status 徽记+goal、task=预算徽记+goal+契约摘要（globs 数·acceptance）、run=status/contract_check 双徽记+时长·exit code、evidence=关键 metrics 数值（至多 3 行）、escalate note=ESCALATE/RESOLVED 徽记+正文。徽记语义色：玉=好结果 / 琥珀=待定 / 绯红=坏结果 / 紫=进行中 / 灰=未判；未知状态词落灰不猜语义。
 卡片的实现边界（2026-07-10 定，已照办）：卡片＝统一渲染器里 **attr 驱动的展示模板**——同一套节点画法与卡片骨架（`cards.ts` 是唯一的字段清单来源，dagre 布局同源取高），每类原子只是字段清单不同；不做 per-type 分叉渲染，渲染器原则不破，信息密度靠模板。正文截断=CJK 感知字符预算（全角算 2），不逐节点 measureText。
 
-**S6 可信度染色 + 血缘链** 🔲（原切片⑥规格，可与皮肤轮同捆）：
+**S6 可信度染色 + 血缘链** ✅（2026-07-15 落地：`src/simulanka/trust.py` + view payload `trust` 字段 + `GET /node/{id}/provenance`；前端＝节点体 trust 描边（`litegraph-adapter` 与卡片共用 foreground 钩子，unreviewed 刻意最淡）+ NodeInspector 可信徽记与血缘链逐跳可点。**配套铭章**：系统造的血缘边（`fulfills`/`produces`，共 6 处创建点）自此盖 `source="machine"`——否则机器记录的执行事实在链里读作「未定」是不诚实的；旧图未盖章的边如实落灰。实测于 `tests/test_trust.py` + `tests/test_server_trust.py`）：
 
 两条硬原则：**查询时算、不落盘**；**展示血缘、不折叠**——不做 min/加权把上游可信度折成一个分数，图存在的意义就是让人看见「为什么可信」。
 
@@ -94,10 +97,12 @@
 - v1 不做：数值分数（伪精度）、跨实体折叠聚合、question 可信级（提问不是断言）、快检章的矩阵强制。
 - 边的染色归属（2026-07-10 定）：画布上边仍按既有 source/verdict 语义染色；trust 染色只作用于**节点体**；边的 trust 仅在血缘链视图逐跳展示——画布不叠两套边色。
 
-**S7 锚定核对（口径已修订）** 🔶 部分落地：
+**S7 锚定核对（口径已修订）** ✅（余项 2026-07-15 落地）：
 
 - **2026-07-12 用户修订口径**：「核对也是一种消息」——原「薄清单只导航、不承载写动作」被**消息卡片（带裁决动作）**取代，落进会话节点（见「面板」节，07-14 已落地）；VerifyPanel / DiscussPanel 已删除。
-- 余项 🔲：选中边→**就地裁决动作**锚定在选择处（边选中能力未做）；卡片点击＝跳转并选中（跨下钻层级可达）；escalate note 的就地「已处理」按钮（`status→resolved`，`actor=user`，可附 `resolve_note`；server 增 note 状态端点）——S3 brief 只列 open 的前提。
+- **边选中→就地裁决**：LiteGraph 原生「点链接中心点」路由到 `showLinkMenu`——覆写为自绘 `EdgeMenu.svelte`，锚定在点击处；ghost proposed＝接受 / 拒绝（要理由），其余＝正确 / 错误 / 存疑（note 必填走 prompt，取消＝放弃），外加拉入/移出讨论。仅 data_flow 出菜单（server 422 同一条线）。
+- **跳转并选中原语**（S6 血缘链逐跳共用）：`GET /node/{id}` locator 拿父容器 → `navigateTo` → load 末尾 `selectNodes`+`centerOnNode` 兑现选中——跨下钻层级可达；后续消息卡片回归时直接复用。
+- **escalate 就地「已处理」**：NodeInspector 在未解决 escalate note 上出按钮 → `POST /node/{id}/resolve`（可附说明）；卡片 RESOLVED 徽记与 S3 brief「只列 open」由此闭环。
 - 人肉彩排的「人终裁」步骤走本件。
 
 **S8 内嵌 agent 会话（插座子任务，静态末位）** 🔲（2026-07-09 grill 定）：前端起一个自由 agent 会话——agent 像在自己的 harness 里一样做任何事，界面是前端。技术路线＝**结构化事件流 + 原生会话面板**：用 harness 无头流式接口（opencode JSON / `claude -p --output-format stream-json`），渲染为对话气泡 + 工具调用卡片 + 流式输出；每 harness 一个薄展示适配器（只薄在展示层，调用与写权仍 harness 无关），先只接 opencode（免费模型现成）。写图仍只经 CLI/写权闸；会话干 task 时自己调 `run begin/end` 打卡（打卡即会话的图身份）。

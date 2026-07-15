@@ -145,6 +145,7 @@ def start_agent_run(
                     type="fulfills",
                     source=started.run_node_id,
                     target=task_node_id,
+                    attrs={"source": "machine"},
                 ),
             ],
             actor=actor,

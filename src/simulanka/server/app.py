@@ -37,6 +37,7 @@ from simulanka.kernel.intent import (
 from simulanka.kernel.manifest import load_manifest
 from simulanka.kernel.validator import ValidationError
 from simulanka.layout.project import ProjectLayout
+from simulanka.plan import PlanError, resolve_escalate
 from simulanka.schema.entities import Edge
 from simulanka.server.agent_ops import apply_agent_ops
 from simulanka.storage.checkpoint import ensure_repo, repo_exists, tag_checkpoint
@@ -47,6 +48,7 @@ from simulanka.storage.entity_store import (
     load_edge,
     load_node,
 )
+from simulanka.trust import node_trust, provenance_chain
 
 DEV_ORIGINS = (
     "http://localhost:5173",
@@ -371,6 +373,59 @@ def create_app(
             "deleted": receipt.deleted_nodes,
             "deleted_edges": receipt.deleted_edges,
             "graph_version": receipt.graph_version,
+        }
+
+    @app.get("/node/{node_id}")
+    def get_node_info(node_id: str) -> dict[str, Any]:
+        """Slim locator — the jump-and-select primitive's server half: to
+        select an entity the canvas must first open its parent's view."""
+        try:
+            node = load_node(layout, node_id)
+        except FileNotFoundError:
+            raise HTTPException(
+                status_code=404, detail=f"node {node_id!r} not found"
+            ) from None
+        return {
+            "id": node.id,
+            "type": node.type,
+            "name": node.name,
+            "parent_id": node.parent_id,
+        }
+
+    @app.get("/node/{node_id}/provenance")
+    def get_provenance(node_id: str) -> dict[str, Any]:
+        """S6 血缘链: fixed-edge-set backtrack from a research atom to its
+        plan file, node and edge trust levelled separately per hop. Computed
+        at query time, never persisted."""
+        try:
+            chain = provenance_chain(layout, node_id)
+        except KeyError:
+            raise HTTPException(
+                status_code=404, detail=f"node {node_id!r} not found"
+            ) from None
+        return {"chain": chain}
+
+    @app.post("/node/{node_id}/resolve")
+    def resolve_note_endpoint(
+        node_id: str,
+        body: dict[str, Any] = Body(default_factory=dict),
+    ) -> dict[str, Any]:
+        """S7: the in-place 「已处理」 act on an escalate note. Only this
+        explicit human act clears a stop signal (``status→resolved``,
+        ``actor=user``) — a later plan ingest never auto-mutes it. Body:
+        ``{resolve_note?}``. Non-escalate targets are the wrapped 422."""
+        raw = body.get("resolve_note")
+        if raw is not None and not isinstance(raw, str):
+            raise HTTPException(status_code=422, detail="resolve_note must be a string")
+        note = raw.strip() if isinstance(raw, str) and raw.strip() else None
+        try:
+            node = resolve_escalate(layout, node_id, resolve_note=note)
+        except PlanError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {
+            "node_id": node.id,
+            "status": node.attrs.get("status"),
+            "graph_version": load_manifest(layout).graph_version,
         }
 
     # --- §13.6 verify-discuss: human-side edge ops -------------------------
@@ -771,6 +826,9 @@ def _build_payload(layout: ProjectLayout, root: str | None) -> dict[str, Any]:
         if nid in nodes_by_id
     ]
 
+    # S6: trust is query-time-computed here and never persisted; research-
+    # domain nodes get their level, everything else null. The canvas colours
+    # node bodies only — edge colours keep their source/verdict semantics.
     nodes_payload = [
         {
             "id": n.id,
@@ -780,6 +838,7 @@ def _build_payload(layout: ProjectLayout, root: str | None) -> dict[str, Any]:
             "attrs": n.attrs,
             "ports": ports_of.get(n.id, []),
             "child_count": len(children_of.get(n.id, [])),
+            "trust": node_trust(n),
         }
         for nid, n in nodes_by_id.items()
         if nid in included
