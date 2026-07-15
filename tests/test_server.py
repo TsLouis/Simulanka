@@ -275,6 +275,69 @@ def test_get_graph_root_own_ports_ride_in_ports(tmp_path: Path) -> None:
     assert all(n["id"] != net_id for n in payload["nodes"])
 
 
+def test_tunnel_edge_projects_into_child_view_not_parent_boundary(
+    tmp_path: Path,
+) -> None:
+    """An importer tunnel edge (a container's own port diving into a
+    descendant, e.g. ``A.in -> B.in`` with B a child of A) is A's internal
+    detail: it must project as the bracket of A's own view, never as a
+    boundary edge of the view A sits in. Otherwise every parent view is
+    littered with its children's inner wiring."""
+    layout = _seed_project(tmp_path)
+    net_id = next(n.id for n in iter_nodes(layout) if n.name == "Net" and n.type == "model")
+    # A (child of Net) contains B; A.in tunnels one level into B.in.
+    apply_patch(
+        layout,
+        PatchIntent(
+            ops=[CreateNodeOp(type="module", name="A", parent=net_id, attrs={})],
+            actor="test",
+            base_graph_version=load_manifest(layout).graph_version,
+        ),
+    )
+    a_id = next(n.id for n in iter_nodes(layout) if n.name == "A")
+    apply_patch(
+        layout,
+        PatchIntent(
+            ops=[
+                CreateNodeOp(type="module", name="B", parent=a_id, attrs={}),
+                CreatePortOp(node=a_id, name="in", direction="in", port_type="tensor"),
+            ],
+            actor="test",
+            base_graph_version=load_manifest(layout).graph_version,
+        ),
+    )
+    b_id = next(n.id for n in iter_nodes(layout) if n.name == "B")
+    apply_patch(
+        layout,
+        PatchIntent(
+            ops=[CreatePortOp(node=b_id, name="in", direction="in", port_type="tensor")],
+            actor="test",
+            base_graph_version=load_manifest(layout).graph_version,
+        ),
+    )
+    a_in = find_port(layout, a_id, "in")
+    b_in = find_port(layout, b_id, "in")
+    assert a_in is not None and b_in is not None
+    apply_patch(
+        layout,
+        PatchIntent(
+            ops=[CreateEdgeOp(type="data_flow", source=a_in.id, target=b_in.id, attrs={})],
+            actor="test",
+            base_graph_version=load_manifest(layout).graph_version,
+        ),
+    )
+
+    client = TestClient(create_app(layout))
+    # Viewing Net: the A→B tunnel is A's inner wiring, not Net's boundary.
+    net_view = client.get("/graph", params={"root": net_id}).json()
+    assert net_view["boundary_edges"] == []
+    # Viewing A: the same edge is A's in-bracket feeding B, so it lands in
+    # boundary_edges with the root (A) as the outside endpoint.
+    a_view = client.get("/graph", params={"root": a_id}).json()
+    assert len(a_view["boundary_edges"]) == 1
+    assert a_view["boundary_edges"][0]["src"] == a_id
+
+
 def test_get_graph_top_level_has_no_boundary_edges(tmp_path: Path) -> None:
     """At top-level there is no outside, so boundary_edges must stay empty
     even if cross-cutting edges exist elsewhere."""

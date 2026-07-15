@@ -13,7 +13,7 @@
 
 | 端点 | 用途 |
 | --- | --- |
-| `GET /graph?root` | 单容器视图载荷：nodes=root 的**直接孩子**（含 `child_count`；root 本人永不入 nodes，其名片在 `root_info`）、edges、**boundary_edges**（恰一端在视图内，contains 除外——root 端口连向孩子的边落在此，即子图输入/输出括号）、external_nodes、ports、ancestors（面包屑）。无 depth 旋钮：视图永不混层（2026-07-12 定） |
+| `GET /graph?root` | 单容器视图载荷：nodes=root 的**直接孩子**（含 `child_count`；root 本人永不入 nodes，其名片在 `root_info`）、edges、**boundary_edges**（恰一端在视图内，contains 除外——root 端口连向孩子的边落在此，即子图输入/输出括号；**视图内节点连向自身后代的隧道边被滤除**——那是该孩子内部布线，投影在孩子自己的视图括号上，不该污染父视图）、external_nodes、ports、ancestors（面包屑）。无 depth 旋钮：视图永不混层（2026-07-12 定） |
 | `GET /events` | SSE：每 commit 一条 `{graph_version, actor, nodes/edges/ports}` 受影响集 |
 | `GET/POST /ui/positions` | 节点位置持久化（按视图分桶，`.simulanka/ui/positions.json`） |
 | `POST /edge` · `DELETE /edge/{id}` | 人画/删 data_flow 边（`source=user`，可带画线时 `shape_check`） |
@@ -34,7 +34,7 @@
 ## 渲染器（litegraph-adapter）
 
 - **统一 node-edge-port 渲染**：任何类型的节点同一套画法；**任意节点双击可进入**（叶子的内部=合法空视图，右键加节点即在其中生长——空容器由此可填充；child_count 是徽记不是闸门），面包屑由服务端 ancestors + root_info 重建（下钻/跳转/深链一致）。
-- **跨层边界端口投影**（§12.4）：恰一端在视图内的边投影到虚拟 boundary 节点——纯渲染，虚拟节点永不进图。**root 自身端口=子图声明的 IO，常驻投影为左右括号**（左=in 朝内、右=out；model/module 层空括号也显示=「尚无声明 IO」）；跨界边落在括号槽位或按 (external, direction) 聚合的 boundary 节点上。**括号可连线（2026-07-14）**：槽位携带 root 真端口 id，画线走 POST /edge，kernel **隧道规则**放行（父.in→子.in、子.out→父.out，恰一层；validator 与 doctor 同一规则）。
+- **跨层边界端口投影**（§12.4）：恰一端在视图内的边投影到虚拟 boundary 节点——纯渲染，虚拟节点永不进图。**root 自身端口=子图声明的 IO，常驻投影为左右括号**（左=in 朝内、右=out；model/module 层空括号也显示=「尚无声明 IO」）；跨界边落在括号槽位或按 (external, direction) 聚合的 boundary 节点上。**括号可连线（2026-07-14）**：槽位携带 root 真端口 id，画线走 POST /edge，kernel **隧道规则**放行（父.in→子.in、子.out→父.out，恰一层；validator 与 doctor 同一规则）。**importer 自动连括号（2026-07-15，彩排反馈#2）**：真图 data_flow 曾全是同层兄弟边、括号永远悬空、数据流读作断裂——现在 trace 补齐**垂直隧道边**（原始输入盖 root producer 印记→逐层 parent.in→child.in；每个 post-hook 在 producer 重印前记录 child.out→parent.out），下钻进任一容器，输入括号已连到第一个消费者、输出括号已连到产出节点。隧道边同样 `source=trace`，走 kernel 隧道规则落库。
 - **布局**：dagre 自动布局，人工拖动的位置持久化并覆盖 dagre 结果。
 - **边语义染色**（夜空主题 theme.ts）：user=金、agent=紫、ghost（proposed 未决）=灰蓝虚线、人拒=绯红；trace 边与「constructed 可信」同源同色（星蓝）。
 - 画线时即时 shape 校验（match/mismatch/unknown），人的确认意图随边记录。

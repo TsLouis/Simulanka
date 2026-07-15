@@ -16,6 +16,12 @@ the model:
   ``A.fqn -> B.fqn`` is then rolled up to the first diverging ancestor pair
   (so ``b1.lin -> b2.lin`` becomes ``b1 -> b2``, while ``b1.lin -> b1.act``
   stays at leaf granularity).
+* **Tunnel edges** (§12.4 subgraph IO) connect a container's own ports to the
+  flow inside it, one containment level per edge (``parent.in → child.in`` on
+  the way in, ``child.out → parent.out`` on the way out — the kernel's tunnel
+  rule). Raw model inputs are stamped with the root as producer, and every
+  post-hook records which descendant's tensor became the container's output,
+  so the drill-down view's brackets are wired instead of decorative.
 """
 
 from __future__ import annotations
@@ -132,14 +138,17 @@ def import_model(
     # yet — yielding both the leaf data-flow edges and the per-module observed
     # IO that the ports below are derived from.
     leaf_edges: set[tuple[str, str]]
+    exit_pairs: set[tuple[str, str]]
     observed_io: dict[str, _ObservedIO]
     if example_inputs is not None:
         try:
-            leaf_edges, observed_io = _run_forward_trace(model, example_inputs)
+            leaf_edges, exit_pairs, observed_io = _run_forward_trace(
+                model, example_inputs,
+            )
         except Exception as exc:  # noqa: BLE001 — surface forward-pass failures
             raise ImportError(f"forward-hook trace failed: {exc!r}") from exc
     else:
-        leaf_edges, observed_io = set(), {}
+        leaf_edges, exit_pairs, observed_io = set(), set(), {}
 
     # 2. Hierarchy via named_modules().
     named = list(model.named_modules())
@@ -217,29 +226,54 @@ def import_model(
             data_flow_edge_ids=[],
         )
 
-    # 6. Roll up leaf edges to diverging-ancestor pairs and dedupe.
+    # 6. Roll up leaf edges to diverging-ancestor pairs and dedupe. The same
+    # observations also yield the *vertical* tunnel segments (§12.4): a tensor
+    # consumed inside container C necessarily crossed C's boundary, so every
+    # level between the entry container and the consumer gets a
+    # parent.in→child.in edge; the exit pairs recorded at post-hook time give
+    # the child.out→parent.out side. Without these, the drill-down view's
+    # brackets are decorative and the data flow reads as broken.
     peer_edges: set[tuple[str, str]] = set()
+    tunnel_in: set[tuple[str, str]] = set()   # (parent_fqn, child_fqn)
+    tunnel_out: set[tuple[str, str]] = set()  # (child_fqn, parent_fqn)
     for src_fqn, tgt_fqn in leaf_edges:
-        if src_fqn not in fqn_to_id or tgt_fqn not in fqn_to_id:
+        if tgt_fqn not in fqn_to_id:
+            continue
+        if src_fqn == "":
+            # Raw model input: no sibling edge — only the entry tunnels from
+            # the root bracket down to the consumer.
+            tunnel_in.update(_chain_pairs("", tgt_fqn))
+            continue
+        if src_fqn not in fqn_to_id:
             continue
         pair = _diverging_ancestors(src_fqn, tgt_fqn)
-        if pair is not None:
-            peer_edges.add(pair)
+        if pair is None:
+            continue
+        peer_edges.add(pair)
+        tunnel_in.update(_chain_pairs(pair[1], tgt_fqn))
+    for producer_fqn, container_fqn in exit_pairs:
+        if producer_fqn not in fqn_to_id or container_fqn not in fqn_to_id:
+            continue
+        tunnel_out.update(
+            (child, parent)
+            for parent, child in _chain_pairs(container_fqn, producer_fqn)
+        )
 
     # 7. Commit data_flow edges, each marked source="trace" — machine-observed,
     # to be distinguished from the user-drawn / agent-verified edges of §13. One
     # patch per edge keeps the event log informative; volume is
     # O(#peer-relations), typically small.
     edge_ids: list[str] = []
-    for src, tgt in sorted(peer_edges):
+
+    def _commit_edge(source_sel: str, target_sel: str, note: str) -> None:
         receipt = apply_patch(
             layout,
             PatchIntent(
                 ops=[
                     CreateEdgeOp(
                         type="data_flow",
-                        source=_fqn_to_selector(root_path, src) + ".out",
-                        target=_fqn_to_selector(root_path, tgt) + ".in",
+                        source=source_sel,
+                        target=target_sel,
                         # Machine-observed edges are born verified (§13.2 trace
                         # verdict materialisation): queries need not special-case
                         # "trace ⇒ implicitly correct". No backfill of old graphs.
@@ -248,10 +282,29 @@ def import_model(
                 ],
                 actor=actor,
                 base_graph_version=layout.load_manifest().graph_version,
-                note=f"import_model: data_flow {src} -> {tgt}",
+                note=note,
             ),
         )
         edge_ids.extend(receipt.edges)
+
+    for src, tgt in sorted(peer_edges):
+        _commit_edge(
+            _fqn_to_selector(root_path, src) + ".out",
+            _fqn_to_selector(root_path, tgt) + ".in",
+            f"import_model: data_flow {src} -> {tgt}",
+        )
+    for parent_fqn, child_fqn in sorted(tunnel_in):
+        _commit_edge(
+            _fqn_to_selector(root_path, parent_fqn) + ".in",
+            _fqn_to_selector(root_path, child_fqn) + ".in",
+            f"import_model: tunnel-in {parent_fqn or name} -> {child_fqn}",
+        )
+    for child_fqn, parent_fqn in sorted(tunnel_out):
+        _commit_edge(
+            _fqn_to_selector(root_path, child_fqn) + ".out",
+            _fqn_to_selector(root_path, parent_fqn) + ".out",
+            f"import_model: tunnel-out {child_fqn} -> {parent_fqn or name}",
+        )
 
     return ImportResult(
         model_node_id=model_id,
@@ -314,6 +367,33 @@ def _fqn_to_selector(root_path: str, fqn: str) -> str:
     if fqn == "":
         return root_path
     return root_path + "/" + fqn.replace(".", "/")
+
+
+def _chain_pairs(ancestor_fqn: str, descendant_fqn: str) -> list[tuple[str, str]]:
+    """Consecutive ``(parent, child)`` fqn pairs walking one containment level
+    at a time from *ancestor* down to *descendant* — the kernel's tunnel rule
+    accepts exactly one level per edge. Empty when equal or not nested.
+
+    Examples:
+        ``""``, ``a.b``     → ``[("", "a"), ("a", "a.b")]``
+        ``b2``, ``b2.x.y``  → ``[("b2", "b2.x"), ("b2.x", "b2.x.y")]``
+        ``b2``, ``b2``      → ``[]``
+    """
+    if descendant_fqn == ancestor_fqn:
+        return []
+    if ancestor_fqn:
+        if not descendant_fqn.startswith(ancestor_fqn + "."):
+            return []
+        rel = descendant_fqn[len(ancestor_fqn) + 1:]
+    else:
+        rel = descendant_fqn
+    pairs: list[tuple[str, str]] = []
+    cur = ancestor_fqn
+    for part in rel.split("."):
+        nxt = f"{cur}.{part}" if cur else part
+        pairs.append((cur, nxt))
+        cur = nxt
+    return pairs
 
 
 def _diverging_ancestors(a_fqn: str, b_fqn: str) -> tuple[str, str] | None:
@@ -514,13 +594,18 @@ def _has_tensor(obj: Any) -> bool:
 
 def _run_forward_trace(
     model: Any, example_inputs: tuple[Any, ...],
-) -> tuple[set[tuple[str, str]], dict[str, _ObservedIO]]:
+) -> tuple[set[tuple[str, str]], set[tuple[str, str]], dict[str, _ObservedIO]]:
     """Run *model* once under forward hooks + ``TorchDispatchMode``.
 
-    Returns ``(edges, io)`` where *edges* are leaf ``(src_fqn, tgt_fqn)``
-    data-flow relations and *io* maps each fqn ("" for root) to the input/output
-    slots **first** observed for that module (a module called more than once
-    keeps its first call's arity/shapes).
+    Returns ``(edges, exits, io)``. *edges* are leaf ``(src_fqn, tgt_fqn)``
+    data-flow relations; raw model inputs carry the root ``""`` as producer,
+    so ``("", tgt)`` entries mark where input tensors enter the hierarchy.
+    *exits* are ``(descendant_fqn, container_fqn)`` pairs — recorded at each
+    post-hook *before* the producer re-stamp erases which internal module's
+    tensor became the container's output (the out-side tunnel information).
+    *io* maps each fqn ("" for root) to the input/output slots **first**
+    observed for that module (a module called more than once keeps its first
+    call's arity/shapes).
 
     The producer map is keyed by ``id(tensor)``. CPython recycles memory
     addresses immediately after GC, so intermediate aten outputs that go out
@@ -536,6 +621,7 @@ def _run_forward_trace(
 
     producer: dict[int, set[str]] = {}
     edges: set[tuple[str, str]] = set()
+    exits: set[tuple[str, str]] = set()
     io_inputs: dict[str, list[_PortSpec]] = {}
     io_outputs: dict[str, list[_PortSpec]] = {}
 
@@ -554,7 +640,9 @@ def _run_forward_trace(
         if not srcs:
             return
         for src in srcs:
-            if src and src != fqn:
+            # src == "" is the root marker on raw inputs — a legitimate edge
+            # source (it becomes the entry tunnel), not a missing producer.
+            if src != fqn:
                 edges.add((src, fqn))
 
     def make_pre_hook(fqn: str) -> Callable[..., None]:
@@ -571,7 +659,15 @@ def _run_forward_trace(
         def post_hook(module: Any, args: Any, output: Any) -> None:
             if fqn not in io_outputs:
                 io_outputs[fqn] = _output_specs(output)
+            prefix = fqn + "."
             for t in _iter_tensors(output):
+                # Which strict descendant's tensor is leaving through this
+                # boundary — read before the re-stamp below erases it.
+                srcs = producer.get(id(t))
+                if srcs:
+                    for s in srcs:
+                        if s.startswith(prefix):
+                            exits.add((s, fqn))
                 _stamp(t, {fqn})
         return post_hook
 
@@ -612,15 +708,30 @@ def _run_forward_trace(
             )
             handles.append(mod.register_forward_hook(make_post_hook(fqn)))
 
+        # Raw inputs carry the root as producer: their first consumer then
+        # records ("", consumer) — the observation the entry tunnels are
+        # derived from. The rollup never turns "" into a sibling edge (it is
+        # everyone's ancestor).
+        for t in _iter_tensors(example_inputs):
+            _stamp(t, {""})
+
         with torch.no_grad(), _LineageMode():
             output = model(*example_inputs)
     finally:
         for h in handles:
             h.remove()
 
-    # Hooks fire only on submodules; capture the root's IO from the call itself.
+    # Hooks fire only on submodules; capture the root's IO from the call
+    # itself — including which submodule's tensor is the model's output (the
+    # root has no post-hook to record that exit).
     io_inputs[""] = _input_specs(model, example_inputs, {})
     io_outputs[""] = _output_specs(output)
+    for t in _iter_tensors(output):
+        srcs = producer.get(id(t))
+        if srcs:
+            for s in srcs:
+                if s:
+                    exits.add((s, ""))
 
     io = {
         fqn: _ObservedIO(
@@ -629,7 +740,7 @@ def _run_forward_trace(
         )
         for fqn in set(io_inputs) | set(io_outputs)
     }
-    return edges, io
+    return edges, exits, io
 
 
 def _iter_tensors(obj: Any) -> Iterator[torch.Tensor]:

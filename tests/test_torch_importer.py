@@ -170,6 +170,54 @@ def test_diverging_ancestors_unit() -> None:
     assert _diverging_ancestors("a.b.c", "a.d") == ("a.b", "a.d")
 
 
+def test_chain_pairs_unit() -> None:
+    from simulanka.importer.torch_export import _chain_pairs
+
+    assert _chain_pairs("", "a.b") == [("", "a"), ("a", "a.b")]
+    assert _chain_pairs("b2", "b2.x.y") == [("b2", "b2.x"), ("b2.x", "b2.x.y")]
+    assert _chain_pairs("b2", "b2") == []
+    assert _chain_pairs("b1", "b2.x") == []  # not nested
+
+
+def test_tunnel_edges_wire_brackets(tmp_path: Path) -> None:
+    """§12.4: the trace wires containers' own ports to the internal flow —
+    entry tunnels (parent.in→child.in) where a tensor crosses into a
+    container, exit tunnels (child.out→parent.out) where one leaves. Without
+    these the drill-down brackets are decorative and data flow reads broken
+    (彩排反馈 2026-07-15)."""
+    layout = init_project(tmp_path, with_scaffold=False).layout
+    _make_directory(layout, "models")
+    result = import_model(layout, _build_tiny_mlp, name="TinyMLP", parent="/models")
+
+    ids = result.module_node_ids
+    ports_by_id = {p.id: p for p in iter_ports(layout)}
+    tunnels = set()
+    for e in iter_edges(layout):
+        if e.type != "data_flow" or e.source_port_id is None or e.target_port_id is None:
+            continue
+        src_dir = ports_by_id[e.source_port_id].direction
+        dst_dir = ports_by_id[e.target_port_id].direction
+        if src_dir == dst_dir:  # in→in or out→out = tunnel
+            tunnels.add((e.source_id, e.target_id, src_dir))
+
+    expected = {
+        # input side: x enters the model, then b1, then b1.lin; b2's input
+        # arrives via the sibling edge and tunnels down to b2.lin.
+        (ids[""], ids["b1"], "in"),
+        (ids["b1"], ids["b1.lin"], "in"),
+        (ids["b2"], ids["b2.lin"], "in"),
+        # output side: act's tensor is each block's output; head's is the model's.
+        (ids["b1.act"], ids["b1"], "out"),
+        (ids["b2.act"], ids["b2"], "out"),
+        (ids["head"], ids[""], "out"),
+    }
+    assert tunnels == expected, f"got={tunnels}"
+
+    # Tunnel edges carry the same trace stamps and survive the doctor's rules.
+    report = run_doctor(layout)
+    assert report.ok, [i.model_dump() for i in report.issues]
+
+
 def _build_residual_net() -> tuple[Any, tuple[Any, ...]]:
     """Toy transformer-shaped net with a functional ``+`` residual."""
     import torch.nn as nn

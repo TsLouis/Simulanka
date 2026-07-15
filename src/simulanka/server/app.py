@@ -777,6 +777,14 @@ def _build_payload(layout: ProjectLayout, root: str | None) -> dict[str, Any]:
 
     included = set(children_of.get(root, []))
 
+    def _is_descendant(node_id: str, ancestor_id: str) -> bool:
+        cur = nodes_by_id.get(node_id)
+        while cur is not None and cur.parent_id is not None:
+            if cur.parent_id == ancestor_id:
+                return True
+            cur = nodes_by_id.get(cur.parent_id)
+        return False
+
     edges_payload: list[dict[str, Any]] = []
     boundary_payload: list[dict[str, Any]] = []
     external_ids: set[str] = set()
@@ -787,8 +795,16 @@ def _build_payload(layout: ProjectLayout, root: str | None) -> dict[str, Any]:
         if src_in and dst_in:
             edges_payload.append(edge_payload(e))
         elif (src_in or dst_in) and root is not None and e.type != "contains":
+            inside = e.source_id if src_in else e.target_id
+            outside = e.target_id if src_in else e.source_id
+            # An edge diving from an in-view node into its own descendant
+            # (importer tunnel edges) is internal detail of that node — its
+            # projection is the child view's bracket, not this view's
+            # boundary. Same reasoning as not drawing `contains`.
+            if _is_descendant(outside, inside):
+                continue
             boundary_payload.append(edge_payload(e))
-            external_ids.add(e.target_id if src_in else e.source_id)
+            external_ids.add(outside)
             outside_port = e.target_port_id if src_in else e.source_port_id
             if outside_port is not None:
                 external_port_ids.add(outside_port)
