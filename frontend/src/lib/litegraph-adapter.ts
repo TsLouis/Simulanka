@@ -72,9 +72,19 @@ export interface AdapterCallbacks {
   onDeleteEdge?: (edgeId: string) => void
 }
 
+// A semantic edge with no ports (fulfills / produces / addresses / tests…).
+// LiteGraph links need slots, so these are painted as a background layer by
+// the App (wireLineageLayer) instead of connectViaPorts.
+export interface LineageEdge {
+  src: LGraphNode
+  dst: LGraphNode
+  type: string
+}
+
 export interface AdapterResult {
   graph: LGraph
   byNode: Map<string, LGraphNode>
+  lineage: LineageEdge[]
 }
 
 function ensureRegistered(typeName: string, prefix: string = TYPE_PREFIX): string {
@@ -212,13 +222,22 @@ export function buildLiteGraph(
     byNode.set(n.id, lgnode)
   })
 
-  // Internal edges: both endpoints inside. Only data-flow-shaped edges (those
-  // with ports on both sides) render as visible connections; structural edges
-  // like `contains` are implicit in the subgraph nesting and intentionally
-  // not drawn (see §12.3).
+  // Internal edges: both endpoints inside. Data-flow-shaped edges (those with
+  // ports on both sides) render as LiteGraph connections; `contains` stays
+  // implicit in the subgraph nesting (§12.3). Portless semantic edges
+  // (fulfills / produces / …) used to be dropped with `contains` — rehearsal
+  // 2026-07-17 showed that hides the run→task lineage entirely, so they are
+  // collected for the App's painted lineage layer instead.
+  const lineage: LineageEdge[] = []
   for (const e of payload.edges) {
     const link = connectViaPorts(e, byNode, inSlot, outSlot)
-    if (link) decorateLink(link, e)
+    if (link) {
+      decorateLink(link, e)
+    } else if (e.type !== 'contains') {
+      const src = byNode.get(e.src)
+      const dst = byNode.get(e.dst)
+      if (src && dst) lineage.push({ src, dst, type: e.type })
+    }
   }
 
   // Boundary rendering (§12.4): the root's own ports project as the view's
@@ -230,7 +249,7 @@ export function buildLiteGraph(
   }
 
   building = false
-  return { graph, byNode }
+  return { graph, byNode, lineage }
 }
 
 // --- S5 card rendering -------------------------------------------------------

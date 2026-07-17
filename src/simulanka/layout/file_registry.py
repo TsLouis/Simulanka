@@ -192,11 +192,16 @@ def _derive_relative_path(spec: FileKindSpec, name: str) -> str:
 def _find_managed_dir_node(layout: ProjectLayout, spec: FileKindSpec) -> Node:
     # Primary match is `fs_path` — kinds may share a directory (plan/brief both
     # live under `research/`), so `managed_kind` can no longer be the key. The
-    # attr fallback keeps graphs from before `fs_path` existed resolving.
+    # attr fallback keeps graphs from before `fs_path` existed resolving. The
+    # name fallback adopts root dirs minted by other writers (plan ingest
+    # created `research/` without either attr) — two root dirs can't share a
+    # name on disk, so a name match at root *is* the managed dir; without it
+    # we mint a duplicate sibling (2026-07-17 rehearsal bug).
     for n in iter_nodes(layout):
         if n.type == "directory" and n.parent_id is None and (
             n.attrs.get("fs_path") == spec.dir_name
             or n.attrs.get("managed_kind") == spec.name
+            or ("/" not in spec.dir_name and n.name == spec.dir_name)
         ):
             return n
 

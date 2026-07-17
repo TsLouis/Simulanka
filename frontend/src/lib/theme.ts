@@ -12,6 +12,9 @@ export const EDGE_COLORS: Record<string, string> = {
   user: '#e3b566', // 金线 —— 人的手笔
   agent: '#b28ce0', // 紫晶 —— agent 主张
 }
+/** 血缘丝线（fulfills/produces 等无端口语义边）：比星蓝暗一档的底层丝线，
+ *  画在节点层之下——是系统的账，不与数据流的三色抢戏。 */
+export const LINEAGE_COLOR = '#44557d'
 /** 未核 ghost：低语一样的灰蓝虚线。 */
 export const GHOST_COLOR = '#77839c'
 /** 被人拒绝的 ghost：绯红，读作「有争议」（= app.css --crimson）。 */

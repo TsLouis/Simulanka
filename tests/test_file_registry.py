@@ -7,7 +7,9 @@ import pytest
 from typer.testing import CliRunner
 
 from simulanka.cli.app import app
+from simulanka.kernel.apply import apply_patch
 from simulanka.kernel.doctor import run_doctor
+from simulanka.kernel.intent import CreateNodeOp, PatchIntent
 from simulanka.layout.file_registry import (
     REFERENCE_HASH_SENTINEL,
     FileRegistryError,
@@ -260,3 +262,43 @@ def test_new_kind_on_old_project_creates_dir_lazily(tmp_path: Path) -> None:
     assert (old.root / "research" / "plan-r1.md").is_file()
     report = run_doctor(old)
     assert report.ok, [i.model_dump() for i in report.issues]
+
+
+def test_register_adopts_root_dir_minted_outside_registry(tmp_path: Path) -> None:
+    """Plan ingest minted `research/` via raw PatchIntent (no fs_path attr)
+    before the registry ever saw the kind — register must adopt that node,
+    not mint a duplicate sibling (2026-07-17 rehearsal bug)."""
+    import simulanka.registry.file_kinds as fk
+    saved = dict(fk.FILE_KINDS)
+    for k in ("plan", "brief"):
+        del fk.FILE_KINDS[k]
+    try:
+        layout = init_project(tmp_path).layout
+    finally:
+        fk.FILE_KINDS.clear()
+        fk.FILE_KINDS.update(saved)
+
+    apply_patch(
+        layout,
+        PatchIntent(
+            ops=[
+                CreateNodeOp(
+                    type="directory", name="research", parent=None, attrs={},
+                )
+            ],
+            actor="test:plan-ingest",
+            base_graph_version=layout.load_manifest().graph_version,
+        ),
+    )
+    (layout.root / "research").mkdir()
+    (layout.root / "research" / "plan-x.md").write_text("# p\n", encoding="utf-8")
+
+    result = register_file(layout, "plan", Path("research/plan-x.md"))
+
+    research_dirs = [
+        n for n in iter_nodes(layout)
+        if n.type == "directory" and n.parent_id is None and n.name == "research"
+    ]
+    assert len(research_dirs) == 1, "registry minted a duplicate research dir"
+    file_node = next(n for n in iter_nodes(layout) if n.id == result.node_id)
+    assert file_node.parent_id == research_dirs[0].id

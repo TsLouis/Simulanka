@@ -30,9 +30,9 @@
     type Positions,
   } from './lib/api'
   import { subscribeEvents, type EventSubscription } from './lib/events'
-  import { buildLiteGraph } from './lib/litegraph-adapter'
+  import { buildLiteGraph, type LineageEdge } from './lib/litegraph-adapter'
   import { buildGroups, type NodeTemplate } from './lib/templates'
-  import { applyNightSky } from './lib/theme'
+  import { applyNightSky, LINEAGE_COLOR } from './lib/theme'
   import ChatDock from './lib/ChatDock.svelte'
   import ChatNode, { type ChatMsg } from './lib/ChatNode.svelte'
   import ContextMenu from './lib/ContextMenu.svelte'
@@ -64,6 +64,7 @@
   // 跳转并选中原语（S6 血缘链逐跳 / S7 卡片点击共用）：先问 locator 拿父容器，
   // 视图到位后在 load() 末尾兑现选中——跨下钻层级可达。
   let byNodeMap: Map<string, LGraphNode> = new Map()
+  let lineageEdges: LineageEdge[] = []
   let pendingSelectId: string | null = null
 
   // S7 就地裁决：当前视图的边 DTO 与端点名字表；edgeMenu 非空 = 菜单开着。
@@ -110,7 +111,7 @@
     status = 'loading…'
     try {
       const payload = await fetchGraph(currentRootId)
-      const { graph, byNode } = buildLiteGraph(payload, {
+      const { graph, byNode, lineage } = buildLiteGraph(payload, {
         onDrillDown: (id) => navigateTo(id),
         onJumpExternal: (id) => navigateTo(id),
         onCreateEdge: async (srcPort, dstPort, shapeCheck) => {
@@ -147,9 +148,11 @@
         wireGhostLinks(lgcanvas)
         wireContextMenu(lgcanvas)
         wireLinkMenu(lgcanvas)
+        wireLineageLayer(lgcanvas)
       }
       graph.start()
       byNodeMap = byNode
+      lineageEdges = lineage
       edgesById = new Map(
         [...payload.edges, ...payload.boundary_edges].map(e => [e.id, e]),
       )
@@ -575,6 +578,48 @@
   let pendingByRoot = new Map<string, Record<string, [number, number]>>()
   let flushTimer: ReturnType<typeof setTimeout> | null = null
 
+  // 血缘丝线层：无端口的语义边（fulfills/produces/…）画在节点层之下——
+  // LiteGraph 的连线要插槽，这些边没有，adapter 收集后由这里手绘。
+  // 每帧从节点实时位置取端点，拖动节点丝线自然跟随。
+  function wireLineageLayer(canvas: LGraphCanvas) {
+    ;(canvas as unknown as {
+      onDrawBackground: (ctx: CanvasRenderingContext2D) => void
+    }).onDrawBackground = (ctx: CanvasRenderingContext2D) => {
+      if (lineageEdges.length === 0) return
+      ctx.save()
+      ctx.setLineDash([7, 5])
+      ctx.lineWidth = 1.5
+      ctx.strokeStyle = LINEAGE_COLOR
+      ctx.fillStyle = LINEAGE_COLOR
+      ctx.font = '11px "Noto Sans SC", sans-serif'
+      ctx.textAlign = 'center'
+      for (const le of lineageEdges) {
+        const sx = le.src.pos[0] + le.src.size[0] / 2
+        const sy = le.src.pos[1] + le.src.size[1] / 2
+        const dx = le.dst.pos[0] + le.dst.size[0] / 2
+        const dy = le.dst.pos[1] + le.dst.size[1] / 2
+        ctx.beginPath()
+        ctx.moveTo(sx, sy)
+        ctx.lineTo(dx, dy)
+        ctx.stroke()
+        // 箭头指向 dst：run --fulfills--> task 的方向要读得出来。
+        const ang = Math.atan2(dy - sy, dx - sx)
+        const ax = (sx + dx) / 2
+        const ay = (sy + dy) / 2
+        ctx.setLineDash([])
+        ctx.beginPath()
+        ctx.moveTo(ax, ay)
+        ctx.lineTo(ax - 9 * Math.cos(ang - 0.42), ay - 9 * Math.sin(ang - 0.42))
+        ctx.lineTo(ax - 9 * Math.cos(ang + 0.42), ay - 9 * Math.sin(ang + 0.42))
+        ctx.closePath()
+        ctx.fill()
+        ctx.fillText(le.type, ax, ay - 8)
+        ctx.setLineDash([7, 5])
+      }
+      ctx.restore()
+    }
+  }
+
   function wireNodeMoved(canvas: LGraphCanvas) {
     // Canvas-level onNodeMoved is the sole capture channel for drags. In
     // litegraph 0.7.18 processMouseUp, a node-drag-release runs the
@@ -724,7 +769,7 @@
           currentRootId === null ||
           msg.nodes.some(id => currentNodeIds.has(id))
         if (touchesView) {
-          void load()
+          scheduleReload()
         }
       },
       onError: () => {
@@ -737,6 +782,19 @@
     window.addEventListener('keydown', onNavKey)
     document.addEventListener('visibilitychange', flushIfHidden)
   })
+
+  // A CLI burst (run bracket close: run + files + evidence + edges) emits one
+  // commit per apply_patch; reloading per commit stacks fetch+rebuild work and
+  // froze the canvas in rehearsal. Trailing debounce collapses a burst into
+  // one reload of the final state.
+  let reloadTimer: number | null = null
+  function scheduleReload() {
+    if (reloadTimer !== null) window.clearTimeout(reloadTimer)
+    reloadTimer = window.setTimeout(() => {
+      reloadTimer = null
+      void load()
+    }, 250)
+  }
 
   function flushIfHidden() {
     // pagehide is unreliable across browsers; visibilitychange→hidden is the
