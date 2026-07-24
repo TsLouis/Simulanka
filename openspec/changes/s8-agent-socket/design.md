@@ -23,7 +23,7 @@
 3. **转录自持**：`.simulanka/agent/sessions/<session_id>.jsonl` 每场一文件、事件边流边追加（server 写，含 anchor/applied 字段沿 07-16 规格）；`GET /session/{id}/history` 挂载恢复。讨论/图聊会话同机制迁入（`discussion.json` 指针保留为索引）。
 4. **停止**：`POST /session/{id}/stop` → 杀当轮进程组 → 追加 `status: interrupted`。run 括号**留人收口**：ChatNode 检出会话内 `run begin` 未配对时提示「run r-xx 还开着」，人选 `run end` 或放着（doctor stale 兜底）。排队＝纯前端（输入不锁、轮末自动发）。
 5. **actor 贯通**：server 起会话子进程注入 `SIMULANKA_ACTOR=agent`；CLI actor 解析序＝显式 `--actor` > env > 缺省 user。operator 贯通同机制（人侧机械命令加 `--actor operator`）。
-6. **run agent 骑括号**（Codex 线施工）：wrapper 改 `begin → invoke CLI → end` 薄编排，测量全走 `workspace.py` 同源；detached 同构（wrapper script 内 begin/end）；acceptance 时机沿既定（end/finalize）。wrapper 私有快照与 `changes.json` 退役（BREAKING 内部）。
+6. **run agent 骑括号**：wrapper 改 `begin → invoke CLI → end` 薄编排，测量全走 `workspace.py` 同源；detached 同构（wrapper script 内 begin/end）；acceptance 时机沿既定（end/finalize）。wrapper 私有快照与 `changes.json` 退役（BREAKING 内部）。
 7. **壳统一**：干活/图聊/核对讨论都是 ChatNode；工具调用卡片默认折叠、点开看详情；放大态＝同组件 CSS 展示态（非第二套壳）；锚定会话＝挂批次锚的同壳会话（一批一场/写权闸/checkpoint 全保留）。
 8. **派工入口**：task 节点右键「派工」→ ChatNode 预填锚定戳（server 渲染 task 卡片级上下文，07-16 锚定戳规格的最小先行件：v1 只做 task 卡）；ChatDock 也可自由起干活会话。不立新按钮。
 

@@ -4,6 +4,17 @@ Semi-automated scientific research system built around a content-addressed **Res
 
 **Status**: Research Graph Kernel **Alpha** complete; current phase is **static-first** (see `docs/overview.md` — 静态验收清单). Working tree on `main` is the source of truth; **`docs/overview.md` + `kernel.md` / `assembly.md` / `frontend.md` are the authoritative docs** (current conclusions only). `docs/archive/design.md` is the frozen decision archive — consult it for "why", never update it.
 
+## Collaboration entrypoint
+
+Read `AGENTS.md` before taking repository work. It is the single current source
+for Claude/Codex worktrees, OpenSpec lifecycle, on-demand grill usage,
+single-writer rules, GitNexus gates, and model-tiered subagent routing.
+
+Project-specific Claude subagents are defined in `.claude/agents/`. Use the
+Haiku scout for bounded read-only discovery, Sonnet agents for routine
+implementation/verification/review, and the Opus guardian only for contract or
+high-risk architecture work. These roles do not own directories.
+
 ## Repository layout
 
 ```
@@ -42,10 +53,12 @@ All three must stay green. Torch is an optional extra (`pip install -e '.[torch]
 
 ## What to read first when picking up a new task
 
-1. `docs/overview.md` — what/parts/acceptance; then the relevant 分篇 (`kernel.md` / `assembly.md` / `frontend.md`)
-2. `.claude/projects/-home-ts-Simulanka/memory/MEMORY.md` (when memory is in context) — user preferences, design decisions, what NOT to do
-3. The relevant `tests/test_*.py` — they encode the contract better than prose
-4. `docs/archive/design.md` only when you need the "why" behind a decision (frozen; includes the dead-end list)
+1. `AGENTS.md` — collaboration, OpenSpec lifecycle, worktree and agent rules
+2. The selected OpenSpec change and task
+3. `docs/overview.md` — what/parts/acceptance; then the relevant 分篇 (`kernel.md` / `assembly.md` / `frontend.md`)
+4. `.claude/projects/-home-ts-Simulanka/memory/MEMORY.md` (when memory is in context) — user preferences, design decisions, what NOT to do
+5. The relevant `tests/test_*.py` — they encode the contract better than prose
+6. `docs/archive/design.md` only when you need the "why" behind a decision (frozen; includes the dead-end list)
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence

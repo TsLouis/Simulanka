@@ -26,6 +26,6 @@
 
 ## Impact
 
-- **后端**：`server/`（会话端点＋SSE/流式转发）、`agent/harness.py`（复用续聊）、`agent/wrapper.py`（骑括号改造，Codex 线施工）、`runner/bracket.py`（不动或微调）、`cli/`（actor env 缺省）。
+- **后端**：`server/`（会话端点＋SSE/流式转发）、`agent/harness.py`（复用续聊）、`agent/wrapper.py`（骑括号改造）、`runner/bracket.py`（不动或微调）、`cli/`（actor env 缺省）。
 - **前端**：`ChatNode`/`ChatDock`（工具卡片、放大态、派工入口、排队/停止）、右键菜单。
 - **不动**：kernel 写权矩阵、契约检查、转录之外的图状态机制。验收跑免费模型（deepseek-v4-flash-free），零 API 花销。

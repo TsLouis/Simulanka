@@ -11,16 +11,106 @@
   Codex commits on `codex/*`; Claude merges after cross-review.
 - Python: `/home/ts/Simulanka/.venv/bin/python` (absolute path; venv is not
   duplicated into worktrees).
-- **Ownership (2026-06-12 final)**: Claude = `frontend/` + `server/` + `cli/`
-  + `kernel/` + `storage/` + `schema/` (design-dense, changes via design round
-  + Codex review). Codex = agent engineering line: `agent/`, `propose.py`,
-  prompts/navigation strategy, 命门 C. Vertical feature lines, not horizontal
-  layers — that split was tried and abandoned 2026-06-11.
+- **Ownership is task-scoped, not directory-scoped.** Claude and Codex may work
+  anywhere in the repository. One GitHub Issue maps to one OpenSpec change or
+  explicitly named task; its implementer owns that vertical slice in their own
+  worktree/branch, and the other side cross-reviews it.
+- **One writer per task.** Parallel agents may investigate or verify, but only
+  the assigned implementer edits the task's files. The lead agent owns commits,
+  pushes, Issue updates, and OpenSpec task checkboxes unless it explicitly
+  delegates one of those actions.
 - Frozen contracts: §13.6 attrs/write-matrix + server edge endpoints; schema/
-  kernel changes go through a design round first. Authoritative docs are now
-  `docs/overview.md` + `kernel.md` / `assembly.md` / `frontend.md` (single
-  writer: Claude); `docs/archive/design.md` is the frozen decision archive
-  (section numbers like §13.6/§14.7 still refer to it).
+  kernel changes require OpenSpec exploration, explicit design/spec coverage,
+  and cross-review before implementation. Authoritative product docs are
+  `docs/overview.md` + `kernel.md` / `assembly.md` / `frontend.md`;
+  `docs/archive/design.md` is the frozen decision archive. Historical ownership
+  labels in the archive are not current assignments.
+
+## Development Lifecycle
+
+1. **Explore requirements** with OpenSpec Explore. This stage is read-only:
+   investigate the real code, clarify goals/non-goals and surface risks.
+2. **Propose the change** with OpenSpec proposal, design, delta specs and tasks.
+   Non-trivial implementation starts only after the change is apply-ready.
+3. **Apply approved tasks** in a personal worktree/branch. Keep each edit inside
+   the selected task and update artifacts first if scope or requirements change.
+4. **Review and verify** against specs, targeted tests, GitNexus impact, and the
+   repository quality gates. Sync/archive only after acceptance.
+
+**Grill is not an initial phase or a universal gate.** Use a short grill only
+when development exposes a concrete conflict in accepted requirements, a
+frozen-contract or architecture boundary problem, materially different
+evidence-backed approaches, or repeated failure that the current design cannot
+explain. If the result changes scope, requirements, design, or tasks, update the
+corresponding OpenSpec artifact before resuming implementation. A routine test
+failure, missing file location, or ordinary implementation choice is not a
+grill.
+
+OpenSpec is the implementation and acceptance source of truth. GitHub Issues
+record claims, branches, progress, commits, and review; they do not replace or
+add requirements. Do not create a parallel assignment ledger.
+
+## Subagent Routing
+
+Subagents are task templates, not permanent module owners. Spawn them with a
+minimal context rather than the full conversation. Multiple read-only agents
+may run in parallel; never run two writers against the same worktree/task.
+
+### Codex models
+
+- `gpt-5.6-terra` (default for children): bounded repository inspection,
+  test/log triage, routine implementation of one approved task, and ordinary
+  diff review. Use low/medium reasoning for search and test collection,
+  medium/high for implementation and review.
+- `gpt-5.6-sol`: OpenSpec requirements/contract synthesis, cross-module or
+  frozen-contract decisions, and high-risk review. Do not use it for routine
+  searches or mechanical test execution.
+- Spawn scoped children with `fork_turns: "none"` and put all required context
+  in the task capsule.
+
+Escalate from Terra to Sol when any of these is true:
+
+- GitNexus reports HIGH or CRITICAL risk;
+- the task changes a frozen contract or spans three or more architecture areas;
+- it involves transactionality, concurrency, recovery, migration, deletion, or
+  another difficult-to-reverse state transition;
+- accepted OpenSpec artifacts conflict;
+- two materially different implementation/diagnosis attempts fail with
+  evidence; or
+- builder and reviewer reach incompatible correctness conclusions.
+
+### Claude models
+
+Project definitions live in `.claude/agents/`:
+
+- Haiku: read-only context scouting;
+- Sonnet: bounded implementation, verification, and normal review;
+- Opus: contract guardian and high-risk architecture decisions.
+
+Claude sessions must use these project agents instead of assigning every child
+the strongest model. Restart Claude Code after agent files change so it reloads
+the definitions.
+
+### Task capsule and return contract
+
+Every delegated task must state:
+
+- OpenSpec change/task and git baseline;
+- one goal plus explicit non-goals;
+- worktree and allowed paths;
+- relevant contract/spec references and GitNexus impact already known;
+- exact validation commands and expected deliverable;
+- whether edits are allowed.
+
+Every child returns only:
+
+1. scope handled;
+2. evidence with file/symbol references;
+3. decision, implementation summary, or test result;
+4. unresolved risks and escalation recommendation.
+
+Children do not commit, push, contact GitHub, broaden OpenSpec scope, or mark
+tasks complete unless their task explicitly authorizes it.
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence

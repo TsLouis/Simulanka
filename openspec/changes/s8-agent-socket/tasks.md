@@ -25,10 +25,10 @@
 - [ ] 3.6 叫停收口提示：检出未配对 `run begin` → 「run 还开着」提示（不自动收）
 - [ ] 3.7 锚定会话迁壳：讨论/核对会话挂批次锚走同一 ChatNode（一批一场/写权闸/checkpoint 不变）
 
-## 4. run agent 骑括号（Codex 线）
+## 4. run agent 骑括号
 
-- [ ] 4.1 规格出单：issue 通报 Codex（wrapper 改薄编排、changes.json 退役、detached 同构、判定序不变）
-- [ ] 4.2 wrapper 改造合入（Codex 施工、交叉审）：同步/detached 双路走 begin→invoke→end
+- [ ] 4.1 规格出单：Issue 关联本 OpenSpec task（wrapper 改薄编排、changes.json 退役、detached 同构、判定序不变）
+- [ ] 4.2 wrapper 改造合入（task 实现者施工、另一方交叉审）：同步/detached 双路走 begin→invoke→end
 - [ ] 4.3 回归验证：run agent 产出的 run 与人肉括号结构一致（diff/契约/fulfills/acceptance 同源）
 
 ## 5. 验收（静态末位关）

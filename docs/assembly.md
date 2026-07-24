@@ -133,7 +133,7 @@
 
 2026-07-09 grill 定，2026-07-10 编号提级为独立子任务。四件：
 
-1. **run agent 骑到 run 括号上**——消掉「wrapper 快照 diff」与「run end 测量」两套并行真相，全系统一条测量路径（动 `agent/wrapper.py`，属 Codex 线，规格 Claude 出；S1 抽出的共享测量模块 `workspace.py` 是其地基）。
+1. **run agent 骑到 run 括号上**——消掉「wrapper 快照 diff」与「run end 测量」两套并行真相，全系统一条测量路径（动 `agent/wrapper.py`；按 OpenSpec task 临时认领施工，由另一方交叉审查；S1 抽出的共享测量模块 `workspace.py` 是其地基）。
 2. **`--actor operator`** 在 CLI 机械写命令上贯通。
 3. **前端内嵌自由 agent 会话**走结构化事件流路线（见 frontend.md S8）。
 4. **锚定会话 UI**——核对/讨论会话的就地化壳（S7 面板退役的配套件；一批一场、写权闸机制不变）。
