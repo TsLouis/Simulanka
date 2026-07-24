@@ -31,17 +31,21 @@ Claude 与 Codex MUST 具有相同的仓库工作范围，不得按目录永久�
 
 #### Scenario: Claude implements an agent task
 - **WHEN** Claude 认领一个包含 `agent/` 修改的 OpenSpec task
-- **THEN** Claude 可在自己的分支实施并由 Codex 交叉审查
+- **THEN** Claude 可在 `claude/<topic>` 分支实施并由 Codex 交叉审查；合并在主检出执行
 
 ### Requirement: Single writer and independent review
-每个 OpenSpec task 在任一时刻 MUST 只有一个写者。验证和审查代理 MUST 默认只读，提交、推送和 GitHub 状态变更 MUST 由主代理统一执行，除非任务明确授权。
+每个 OpenSpec task 在任一时刻 MUST 只有一个写者。验证和审查代理 MUST 默认只读，提交、推送和 GitHub 状态变更 MUST 由主代理统一执行，除非任务明确授权。权威文档 MUST 另受一篇一写者约束：同一篇 `docs/*.md` 在任一时刻 MUST 只由一个 task 修改，并在其 Issue 中认领。
 
 #### Scenario: Parallel assistance
 - **WHEN** 一个实现 task 同时需要上下文调查和测试分析
 - **THEN** 可并行运行多个只读子代理，但只有 slice builder 可修改 task 范围内文件
 
+#### Scenario: Two tasks need the same authoritative doc
+- **WHEN** 两个并行 task 都要改 `docs/frontend.md`
+- **THEN** 先认领者独占该文件，另一方等其合入后再改，不得同时编辑
+
 ### Requirement: Tiered model routing
-子代理 MUST 按任务复杂度选择模型，不得默认全部使用最高能力模型。常规有界任务 MUST 优先使用轻量或均衡模型，高风险契约和架构任务 MUST 升级强模型。
+子代理 MUST 按任务复杂度选择模型，不得默认全部使用最高能力模型。常规有界任务 MUST 优先使用轻量或均衡模型，高风险契约和架构任务 MUST 升级强模型。派发本身有冷启动成本，主代理 MUST NOT 在没有并行或隔离收益时为有界查找派发子代理。
 
 #### Scenario: Bounded repository search
 - **WHEN** 子任务仅需定位文件、符号、测试或整理日志
@@ -51,6 +55,13 @@ Claude 与 Codex MUST 具有相同的仓库工作范围，不得按目录永久�
 - **WHEN** GitNexus 风险为 HIGH/CRITICAL，或任务涉及冻结契约、事务、并发、恢复、迁移、删除
 - **THEN** 使用 `gpt-5.6-sol` 或 Claude Opus 进行契约/风险裁决，并在继续修改前向用户报告高风险
 
+### Requirement: The user is the top of the escalation ladder
+升级到强模型 MUST 被视为获得更强的判断，而非获得裁决权。当最强模型仍无法收敛、builder 与 reviewer 结论持续对立、或结论会改变产品方向/冻结契约/已接受范围时，代理 MUST 停下并带证据与选项交用户裁决。
+
+#### Scenario: Guardian cannot settle a conflict
+- **WHEN** contract guardian 复核后 builder 与 reviewer 仍给出不相容的正确性结论
+- **THEN** 主代理停止施工，向用户呈交双方证据与可选方案，由用户拍板
+
 ### Requirement: Minimal task capsule
 主代理派发子任务时 MUST 提供最小 task capsule，至少包含 change/task、baseline、目标、非目标、worktree、允许路径、契约引用、已知影响和验收命令。子代理 MUST 返回范围、证据、结论与未决风险。
 
@@ -59,11 +70,15 @@ Claude 与 Codex MUST 具有相同的仓库工作范围，不得按目录永久�
 - **THEN** 子代理无需加载完整对话历史即可从 task capsule 完成有界工作，并不得扩张范围
 
 ### Requirement: Provider-specific supported configuration
-Claude 项目子代理 MUST 使用 `.claude/agents/*.md` 的受支持格式配置。Codex MUST 通过 `AGENTS.md` 和每次 spawn 参数选择角色与模型，不得创建未经支持的持久化 agent profile。
+Claude 项目子代理 MUST 使用 `.claude/agents/*.md` 的受支持格式配置。Codex MUST 通过 `AGENTS.md` 和每次 spawn 参数选择角色与模型，不得创建未经支持的持久化 agent profile。写代理的提交/推送禁令 MUST 由 `disallowedTools` 配置强制，不得只写在提示词里；声明使用 GitNexus 的子代理若设置 `tools:` 白名单，MUST 显式列出所需 `mcp__gitnexus__*` 工具。仓库内的 agent 定义 MUST NOT 依赖个人环境假设。
 
 #### Scenario: Claude session loads project agents
 - **WHEN** Claude Code 从仓库启动或重启
 - **THEN** 它可发现项目级 scout、guardian、builder、verifier 和 reviewer 定义及其模型/权限
+
+#### Scenario: Builder tries to commit
+- **WHEN** slice builder 试图 `git commit` 或 `git push`
+- **THEN** 该调用被 agent 配置直接拒绝，落地由主代理执行
 
 #### Scenario: Codex spawns a child
 - **WHEN** Codex 需要一个子代理

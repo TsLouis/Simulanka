@@ -32,26 +32,34 @@
    - grill 不作为开始开发的必经门；只有实现中出现已接受需求冲突、冻结契约/边界问题、证据支持的方案分叉或持续失败时使用。
    - grill 若改变范围、需求、设计或任务，必须先更新相应 artifact，再继续实现。
    - 备选“先 grill 再 OpenSpec”被否决，因为它重复需求探索并把临时对话置于可审查契约之前。
+   - 2026-07-24 用户在交叉审查中确认：grill 不再默认，需要时由用户自己调用。
 
 2. **Claude/Codex 同责，任务临时所有。**
    - 不设永久目录所有者。一个 GitHub Issue 对应一个 OpenSpec change 或其中明确 task。
    - 实现者在自己的 worktree 和供应方前缀分支施工，另一方交叉审查。
    - 任一时刻每个 task 只有一个写者；文档同步也由该 task 指定的单写者完成。
+   - 单写者是 task 级的，挡不住两个并行 task 同时改 `frontend.md`：权威文档另加“一篇文档同一时刻只由一个 task 改动、在 Issue 中认领”的约束（交叉审查补，替代原“文档单写者=Claude”）。
+   - 分支命名对称：`codex/<topic>` 与 `claude/<topic>`；合并在主检出 `/home/ts/Simulanka` 执行（唯一带 `.venv` 的树）。
    - kernel/schema、写权矩阵和 server edge endpoints 的冻结契约约束保留，但触发的是设计与审查要求，不是供应方所有权。
 
 3. **子代理是任务模板，不是长期目录团队。**
    - 固定角色为 context scout、contract guardian、slice builder、verification prober、change reviewer。
    - 子代理只接收 task capsule，不继承不必要的完整历史；返回范围、证据、结论和未决风险。
    - 同时可以有多个只读代理，但只能有一个写代理。
+   - 派发本身有成本：子代理冷启动要重读 `AGENTS.md` 与相关文档，有界查找往往主会话直接读更便宜。只在并行或隔离确有收益时派发（交叉审查补）。
 
 4. **模型按风险分层。**
    - Codex：`gpt-5.6-terra` 承担有界检索、常规实现、测试和常规审查；`gpt-5.6-sol` 承担需求/契约综合、高风险架构裁决和升级审查。
    - Claude：Haiku 承担只读侦察，Sonnet 承担常规实现/验证/审查，Opus 承担冻结契约与高风险架构裁决。
    - GitNexus HIGH/CRITICAL、跨三个以上架构区域、事务/并发/恢复/迁移/删除、OpenSpec 自相矛盾或连续两次实质失败会触发强模型升级。
+   - 阶梯顶端是人不是模型：最强模型仍不收敛、builder 与 reviewer 持续对立、或决定会改变产品方向/冻结契约/已接受范围时，带证据和选项交用户裁决（交叉审查补，对齐项目一贯的人裁至上）。
 
 5. **供应方采用各自真实支持的配置。**
    - Claude 项目代理放在 `.claude/agents/`，使用受支持的 YAML frontmatter 和工具/权限限制。
    - Codex 的角色与模型路由写入 `AGENTS.md`，每次 spawn 显式指定模型与 `fork_turns: "none"`；不虚构持久化 agent profile。
+   - 写权边界用配置强制而非提示词：slice builder 由 `disallowedTools` 硬禁 `git commit/push/merge` 与 `gh`（已核对 2.1.218 的 markdown agent 解析器支持该字段）。
+   - `tools:` 白名单会连 MCP 工具一起挡掉：要求用 GitNexus 的只读代理必须显式列出所需 `mcp__gitnexus__*` 工具（交叉审查修）。
+   - 仓库内的 agent 定义不写个人环境假设（如 `rtk` 前缀——本机已有全局 hook 自动改写）。
 
 6. **只清活动残留，不改写历史。**
    - 更新 `AGENTS.md`、`CLAUDE.md`、`docs/assembly.md` 和活动 S8 change。

@@ -1,14 +1,16 @@
 # Agent Collaboration (Codex ⇄ Claude)
 
-- **Codex works in `/home/ts/worktrees/simulanka-codex`** (branch `codex/dev` or
-  `codex/<topic>`, cut from `main`). The primary checkout `/home/ts/Simulanka`
-  is Claude's and has `main` checked out. Never leave uncommitted work in the
+- **Worktrees**: Codex works in `/home/ts/worktrees/simulanka-codex`, Claude in
+  the primary checkout `/home/ts/Simulanka`. Whoever implements a task cuts a
+  topic branch from `main` — `codex/<topic>` or `claude/<topic>` — and returns
+  its tree to `main` once the work lands. Never leave uncommitted work in the
   other side's tree; worktrees never live in `/tmp`.
 - **Communication = GitHub issues** on the private repo (`gh issue list/view/
   comment`), one issue per topic, close when resolved. The old
   `docs/to-codex.md` / `docs/to-claude*.md` direction files are legacy.
-- **Merges to `main`**: carry tests, state ruff / mypy --strict / pytest status.
-  Codex commits on `codex/*`; Claude merges after cross-review.
+- **Merges to `main`**: the implementer commits on their own topic branch, the
+  other side cross-reviews, and the merge runs in `/home/ts/Simulanka` (the only
+  tree with `.venv`). Carry tests: state ruff / mypy --strict / pytest status.
 - Python: `/home/ts/Simulanka/.venv/bin/python` (absolute path; venv is not
   duplicated into worktrees).
 - **Ownership is task-scoped, not directory-scoped.** Claude and Codex may work
@@ -25,6 +27,10 @@
   `docs/overview.md` + `kernel.md` / `assembly.md` / `frontend.md`;
   `docs/archive/design.md` is the frozen decision archive. Historical ownership
   labels in the archive are not current assignments.
+- **One editor per doc, not just per task.** A task that needs to change an
+  authoritative doc claims that file in its Issue; no second task edits the same
+  file until the first lands. Task-scoped ownership alone does not prevent two
+  parallel tasks from rewriting `frontend.md` at once.
 
 ## Development Lifecycle
 
@@ -37,7 +43,8 @@
 4. **Review and verify** against specs, targeted tests, GitNexus impact, and the
    repository quality gates. Sync/archive only after acceptance.
 
-**Grill is not an initial phase or a universal gate.** Use a short grill only
+**Grill is not an initial phase or a universal gate** (confirmed by the user
+2026-07-24: on demand, called when they want it). Use a short grill only
 when development exposes a concrete conflict in accepted requirements, a
 frozen-contract or architecture boundary problem, materially different
 evidence-backed approaches, or repeated failure that the current design cannot
@@ -87,9 +94,20 @@ Project definitions live in `.claude/agents/`:
 - Sonnet: bounded implementation, verification, and normal review;
 - Opus: contract guardian and high-risk architecture decisions.
 
-Claude sessions must use these project agents instead of assigning every child
-the strongest model. Restart Claude Code after agent files change so it reloads
-the definitions.
+Delegate only where parallelism or isolation actually pays. A child starts
+cold — it re-reads `AGENTS.md` and the relevant docs before it can do anything —
+so for a bounded lookup the main session reading the file itself is usually
+cheaper than a scout. When you do delegate, pick the tier from the task's risk;
+never default to the strongest model. Restart Claude Code after agent files
+change so it reloads the definitions.
+
+### The top of the ladder is the user
+
+Escalating to Sol or Opus buys a stronger reading, not authority. Stop and put
+the question to the user — with the evidence and the options — when the
+strongest model still cannot resolve it, when builder and reviewer stay
+incompatible, or when the decision changes product direction, a frozen contract,
+or accepted scope. No model tier is the final arbiter.
 
 ### Task capsule and return contract
 
