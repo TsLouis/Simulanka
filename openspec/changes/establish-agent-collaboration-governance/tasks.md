@@ -30,4 +30,4 @@
 - [x] 5.4 Enforce builder write boundaries with `disallowedTools`; add the `mcp__gitnexus__*` tools that the `tools:` whitelist was silently excluding; drop the machine-local `rtk` prefix instruction
 - [x] 5.5 Reframe delegation as cost-bearing (cold child re-reads the docs) instead of a blanket "must use project agents"
 - [x] 5.6 Record the user's 2026-07-24 confirmation that grill is on-demand, not the default gate
-- [ ] 5.7 Open the GitHub Issue this change should have had (one Issue ↔ one change) and retitle Issue #3 away from "Codex 线"
+- [x] 5.7 Open the GitHub Issue this change should have had (one Issue ↔ one change: #4) and retitle Issue #3 away from "Codex 线"
