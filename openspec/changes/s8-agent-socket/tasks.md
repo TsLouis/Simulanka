@@ -30,8 +30,8 @@
 - [x] 3.3 将 bundle 内容寻址写入 `.simulanka/agent/contexts/<digest>.json`，重复内容复用
 - [x] 3.4 按 native session id 记录 sent digests；相同未变化 bundle 跳过，新 digest 增量发送
 - [ ] 3.5 实现上下文 preview API，返回最终 payload、来源、send/skip 与 omissions
-- [ ] 3.6 instruction/reference 分区；图 attrs、文件和工具内容默认作为带来源的不可信 reference
-- [ ] 3.7 测试无 supplement 时原消息逐字不变、重复 bundle 不重发、变化 bundle 新增量、canonical bytes 稳定
+- [x] 3.6 instruction/reference 分区；图 attrs、文件和工具内容默认作为带来源的不可信 reference
+- [x] 3.7 测试无 supplement 时原消息逐字不变、重复 bundle 不重发、变化 bundle 新增量、canonical bytes 稳定
 
 ## 4. 通用 Session 后端
 

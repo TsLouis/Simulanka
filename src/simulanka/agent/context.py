@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -25,6 +25,8 @@ CONTEXT_COMPILER_VERSION = "1"
 MissingReferencePolicy: TypeAlias = Literal["error", "omit"]
 DeliveryAction: TypeAlias = Literal["send", "skip"]
 ReferenceKind: TypeAlias = Literal["node", "edge", "port"]
+SUPPLEMENT_BOUNDARY_START = "<simulanka-supplemental-context untrusted=\"true\">"
+SUPPLEMENT_BOUNDARY_END = "</simulanka-supplemental-context>"
 
 
 class ContextReferenceError(ValueError):
@@ -143,6 +145,25 @@ class ContextDelivery:
     action: DeliveryAction
     native_session_id: str
     digest: str
+
+
+def compose_message(message: str, bundles: Sequence[ContextBundle]) -> str:
+    """Append actual new supplements to one user message with a stable boundary.
+
+    ``bundles`` must already be filtered through :func:`decide_context_delivery`.
+    This function never derives references, injects instructions, or reads a
+    transcript.  In particular, an empty sequence returns ``message`` exactly.
+    """
+    if not bundles:
+        return message
+    supplements = [bundle.as_record() for bundle in bundles]
+    envelope = canonical_json_bytes(
+        {
+            "bundles": supplements,
+            "content_kind": "untrusted_supplemental_reference",
+        }
+    ).decode("utf-8")
+    return f"{message}\n\n{SUPPLEMENT_BOUNDARY_START}\n{envelope}\n{SUPPLEMENT_BOUNDARY_END}"
 
 
 def compile_context(

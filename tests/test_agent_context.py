@@ -6,18 +6,21 @@ from pathlib import Path
 import pytest
 
 from simulanka.agent.context import (
+    SUPPLEMENT_BOUNDARY_END,
+    SUPPLEMENT_BOUNDARY_START,
     ContextRef,
     ContextReferenceError,
     ContextSnapshotError,
     RefSet,
     compile_context,
+    compose_message,
     context_bundle_path,
     decide_context_delivery,
     mark_context_sent,
     store_context_bundle,
 )
 from simulanka.kernel.apply import apply_patch_now
-from simulanka.kernel.intent import CreateEdgeOp, CreateNodeOp, CreatePortOp
+from simulanka.kernel.intent import CreateEdgeOp, CreateNodeOp, CreatePortOp, UpdateAttrsOp
 from simulanka.layout import init_project
 
 
@@ -152,3 +155,47 @@ def test_context_bundles_are_content_addressed_and_delivery_is_incremental(tmp_p
     changed = compile_context(layout, RefSet((ContextRef("node", node_id),)), compiler_version="2")
     assert changed.digest != first.digest
     assert decide_context_delivery(layout, "native-1", changed).action == "send"
+
+
+def test_compose_message_preserves_bare_user_text_exactly() -> None:
+    message = "  keep every byte\n\n"
+    assert compose_message(message, ()) == message
+
+
+def test_compose_message_sends_only_new_untrusted_incremental_bundles(tmp_path: Path) -> None:
+    root, node_id, _, _ = _graph(tmp_path)
+    layout = init_project(root, with_scaffold=False).layout
+    refs = RefSet((ContextRef("node", node_id),))
+    first = compile_context(layout, refs)
+    mark_context_sent(layout, "native-1", first)
+
+    # The unchanged digest is skipped and therefore cannot enter this turn's payload.
+    send_now = [
+        bundle
+        for bundle in (first,)
+        if decide_context_delivery(layout, "native-1", bundle).action == "send"
+    ]
+    assert compose_message("hello", send_now) == "hello"
+
+    apply_patch_now(
+        layout,
+        ops=[UpdateAttrsOp(target=node_id, attrs={"body": "new reference content"})],
+        actor="user",
+    )
+    changed = compile_context(layout, refs)
+    assert changed.digest != first.digest
+    assert changed.payload != first.payload
+    assert decide_context_delivery(layout, "native-1", changed).action == "send"
+
+    message = compose_message("hello", (changed,))
+    repeated = compose_message("hello", (changed,))
+    assert message == repeated
+    assert message.startswith("hello\n\n" + SUPPLEMENT_BOUNDARY_START + "\n")
+    assert message.endswith("\n" + SUPPLEMENT_BOUNDARY_END)
+    envelope = json.loads(message.split("\n", 3)[3].removesuffix("\n" + SUPPLEMENT_BOUNDARY_END))
+    assert envelope["content_kind"] == "untrusted_supplemental_reference"
+    assert [item["digest"] for item in envelope["bundles"]] == [changed.digest]
+    assert envelope["bundles"][0]["refs"] == refs.as_list()
+    assert envelope["bundles"][0]["payload"] == changed.payload_object()
+    attrs = envelope["bundles"][0]["payload"]["reference"][0]["entity"]["attrs"]
+    assert attrs["body"] == "new reference content"
