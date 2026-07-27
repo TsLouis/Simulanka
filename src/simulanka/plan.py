@@ -289,7 +289,12 @@ class IngestResult:
     escalate_reason: str | None
 
 
-def ingest_plan(layout: ProjectLayout, path: Path) -> IngestResult:
+def ingest_plan(
+    layout: ProjectLayout,
+    path: Path,
+    *,
+    actor: str = "analyst",
+) -> IngestResult:
     """Land one plan file on the graph as a single atomic patch.
 
     The file is archived under ``research/`` (FileRegistry `plan` kind) unless
@@ -483,7 +488,7 @@ def ingest_plan(layout: ProjectLayout, path: Path) -> IngestResult:
         ))
 
     intent = PatchIntent(
-        ops=ops, actor="analyst", base_graph_version=base_version,
+        ops=ops, actor=actor, base_graph_version=base_version,
         note=f"plan ingest {rel}",
     )
     try:
@@ -516,6 +521,7 @@ def resolve_escalate(
     selector: str,
     *,
     resolve_note: str | None = None,
+    actor: str = "user",
 ) -> Node:
     """Mark an escalate note ``resolved`` (human act, ``actor="user"``)."""
     try:
@@ -535,7 +541,7 @@ def resolve_escalate(
         attrs["resolve_note"] = resolve_note
     intent = PatchIntent(
         ops=[UpdateAttrsOp(target=node.id, attrs=attrs)],
-        actor="user",
+        actor=actor,
         base_graph_version=layout.load_manifest().graph_version,
         note=f"escalate resolved: {node.id}",
     )

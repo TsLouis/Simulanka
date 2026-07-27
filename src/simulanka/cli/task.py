@@ -9,6 +9,7 @@ from typing import Annotated
 import typer
 from pydantic import ValidationError as PydanticValidationError
 
+from simulanka.cli.actor import ActorOption, resolve_actor
 from simulanka.contract import (
     AcceptanceSpec,
     BudgetSpec,
@@ -74,6 +75,7 @@ def task_create(
             help="Shell command run in workdir after the agent; exit 0 = passed.",
         ),
     ] = None,
+    actor: ActorOption = None,
 ) -> None:
     """Create a task node from inline flags or a JSON contract file."""
     layout = ProjectLayout.require()
@@ -113,7 +115,7 @@ def task_create(
                 type="task", name=name, parent=parent, attrs=task_node_attrs(contract),
             ),
         ],
-        actor="user:task",
+        actor=resolve_actor(actor),
         base_graph_version=layout.load_manifest().graph_version,
         note=f"task create {name}",
     )

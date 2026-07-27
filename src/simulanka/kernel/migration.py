@@ -87,7 +87,7 @@ def plan_migrations(layout: ProjectLayout) -> MigrationPlan:
     )
 
 
-def run_migrations(layout: ProjectLayout) -> MigrationPlan:
+def run_migrations(layout: ProjectLayout, *, actor: str = "system:migrate") -> MigrationPlan:
     plan = plan_migrations(layout)
     if plan.is_empty:
         return plan
@@ -112,7 +112,7 @@ def run_migrations(layout: ProjectLayout) -> MigrationPlan:
     event = Event(
         id=new_id("evt"),
         at=now,
-        actor="system:migrate",
+        actor=actor,
         kind="migrate",
         base_graph_version=manifest.graph_version,
         graph_version=new_graph_version,

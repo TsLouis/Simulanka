@@ -2,9 +2,9 @@
 
 ## 1. actor 贯通（最小、先行）
 
-- [ ] 1.1 CLI actor 解析序：显式 `--actor` > `SIMULANKA_ACTOR` env > `user`（含单测）
-- [ ] 1.2 operator 机械写命令核对 `--actor` 收齐（task create 等），事件日志记账验证
-- [ ] 1.3 `run agent` 起 agent CLI 时注入 `SIMULANKA_ACTOR=agent`
+- [x] 1.1 CLI actor 解析序：显式 `--actor` > `SIMULANKA_ACTOR` env > `user`（含单测）
+- [x] 1.2 operator 机械写命令核对 `--actor` 收齐（task create 等），事件日志记账验证
+- [x] 1.3 `run agent` 起 agent CLI 时注入 `SIMULANKA_ACTOR=agent`
 
 ## 2. 会话后端（转录 + 事件流）
 

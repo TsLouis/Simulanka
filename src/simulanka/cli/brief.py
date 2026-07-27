@@ -7,6 +7,7 @@ from typing import Annotated
 import typer
 
 from simulanka.brief import export_brief
+from simulanka.cli.actor import ActorOption, resolve_actor
 from simulanka.layout.file_registry import FileRegistryError
 from simulanka.layout.project import ProjectLayout
 
@@ -28,11 +29,12 @@ def brief_export(
             ),
         ),
     ] = None,
+    actor: ActorOption = None,
 ) -> None:
     """Render the brief (open atoms, recent runs + evidence ids, escalations)."""
     layout = ProjectLayout.require()
     try:
-        result = export_brief(layout, out=out)
+        result = export_brief(layout, out=out, actor=resolve_actor(actor))
     except FileRegistryError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=2) from exc

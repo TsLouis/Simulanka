@@ -42,7 +42,12 @@ class BriefResult:
     file_node_id: str | None = None
 
 
-def export_brief(layout: ProjectLayout, *, out: str | None = None) -> BriefResult:
+def export_brief(
+    layout: ProjectLayout,
+    *,
+    out: str | None = None,
+    actor: str = "system",
+) -> BriefResult:
     """Render the brief; with *out*, also write it as a registered ``brief`` file.
 
     *out* is a brief **name**, not a free path — FileRegistry owns the layout
@@ -54,7 +59,7 @@ def export_brief(layout: ProjectLayout, *, out: str | None = None) -> BriefResul
         return BriefResult(markdown=markdown)
 
     result = create_file(
-        layout, "brief", out, markdown.encode("utf-8"), actor="system",
+        layout, "brief", out, markdown.encode("utf-8"), actor=actor,
     )
     return BriefResult(
         markdown=markdown,

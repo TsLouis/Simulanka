@@ -14,7 +14,8 @@ Differences from the exec/agent paths:
   pretend to have captured what it cannot see.
 * No "current run" ambient state: ``begin`` prints the run id and the caller
   (human or harness) holds on to it.
-* All intents use ``actor="system"`` — measurement belongs to the system.
+* The caller actor is recorded on each graph event so the same write gate applies
+  whether the bracket is driven by a user, operator, or agent.
 
 Concurrency note: two brackets over the same workdir will see each other's
 edits in their diffs. v1 does not guard against this; the worktree-per-run
@@ -85,6 +86,7 @@ def begin_run(
     parent: str | None = None,
     name: str | None = None,
     workdir: Path | None = None,
+    actor: str = _SYSTEM_ACTOR,
 ) -> BeginResult:
     """Open an execution bracket against *task* and commit it as ``running``.
 
@@ -171,7 +173,7 @@ def begin_run(
                 attrs={"source": "machine"},
             ),
         ],
-        actor=_SYSTEM_ACTOR,
+        actor=actor,
         note=f"run begin: {run_name} fulfills task {task_node.name}",
     )
     [run_node_id] = receipt.nodes
@@ -193,6 +195,7 @@ def end_run(
     run: str,
     status: str = "done",
     metrics: Path | None = None,
+    actor: str = _SYSTEM_ACTOR,
 ) -> EndResult:
     """Close a bracket: diff against the begin snapshot, check the contract, seal the run.
 
@@ -262,12 +265,15 @@ def end_run(
     apply_patch_now(
         layout,
         ops=[UpdateAttrsOp(target=run_node.id, attrs=final_attrs)],
-        actor=_SYSTEM_ACTOR,
+        actor=actor,
         note=f"run end: {run_node.name} -> {status}",
     )
 
     evidence_node_id, evidence_created, metrics_error = _extract_metrics(
-        layout, run_node_id=run_node.id, metrics=metrics,
+        layout,
+        run_node_id=run_node.id,
+        metrics=metrics,
+        actor=actor,
     )
 
     return EndResult(
@@ -290,7 +296,11 @@ def end_run(
 # ---------------------------------------------------------------------------
 
 def _extract_metrics(
-    layout: ProjectLayout, *, run_node_id: str, metrics: Path | None,
+    layout: ProjectLayout,
+    *,
+    run_node_id: str,
+    metrics: Path | None,
+    actor: str,
 ) -> tuple[str | None, bool | None, str | None]:
     """Run evidence extraction as part of the close; never let it block the seal.
 
@@ -308,7 +318,12 @@ def _extract_metrics(
         if not default_metrics_path(layout, run_node).is_file():
             return None, None, None
     try:
-        result = extract_evidence(layout, run=run_node_id, metrics=metrics)
+        result = extract_evidence(
+            layout,
+            run=run_node_id,
+            metrics=metrics,
+            actor=actor,
+        )
     except EvidenceError as exc:
         return None, None, str(exc)
     return result.evidence_node_id, result.created, None

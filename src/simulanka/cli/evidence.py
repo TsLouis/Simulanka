@@ -12,6 +12,7 @@ from typing import Annotated
 
 import typer
 
+from simulanka.cli.actor import ActorOption, resolve_actor
 from simulanka.evidence import EvidenceError, MetricsError, extract_evidence
 from simulanka.layout.project import ProjectLayout
 
@@ -33,11 +34,17 @@ def evidence_extract(
             help="Metrics file (flat JSON scalar dict). Defaults to <workdir>/metrics.json.",
         ),
     ] = None,
+    actor: ActorOption = None,
 ) -> None:
     """Extract a run's metrics file into an `evidence` node (idempotent)."""
     layout = ProjectLayout.require()
     try:
-        result = extract_evidence(layout, run=target, metrics=metrics)
+        result = extract_evidence(
+            layout,
+            run=target,
+            metrics=metrics,
+            actor=resolve_actor(actor),
+        )
     except MetricsError as exc:
         typer.echo(f"Rejected: {exc}", err=True)
         typer.echo("(recorded as `metrics_error` on the run node)", err=True)

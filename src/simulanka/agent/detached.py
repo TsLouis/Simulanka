@@ -102,6 +102,7 @@ def start_agent_run(
         name=name,
         workdir=effective_workdir,
         agent=agent,
+        env={"SIMULANKA_ACTOR": "agent"},
         actor=actor,
     )
 
@@ -163,7 +164,10 @@ def start_agent_run(
 
 
 def finalize_agent_diff(
-    layout: ProjectLayout, run_node: Node,
+    layout: ProjectLayout,
+    run_node: Node,
+    *,
+    actor: str = "agent:contract",
 ) -> AgentDiffSummary | None:
     """Compute (or recall) the workspace diff for a finished agent run.
 
@@ -239,6 +243,7 @@ def finalize_agent_diff(
             run_dir=run_dir,
             workdir=Path(str(meta.get("workdir"))),
             diff=diff,
+            actor=actor,
         )
 
     return AgentDiffSummary(
@@ -257,6 +262,7 @@ def _run_contract_check(
     run_dir: Path,
     workdir: Path,
     diff: dict[str, list[str]],
+    actor: str,
 ) -> ContractCheckResult | None:
     """Check the launch-time contract snapshot, persist the result.
 
@@ -292,7 +298,7 @@ def _run_contract_check(
     apply_patch_now(
         layout,
         ops=[UpdateAttrsOp(target=run_node_id, attrs=_check_attrs(result))],
-        actor="agent:contract",
+        actor=actor,
         note=f"contract_check {result.status}",
     )
     return result

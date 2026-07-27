@@ -216,7 +216,12 @@ def start_run(
 # reconcile / wait / kill
 # ---------------------------------------------------------------------------
 
-def reconcile_run(layout: ProjectLayout, run_node_id: str) -> Node:
+def reconcile_run(
+    layout: ProjectLayout,
+    run_node_id: str,
+    *,
+    actor: str = "runner:reconcile",
+) -> Node:
     """Read on-disk markers and update the run node if it has finished.
 
     Idempotent — calling on a run already marked done/failed is a no-op that
@@ -244,7 +249,14 @@ def reconcile_run(layout: ProjectLayout, run_node_id: str) -> Node:
         ended_at = datetime.now(timezone.utc)
         status = "failed"
 
-    return _finalize(layout, node, status=status, exit_code=exit_code, ended_at=ended_at)
+    return _finalize(
+        layout,
+        node,
+        status=status,
+        exit_code=exit_code,
+        ended_at=ended_at,
+        actor=actor,
+    )
 
 
 def wait_run(
@@ -253,6 +265,7 @@ def wait_run(
     *,
     timeout: float | None = None,
     poll_interval: float = 0.5,
+    actor: str = "runner:reconcile",
 ) -> Node:
     """Block until the run finishes, then return the finalized node.
 
@@ -260,7 +273,7 @@ def wait_run(
     """
     deadline = time.monotonic() + timeout if timeout is not None else None
     while True:
-        node = reconcile_run(layout, run_node_id)
+        node = reconcile_run(layout, run_node_id, actor=actor)
         if node.attrs.get("status") != "running":
             return node
         if deadline is not None and time.monotonic() >= deadline:
@@ -344,6 +357,7 @@ def _finalize(
     status: RunStatus,
     exit_code: int | None,
     ended_at: datetime,
+    actor: str,
 ) -> Node:
     started_at = _parse_iso_z(str(run_node.attrs["started_at"]))
     duration = (ended_at - started_at).total_seconds()
@@ -382,7 +396,7 @@ def _finalize(
         layout,
         PatchIntent(
             ops=ops,
-            actor="runner:reconcile",
+            actor=actor,
             base_graph_version=layout.load_manifest().graph_version,
             note=f"reconcile: {run_node.name} -> {status}",
         ),

@@ -25,6 +25,7 @@ from simulanka.agent import (
     run_agent,
     start_agent_run,
 )
+from simulanka.cli.actor import ActorOption, resolve_actor
 from simulanka.kernel.resolver import resolve_node
 from simulanka.layout.project import ProjectLayout
 from simulanka.runner import (
@@ -97,6 +98,7 @@ def run_exec(
             ),
         ),
     ] = False,
+    actor: ActorOption = None,
 ) -> None:
     """Run a shell command and record it as a `run` node."""
     layout = ProjectLayout.require()
@@ -110,6 +112,7 @@ def run_exec(
                 name=name,
                 workdir=workdir,
                 agent=agent,
+                actor=resolve_actor(actor),
             )
         except RunnerError as exc:
             typer.echo(f"Runner error: {exc}", err=True)
@@ -129,6 +132,7 @@ def run_exec(
             workdir=workdir,
             timeout=timeout,
             agent=agent,
+            actor=resolve_actor(actor),
         )
     except RunnerError as exc:
         typer.echo(f"Runner error: {exc}", err=True)
@@ -232,6 +236,7 @@ def run_agent_cmd(
             ),
         ),
     ] = False,
+    actor: ActorOption = None,
 ) -> None:
     """Invoke an agent CLI (codex / claude / ...) and capture what it touched."""
     layout = ProjectLayout.require()
@@ -262,6 +267,7 @@ def run_agent_cmd(
                 workdir=workdir,
                 extra_args=extra,
                 track_scope=track,
+                actor=resolve_actor(actor),
             )
         except (AgentError, RunnerError) as exc:
             typer.echo(f"Agent error: {exc}", err=True)
@@ -287,6 +293,7 @@ def run_agent_cmd(
             timeout=timeout,
             extra_args=extra,
             track_scope=track,
+            actor=resolve_actor(actor),
         )
     except (AgentError, RunnerError) as exc:
         typer.echo(f"Agent error: {exc}", err=True)
@@ -353,12 +360,18 @@ def run_begin(
             help="Workspace to snapshot/diff. Defaults to the project root.",
         ),
     ] = None,
+    actor: ActorOption = None,
 ) -> None:
     """Open an execution bracket: snapshot the workspace, mirror the contract, go."""
     layout = ProjectLayout.require()
     try:
         result = begin_run(
-            layout, task=task, parent=parent, name=name, workdir=workdir,
+            layout,
+            task=task,
+            parent=parent,
+            name=name,
+            workdir=workdir,
+            actor=resolve_actor(actor),
         )
     except (RunnerError, ValueError) as exc:
         typer.echo(f"Runner error: {exc}", err=True)
@@ -395,11 +408,18 @@ def run_end(
             ),
         ),
     ] = None,
+    actor: ActorOption = None,
 ) -> None:
     """Close a bracket: diff against the begin snapshot, run acceptance, seal the run."""
     layout = ProjectLayout.require()
     try:
-        result = end_run(layout, run=target, status=status, metrics=metrics)
+        result = end_run(
+            layout,
+            run=target,
+            status=status,
+            metrics=metrics,
+            actor=resolve_actor(actor),
+        )
     except RunnerError as exc:
         typer.echo(f"Runner error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
@@ -439,11 +459,13 @@ def run_status(
     target: Annotated[
         str, typer.Argument(help="Run node selector (id or absolute path)."),
     ],
+    actor: ActorOption = None,
 ) -> None:
     """Reconcile and print the current state of a run."""
     layout = ProjectLayout.require()
-    node = _reconcile_or_die(layout, target)
-    summary = finalize_agent_diff(layout, node)
+    resolved_actor = resolve_actor(actor)
+    node = _reconcile_or_die(layout, target, actor=resolved_actor)
+    summary = finalize_agent_diff(layout, node, actor=resolved_actor)
     _print_run_summary(node, summary)
     if node.attrs.get("status") == "running":
         raise typer.Exit(code=2)
@@ -464,19 +486,27 @@ def run_wait(
         float,
         typer.Option("--interval", "-i", help="Poll interval in seconds."),
     ] = 0.5,
+    actor: ActorOption = None,
 ) -> None:
     """Block until the run finishes and print the final state."""
     layout = ProjectLayout.require()
     node_id = _resolve_to_id(layout, target)
+    resolved_actor = resolve_actor(actor)
     try:
-        node = wait_run(layout, node_id, timeout=timeout, poll_interval=interval)
+        node = wait_run(
+            layout,
+            node_id,
+            timeout=timeout,
+            poll_interval=interval,
+            actor=resolved_actor,
+        )
     except TimeoutError as exc:
         typer.echo(f"Timeout: {exc}", err=True)
         raise typer.Exit(code=2) from exc
     except RunnerError as exc:
         typer.echo(f"Runner error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
-    summary = finalize_agent_diff(layout, node)
+    summary = finalize_agent_diff(layout, node, actor=resolved_actor)
     _print_run_summary(node, summary)
     if node.attrs.get("status") != "done":
         raise typer.Exit(code=1)
@@ -508,9 +538,11 @@ def run_reconcile(
             help="Run selector. Use 'all' to reconcile every running run.",
         ),
     ] = None,
+    actor: ActorOption = None,
 ) -> None:
     """Read on-disk markers and update graph state for one or all running runs."""
     layout = ProjectLayout.require()
+    resolved_actor = resolve_actor(actor)
     if target is None or target == "all":
         running = [
             n for n in iter_nodes(layout)
@@ -520,16 +552,16 @@ def run_reconcile(
             typer.echo("No running runs.")
             return
         for n in running:
-            updated = reconcile_run(layout, n.id)
-            finalize_agent_diff(layout, updated)
+            updated = reconcile_run(layout, n.id, actor=resolved_actor)
+            finalize_agent_diff(layout, updated, actor=resolved_actor)
             typer.echo(
                 f"{updated.id}  {str(updated.attrs.get('status')):8s}  "
                 f"exit={updated.attrs.get('exit_code')}  name={updated.name}"
             )
     else:
         node_id = _resolve_to_id(layout, target)
-        node = reconcile_run(layout, node_id)
-        summary = finalize_agent_diff(layout, node)
+        node = reconcile_run(layout, node_id, actor=resolved_actor)
+        summary = finalize_agent_diff(layout, node, actor=resolved_actor)
         _print_run_summary(node, summary)
 
 
@@ -541,10 +573,15 @@ def _resolve_to_id(layout: ProjectLayout, selector: str) -> str:
         raise typer.Exit(code=2) from exc
 
 
-def _reconcile_or_die(layout: ProjectLayout, selector: str) -> Node:
+def _reconcile_or_die(
+    layout: ProjectLayout,
+    selector: str,
+    *,
+    actor: str,
+) -> Node:
     node_id = _resolve_to_id(layout, selector)
     try:
-        return reconcile_run(layout, node_id)
+        return reconcile_run(layout, node_id, actor=actor)
     except (RunNotFound, RunnerError) as exc:
         typer.echo(f"Runner error: {exc}", err=True)
         raise typer.Exit(code=2) from exc

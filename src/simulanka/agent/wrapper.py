@@ -121,6 +121,7 @@ def run_agent(
         workdir=effective_workdir,
         timeout=effective_timeout,
         agent=agent,
+        env={"SIMULANKA_ACTOR": "agent"},
         actor=actor,
     )
 

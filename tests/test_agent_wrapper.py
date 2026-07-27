@@ -20,6 +20,7 @@ from simulanka.kernel.doctor import run_doctor
 from simulanka.kernel.intent import CreateNodeOp, PatchIntent
 from simulanka.layout.project import ProjectLayout, init_project
 from simulanka.storage.entity_store import load_node
+from tests.conftest import fake_argv
 
 
 def _seed(layout: ProjectLayout) -> None:
@@ -59,6 +60,31 @@ def test_env_override_takes_precedence(monkeypatch: pytest.MonkeyPatch) -> None:
     cmd = build_command("codex", "the goal")
     assert cmd.startswith("/usr/bin/echo prefix")
     assert "the goal" in cmd
+
+
+def test_run_agent_injects_agent_actor_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layout = init_project(tmp_path, with_scaffold=False).layout
+    _seed(layout)
+    actor_file = tmp_path / "actor.txt"
+    monkeypatch.setenv("SIMULANKA_ACTOR", "operator")
+    monkeypatch.setenv(
+        "SIMULANKA_AGENT_FAKE_ARGV",
+        fake_argv(f'printf %s "$SIMULANKA_ACTOR" > {actor_file}'),
+    )
+
+    result = run_agent(
+        layout,
+        agent="fake",
+        prompt="record actor",
+        parent="/research",
+        name="actor-env",
+    )
+
+    assert result.status == "done"
+    assert actor_file.read_text(encoding="utf-8") == "agent"
 
 
 def test_fake_agent_modifies_workspace_and_diff_is_captured(

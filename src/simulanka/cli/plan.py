@@ -7,6 +7,7 @@ from typing import Annotated
 
 import typer
 
+from simulanka.cli.actor import ActorOption, resolve_actor
 from simulanka.layout.project import ProjectLayout
 from simulanka.plan import PlanError, ingest_plan
 
@@ -22,11 +23,12 @@ def plan_ingest_cmd(
         Path,
         typer.Argument(help="Markdown file with exactly one ```simulanka-plan block."),
     ],
+    actor: ActorOption = None,
 ) -> None:
     """Parse FILE and land its plan block as one atomic patch (all-or-nothing)."""
     layout = ProjectLayout.require()
     try:
-        result = ingest_plan(layout, file)
+        result = ingest_plan(layout, file, actor=resolve_actor(actor))
     except PlanError as exc:
         typer.echo(f"Plan rejected: {exc}", err=True)
         raise typer.Exit(code=1) from exc

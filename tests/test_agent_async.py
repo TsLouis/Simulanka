@@ -84,6 +84,37 @@ def test_detached_happy_path_finalizes_diff(
     assert run_doctor(layout).ok
 
 
+def test_start_agent_run_injects_agent_actor_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layout = init_project(tmp_path, with_scaffold=False).layout
+    _seed(layout)
+    actor_file = tmp_path / "actor.txt"
+    monkeypatch.setenv("SIMULANKA_ACTOR", "operator")
+    monkeypatch.setenv(
+        "SIMULANKA_AGENT_FAKE_ARGV",
+        _fake_argv(f'printf %s "$SIMULANKA_ACTOR" > {actor_file}'),
+    )
+
+    started = start_agent_run(
+        layout,
+        agent="fake",
+        prompt="record actor",
+        parent="/research",
+        name="actor-env",
+    )
+    finished = wait_run(
+        layout,
+        started.run_node_id,
+        timeout=10.0,
+        poll_interval=0.05,
+    )
+
+    assert finished.attrs["status"] == "done"
+    assert actor_file.read_text(encoding="utf-8") == "agent"
+
+
 def test_finalize_idempotent_does_not_rehash(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

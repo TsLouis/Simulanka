@@ -6,6 +6,7 @@ from typing import Annotated
 import typer
 
 from simulanka import __version__
+from simulanka.cli.actor import ActorOption, resolve_actor
 from simulanka.cli.brief import brief_app
 from simulanka.cli.evidence import evidence_app
 from simulanka.cli.export import export_app
@@ -49,6 +50,7 @@ def propose_cmd(
         str,
         typer.Option("--model", "-m", help="opencode provider/model to ask."),
     ] = DEFAULT_MODEL,
+    actor: ActorOption = None,
 ) -> None:
     """§13.5.3: ask an agent to read a model's forward() and propose ghost edges.
 
@@ -57,7 +59,12 @@ def propose_cmd(
     """
     layout = ProjectLayout.require()
     try:
-        result = propose_edges(layout, model_selector, model=model)
+        result = propose_edges(
+            layout,
+            model_selector,
+            model=model,
+            actor=resolve_actor(actor),
+        )
     except ProposeError as exc:
         typer.echo(f"Propose failed: {exc}", err=True)
         raise typer.Exit(code=1) from exc

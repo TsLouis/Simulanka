@@ -60,6 +60,7 @@ def extract_evidence(
     *,
     run: str,
     metrics: Path | None = None,
+    actor: str = _SYSTEM_ACTOR,
 ) -> EvidenceResult:
     """Extract *run*'s metrics file into an ``evidence`` node.
 
@@ -71,7 +72,7 @@ def extract_evidence(
     run_node = _resolve_run(layout, run)
     metrics_path = _resolve_metrics_path(layout, run_node, metrics)
 
-    parsed = _parse_metrics(layout, run_node, metrics_path)
+    parsed = _parse_metrics(layout, run_node, metrics_path, actor=actor)
     metrics_rel = _rel_to_root(metrics_path, layout.root)
 
     siblings = [
@@ -115,7 +116,7 @@ def extract_evidence(
     receipt = apply_patch_now(
         layout,
         ops=ops,
-        actor=_SYSTEM_ACTOR,
+        actor=actor,
         note=f"evidence extract: {run_node.name} -> {name}",
     )
     return EvidenceResult(
@@ -168,7 +169,11 @@ def _resolve_metrics_path(
 
 
 def _parse_metrics(
-    layout: ProjectLayout, run_node: Node, metrics_path: Path,
+    layout: ProjectLayout,
+    run_node: Node,
+    metrics_path: Path,
+    *,
+    actor: str,
 ) -> dict[str, Scalar]:
     rel = _rel_to_root(metrics_path, layout.root)
 
@@ -177,7 +182,7 @@ def _parse_metrics(
         apply_patch_now(
             layout,
             ops=[UpdateAttrsOp(target=run_node.id, attrs={"metrics_error": message})],
-            actor=_SYSTEM_ACTOR,
+            actor=actor,
             note=f"evidence extract rejected: {run_node.name}",
         )
         return MetricsError(message)

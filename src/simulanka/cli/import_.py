@@ -9,6 +9,7 @@ from typing import Annotated, Any
 
 import typer
 
+from simulanka.cli.actor import ActorOption, resolve_actor
 from simulanka.importer import (
     ManifestError,
     ModelImportError,
@@ -47,6 +48,7 @@ def import_torch(
             help="Directory selector to place the model under.",
         ),
     ] = "/baselines",
+    actor: ActorOption = None,
 ) -> None:
     """Import a PyTorch model via ``torch.export``."""
     layout = ProjectLayout.require()
@@ -57,7 +59,13 @@ def import_torch(
         raise typer.Exit(code=2) from exc
 
     try:
-        result = import_model(layout, build_fn, name=name, parent=parent)
+        result = import_model(
+            layout,
+            build_fn,
+            name=name,
+            parent=parent,
+            actor=resolve_actor(actor),
+        )
     except ModelImportError as exc:
         typer.echo(f"Import failed: {exc}", err=True)
         raise typer.Exit(code=1) from exc
@@ -99,6 +107,7 @@ def import_baseline_cmd(
             ),
         ),
     ] = False,
+    actor: ActorOption = None,
 ) -> None:
     """Import a baseline declaratively from its ``simulanka_builds/manifest.yaml``."""
     manifest_path = baseline_dir / "simulanka_builds" / "manifest.yaml"
@@ -119,7 +128,12 @@ def import_baseline_cmd(
 
     layout = ProjectLayout.require()
     try:
-        summary = import_baseline(layout, manifest_path, parent=parent)
+        summary = import_baseline(
+            layout,
+            manifest_path,
+            parent=parent,
+            actor=resolve_actor(actor),
+        )
     except ManifestError as exc:
         typer.echo(f"Import failed: {exc}", err=True)
         raise typer.Exit(code=1) from exc

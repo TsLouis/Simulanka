@@ -6,6 +6,7 @@ from typing import Annotated
 
 import typer
 
+from simulanka.cli.actor import ActorOption, resolve_actor
 from simulanka.layout.project import ProjectLayout
 from simulanka.plan import PlanError, resolve_escalate
 
@@ -21,12 +22,18 @@ def note_resolve(
         str | None,
         typer.Option("--note", help="Optional disposition reason (resolve_note)."),
     ] = None,
+    actor: ActorOption = None,
 ) -> None:
     """Mark an escalate note as resolved — the explicit human act that clears
     a stop signal (nothing else can; a later plan ingest never auto-mutes it)."""
     layout = ProjectLayout.require()
     try:
-        node = resolve_escalate(layout, target, resolve_note=note)
+        node = resolve_escalate(
+            layout,
+            target,
+            resolve_note=note,
+            actor=resolve_actor(actor),
+        )
     except PlanError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=2) from exc

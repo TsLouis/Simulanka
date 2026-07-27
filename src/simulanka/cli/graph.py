@@ -6,6 +6,7 @@ from typing import Annotated, Any
 
 import typer
 
+from simulanka.cli.actor import ActorOption, resolve_actor
 from simulanka.kernel.apply import VersionConflict, apply_patch
 from simulanka.kernel.bundle import (
     ImportTargetNotEmpty,
@@ -58,12 +59,13 @@ def node_create(
         ),
     ] = None,
     note: Annotated[str | None, typer.Option("--note", help="Patch note.")] = None,
+    actor: ActorOption = None,
 ) -> None:
     """Create a node."""
     layout = ProjectLayout.require()
     intent = PatchIntent(
         ops=[CreateNodeOp(type=type_, name=name, parent=parent, attrs=_parse_attrs(attr or []))],
-        actor="user",
+        actor=resolve_actor(actor),
         base_graph_version=layout.load_manifest().graph_version,
         note=note,
     )
@@ -123,6 +125,7 @@ def port_create(
         list[str] | None,
         typer.Option("--attr", "-a", help="Attribute as key=value. Repeatable."),
     ] = None,
+    actor: ActorOption = None,
 ) -> None:
     """Create a port on a node."""
     layout = ProjectLayout.require()
@@ -133,7 +136,7 @@ def port_create(
                 port_type=port_type, attrs=_parse_attrs(attr or []),
             )
         ],
-        actor="user",
+        actor=resolve_actor(actor),
         base_graph_version=layout.load_manifest().graph_version,
     )
     receipt = _commit(intent, layout)
@@ -153,6 +156,7 @@ def connect(
         list[str] | None,
         typer.Option("--attr", "-a", help="Attribute as key=value. Repeatable."),
     ] = None,
+    actor: ActorOption = None,
 ) -> None:
     """Create an edge between two endpoints."""
     layout = ProjectLayout.require()
@@ -162,7 +166,7 @@ def connect(
                 type=type_, source=source, target=target, attrs=_parse_attrs(attr or []),
             )
         ],
-        actor="user",
+        actor=resolve_actor(actor),
         base_graph_version=layout.load_manifest().graph_version,
     )
     receipt = _commit(intent, layout)
@@ -221,12 +225,13 @@ def file_create_cmd(
             help="Path to seed content. If omitted, an empty file is created.",
         ),
     ] = None,
+    actor: ActorOption = None,
 ) -> None:
     """Create a new managed file at the kind-determined path and register it."""
     layout = ProjectLayout.require()
     content = content_file.read_bytes() if content_file is not None else b""
     try:
-        result = create_file(layout, kind, name, content)
+        result = create_file(layout, kind, name, content, actor=resolve_actor(actor))
     except (FileRegistryError, ValidationError, ResolveError, ValueError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
@@ -246,11 +251,12 @@ def file_register_cmd(
             help="File kind: code | test | doc | paper | baseline | artifact.",
         ),
     ],
+    actor: ActorOption = None,
 ) -> None:
     """Register an existing file (or reference directory) into the graph."""
     layout = ProjectLayout.require()
     try:
-        result = register_file(layout, kind, path)
+        result = register_file(layout, kind, path, actor=resolve_actor(actor))
     except (FileRegistryError, ValidationError, ResolveError, ValueError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
@@ -264,6 +270,7 @@ def migrate_cmd(
     dry_run: Annotated[
         bool, typer.Option("--dry-run", help="Print the migration plan without applying.")
     ] = False,
+    actor: ActorOption = None,
 ) -> None:
     """Bring the project's schema/registry versions up to the code's current versions."""
     layout = ProjectLayout.require()
@@ -286,7 +293,7 @@ def migrate_cmd(
     if dry_run:
         typer.echo("\n(dry-run; no changes written.)")
         return
-    run_migrations(layout)
+    run_migrations(layout, actor=resolve_actor(actor))
     typer.echo("\nMigration applied.")
 
 
