@@ -7,7 +7,7 @@ import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from ulid import ULID
 
@@ -21,18 +21,151 @@ from simulanka.schema.entities import Node
 
 _SESSION_ID_RE = re.compile(r"^ses_[0-9A-HJKMNP-TV-Z]{26}$")
 
+SessionStatus = Literal[
+    "idle",
+    "running",
+    "done",
+    "failed",
+    "interrupted",
+    "orphaned",
+    "native_missing",
+    "stateless",
+    "archived",
+]
+
+_LIFECYCLE_STATUSES: dict[str, SessionStatus] = {
+    "idle": "idle",
+    "running": "running",
+    "done": "done",
+    "completed": "done",
+    "failed": "failed",
+    "interrupted": "interrupted",
+    "orphaned": "orphaned",
+    "native_missing": "native_missing",
+    "stateless": "stateless",
+    "archived": "archived",
+}
+
 
 class SessionNotFound(ValueError):
     """Raised when an embedded session does not exist."""
 
 
+class SessionStateError(ValueError):
+    """Raised when persisted events violate a session binding invariant."""
+
+
+@dataclass(frozen=True)
+class Session:
+    """Durable, provider-neutral description of one agent session."""
+
+    session_id: str
+    provider_id: str
+    model: str | None
+    native_session_id: str | None
+    workspace: str
+    parent_session_id: str | None
+    forked_from_event_id: str | None
+    status: SessionStatus
+    legacy_anchor: dict[str, Any] | None = None
+
+    @property
+    def provider_session_id(self) -> str | None:
+        """Compatibility alias for the old OpenCode-specific field."""
+        return self.native_session_id
+
+    @property
+    def turn_running(self) -> bool:
+        """Compatibility view consumed by the pre-migration server routes."""
+        return self.status == "running"
+
+
 @dataclass(frozen=True)
 class WorkSession:
+    """Compatibility facade for task-anchored callers during the migration."""
+
     session_id: str
     anchor: dict[str, Any] | None
     model: str | None
     provider_session_id: str | None
     turn_running: bool
+
+
+def create_session(
+    layout: ProjectLayout,
+    *,
+    provider_id: str,
+    model: str | None = None,
+    workspace: str | Path | None = None,
+    parent_session_id: str | None = None,
+    forked_from_event_id: str | None = None,
+) -> Session:
+    """Create a generic session without imposing a domain anchor."""
+    return _create_session(
+        layout,
+        provider_id=provider_id,
+        model=model,
+        workspace=workspace,
+        parent_session_id=parent_session_id,
+        forked_from_event_id=forked_from_event_id,
+        legacy_anchor=None,
+    )
+
+
+def _create_session(
+    layout: ProjectLayout,
+    *,
+    provider_id: str,
+    model: str | None,
+    workspace: str | Path | None,
+    parent_session_id: str | None,
+    forked_from_event_id: str | None,
+    legacy_anchor: dict[str, Any] | None,
+) -> Session:
+    provider_id = provider_id.strip()
+    if not provider_id:
+        raise ValueError("provider_id must be non-empty")
+    if model is not None:
+        model = model.strip()
+        if not model:
+            raise ValueError("model must be non-empty when provided")
+    if parent_session_id is not None and not _SESSION_ID_RE.fullmatch(parent_session_id):
+        raise ValueError("parent_session_id must be a valid session id")
+    if forked_from_event_id is not None and not forked_from_event_id.strip():
+        raise ValueError("forked_from_event_id must be non-empty when provided")
+
+    session_id = f"ses_{ULID()}"
+    workspace_value = _workspace_value(layout, workspace)
+    details: dict[str, Any] = {
+        "session_id": session_id,
+        "provider_id": provider_id,
+        "native_session_id": None,
+        "workspace": workspace_value,
+        "model": model,
+        "parent_session_id": parent_session_id,
+        "forked_from_event_id": forked_from_event_id,
+        "status": "idle",
+    }
+    if legacy_anchor is not None:
+        # ``anchor`` keeps pre-S8 readers working; generic callers never write it.
+        details["anchor"] = legacy_anchor
+        details["legacy_anchor"] = legacy_anchor
+    append_session_event(
+        layout,
+        session_id,
+        SessionEvent(type="status", status="created", text="会话已创建", details=details),
+    )
+    return Session(
+        session_id=session_id,
+        provider_id=provider_id,
+        model=model,
+        native_session_id=None,
+        workspace=workspace_value,
+        parent_session_id=parent_session_id,
+        forked_from_event_id=forked_from_event_id,
+        status="idle",
+        legacy_anchor=legacy_anchor,
+    )
 
 
 def create_work_session(
@@ -41,16 +174,17 @@ def create_work_session(
     anchor: dict[str, Any] | None,
     model: str | None,
 ) -> WorkSession:
-    session_id = f"ses_{ULID()}"
-    event = SessionEvent(
-        type="status",
-        status="created",
-        text="会话已创建",
-        details={"session_id": session_id, "anchor": anchor, "model": model},
+    state = _create_session(
+        layout,
+        provider_id="opencode",
+        model=model,
+        workspace=layout.root,
+        parent_session_id=None,
+        forked_from_event_id=None,
+        legacy_anchor=anchor,
     )
-    append_session_event(layout, session_id, event)
     return WorkSession(
-        session_id=session_id,
+        session_id=state.session_id,
         anchor=anchor,
         model=model,
         provider_session_id=None,
@@ -88,7 +222,7 @@ def read_session_events(
     return events
 
 
-def load_work_session(layout: ProjectLayout, session_id: str) -> WorkSession:
+def load_session(layout: ProjectLayout, session_id: str) -> Session:
     events = read_session_events(layout, session_id)
     if not events:
         raise SessionNotFound(f"session {session_id!r} has no state")
@@ -96,26 +230,64 @@ def load_work_session(layout: ProjectLayout, session_id: str) -> WorkSession:
     details = created.get("details")
     if not isinstance(details, dict):
         raise SessionNotFound(f"session {session_id!r} has invalid state")
-    anchor = details.get("anchor")
+    provider_id = details.get("provider_id")
+    if not isinstance(provider_id, str) or not provider_id:
+        provider_id = "opencode"
     model = details.get("model")
-    provider_session_id: str | None = None
-    turn_running = False
+    workspace = details.get("workspace")
+    workspace_value = _workspace_value(
+        layout,
+        workspace if isinstance(workspace, str) and workspace else None,
+    )
+    parent_session_id = details.get("parent_session_id")
+    if not isinstance(parent_session_id, str):
+        parent_session_id = None
+    forked_from_event_id = details.get("forked_from_event_id")
+    if not isinstance(forked_from_event_id, str):
+        forked_from_event_id = None
+    legacy_anchor = details.get("legacy_anchor", details.get("anchor"))
+    native_session_id = details.get("native_session_id")
+    if not isinstance(native_session_id, str) or not native_session_id:
+        native_session_id = None
+    status: SessionStatus = "idle"
+    created_status = details.get("status")
+    if isinstance(created_status, str):
+        status = _LIFECYCLE_STATUSES.get(created_status, status)
     for event in events:
         candidate = event.get("provider_session_id")
         if isinstance(candidate, str) and candidate:
-            provider_session_id = candidate
-        if event.get("type") == "status":
-            status = event.get("status")
-            if status == "running":
-                turn_running = True
-            elif status in {"done", "failed", "interrupted"}:
-                turn_running = False
-    return WorkSession(
+            if native_session_id is None:
+                native_session_id = candidate
+            elif native_session_id != candidate:
+                raise SessionStateError(
+                    f"session {session_id!r} changed native session id "
+                    f"from {native_session_id!r} to {candidate!r}"
+                )
+        event_status = _lifecycle_status(event)
+        if event_status is not None:
+            status = event_status
+    return Session(
         session_id=session_id,
-        anchor=dict(anchor) if isinstance(anchor, dict) else None,
+        provider_id=provider_id,
         model=model if isinstance(model, str) else None,
-        provider_session_id=provider_session_id,
-        turn_running=turn_running,
+        native_session_id=native_session_id,
+        workspace=workspace_value,
+        parent_session_id=parent_session_id,
+        forked_from_event_id=forked_from_event_id,
+        status=status,
+        legacy_anchor=dict(legacy_anchor) if isinstance(legacy_anchor, dict) else None,
+    )
+
+
+def load_work_session(layout: ProjectLayout, session_id: str) -> WorkSession:
+    """Load a generic Session through the old task-oriented shape."""
+    state = load_session(layout, session_id)
+    return WorkSession(
+        session_id=state.session_id,
+        anchor=state.legacy_anchor,
+        model=state.model,
+        provider_session_id=state.native_session_id,
+        turn_running=state.turn_running,
     )
 
 
@@ -208,3 +380,21 @@ def _session_path(layout: ProjectLayout, session_id: str) -> Path:
     if not _SESSION_ID_RE.fullmatch(session_id):
         raise SessionNotFound(f"invalid session id {session_id!r}")
     return layout.dot_dir / "agent" / "sessions" / f"{session_id}.jsonl"
+
+
+def _workspace_value(layout: ProjectLayout, workspace: str | Path | None) -> str:
+    path = layout.root if workspace is None else Path(workspace)
+    if not path.is_absolute():
+        path = layout.root / path
+    return str(path.resolve())
+
+
+def _lifecycle_status(event: dict[str, Any]) -> SessionStatus | None:
+    if event.get("type") == "error":
+        return "failed"
+    if event.get("type") != "status":
+        return None
+    event_status = event.get("status")
+    if not isinstance(event_status, str):
+        return None
+    return _LIFECYCLE_STATUSES.get(event_status)

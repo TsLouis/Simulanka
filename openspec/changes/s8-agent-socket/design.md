@@ -75,7 +75,9 @@ Provider 自己决定旧内容的压缩、淘汰与 cache；Simulanka 不通过�
 
 ### 4. ContextBundle 内容寻址、确定序列化
 
-`RefSet` 是有序去重的 `{nodes, edges, ports}` 引用值。Context compiler 在一个 graph version 上解析引用，并输出：
+`RefSet` 是由统一 `ContextRef(kind, id)` 组成的有序去重序列；`kind`
+当前取 `node / edge / port`，且跨 kind 的用户选择顺序保持不变。Context
+compiler 在一个 graph version 上解析引用，并输出：
 
 - bundle schema/compiler version；
 - source refs；
