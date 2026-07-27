@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any, cast
@@ -223,6 +224,47 @@ def test_codex_failed_turn_keeps_nested_error_message() -> None:
     assert event.type == "error"
     assert event.status == "failed"
     assert event.text == "sandbox rejected command"
+
+
+def test_provider_workspaces_reach_production_subprocess_cwd(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    popen_calls: list[tuple[list[str], dict[str, Any]]] = []
+
+    class FakeProcess:
+        stdout: list[str] = []
+
+        def __init__(self, args: list[str], **kwargs: Any) -> None:
+            popen_calls.append((args, kwargs))
+
+        def wait(self, timeout: float | None = None) -> int:
+            del timeout
+            return 0
+
+        def poll(self) -> int:
+            return 0
+
+        def terminate(self) -> None:
+            raise AssertionError("completed fake process must not be terminated")
+
+        def kill(self) -> None:
+            raise AssertionError("completed fake process must not be killed")
+
+    monkeypatch.setattr(subprocess, "Popen", FakeProcess)
+    workspace = str(tmp_path / "provider-project")
+
+    assert list(OpenCodeAdapter(workspace=workspace).start_turn("hello").events) == []
+    assert list(CodexAdapter(workspace=workspace).start_turn("hello").events) == []
+    assert list(OpenCodeAdapter().start_turn("hello").events) == []
+    assert list(CodexAdapter().start_turn("hello").events) == []
+
+    assert [kwargs["cwd"] for _, kwargs in popen_calls] == [
+        workspace,
+        workspace,
+        None,
+        None,
+    ]
 
 
 def test_work_session_uses_one_jsonl_and_preserves_provider_id(tmp_path: Path) -> None:

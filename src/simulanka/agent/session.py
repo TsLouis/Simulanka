@@ -157,8 +157,14 @@ class OpenCodeAdapter:
         usage=False,
     )
 
-    def __init__(self, *, runner: StreamRunner | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        runner: StreamRunner | None = None,
+        workspace: str | None = None,
+    ) -> None:
         self._runner = runner
+        self._workspace = workspace
 
     def start_turn(
         self,
@@ -249,7 +255,11 @@ class OpenCodeAdapter:
 
         env = dict(os.environ)
         env["SIMULANKA_ACTOR"] = "agent"
-        lines = self._runner(args, env) if self._runner is not None else _run_stream(args, env)
+        lines = (
+            self._runner(args, env)
+            if self._runner is not None
+            else _run_stream(args, env, cwd=self._workspace)
+        )
         for line in lines:
             stripped = line.strip()
             if not stripped:
@@ -284,8 +294,14 @@ class CodexAdapter:
         usage=True,
     )
 
-    def __init__(self, *, runner: StreamRunner | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        runner: StreamRunner | None = None,
+        workspace: str | None = None,
+    ) -> None:
         self._runner = runner
+        self._workspace = workspace
 
     def start_turn(
         self,
@@ -394,7 +410,7 @@ class CodexAdapter:
         lines = (
             self._runner(args, env)
             if self._runner is not None
-            else _run_stream(args, env, cli_name="codex")
+            else _run_stream(args, env, cli_name="codex", cwd=self._workspace)
         )
         for line in lines:
             stripped = line.strip()
@@ -531,7 +547,11 @@ def _first_string(value: Mapping[str, Any], *keys: str) -> str | None:
 
 
 def _run_stream(
-    args: list[str], env: Mapping[str, str], *, cli_name: str = "opencode"
+    args: list[str],
+    env: Mapping[str, str],
+    *,
+    cli_name: str = "opencode",
+    cwd: str | None = None,
 ) -> Iterator[str]:
     try:
         proc = subprocess.Popen(
@@ -541,6 +561,7 @@ def _run_stream(
             text=True,
             bufsize=1,
             env=dict(env),
+            cwd=cwd,
         )
     except FileNotFoundError as exc:
         raise HarnessError(f"`{cli_name}` CLI not found on PATH.") from exc
