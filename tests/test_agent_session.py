@@ -9,9 +9,13 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 
+from simulanka.agent.harness import HarnessError
 from simulanka.agent.session import (
+    OpenCodeAdapter,
+    ProviderCapabilities,
     SessionEvent,
     normalize_opencode_event,
+    provider_adapters,
     stream_opencode_events,
 )
 from simulanka.kernel.apply import apply_patch_now
@@ -103,6 +107,41 @@ def test_stream_opencode_events_builds_continuation_and_forces_agent_actor() -> 
             text="streamed",
             provider_session_id="provider-new",
         )
+    ]
+
+
+def test_opencode_adapter_contract_registry_and_native_resume() -> None:
+    seen: dict[str, Any] = {}
+
+    def runner(args: list[str], env: Mapping[str, str]) -> Iterable[str]:
+        seen["args"] = args
+        seen["actor"] = env["SIMULANKA_ACTOR"]
+        return []
+
+    adapter = provider_adapters.create("opencode", runner=runner)
+    assert isinstance(adapter, OpenCodeAdapter)
+    assert adapter.capabilities == ProviderCapabilities(
+        native_resume=True,
+        native_fork=False,
+        interrupt=False,
+        tool_events=True,
+        usage=False,
+    )
+
+    turn = adapter.resume_turn("provider-1", "continue")
+    with pytest.raises(HarnessError, match="does not support turn interruption"):
+        turn.handle.cancel()
+    assert list(turn.events) == []
+    assert seen["actor"] == "agent"
+    assert seen["args"] == [
+        "opencode",
+        "run",
+        "--print-logs",
+        "--format",
+        "json",
+        "-s",
+        "provider-1",
+        "continue",
     ]
 
 

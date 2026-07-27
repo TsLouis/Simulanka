@@ -16,8 +16,8 @@
 
 ## 2. Provider Adapter
 
-- [ ] 2.1 定义 ProviderCapabilities、ProviderAdapter、ProviderTurn/TurnHandle 合同与 Adapter registry
-- [ ] 2.2 将现有 OpenCode 参数构造、原生续聊和事件 normalize 收进 OpenCode Adapter，保持既有样本行为
+- [x] 2.1 定义 ProviderCapabilities、ProviderAdapter、ProviderTurn/TurnHandle 合同与 Adapter registry
+- [x] 2.2 将现有 OpenCode 参数构造、原生续聊和事件 normalize 收进 OpenCode Adapter，保持既有样本行为
 - [ ] 2.3 实现 Codex Adapter：`codex exec --json`、thread.started、`exec resume <id> --json`、文本/工具/状态事件
 - [ ] 2.4 映射 Codex turn.completed usage，保留 cached_input_tokens 缺失与存在两种诚实状态
 - [ ] 2.5 样本锁原生续接命令，证明第二轮不含 transcript replay，仅含本轮消息和新增 supplement
