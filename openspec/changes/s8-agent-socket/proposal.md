@@ -8,6 +8,7 @@
 
 - **前端内嵌干活 agent 会话**：统一 ChatNode 壳（图聊/核对讨论/干活会话一张脸），干活会话＝工具调用卡片（默认折叠）＋一键放大全屏抽屉；opencode 非交互续聊，`--format json` 事件流边到边转；转录自持（每场一文件、挂载恢复；词表 `user_msg / agent_text / tool_call / tool_result / status / error`）。
 - **交互契约**：task 右键「派工」＋ChatDock 自由起；一问一答＋打字排队（轮末自动发）＋停止按钮（杀当轮、如实标中断；**run 括号留人收口**，doctor stale 检查兜底）。护栏 v1＝测量不拦（无批准流）。
+- **纯前端验收**：用户从派工到查看会话、工具调用、run、diff、契约验收与写权拒绝，全程只用浏览器；CLI、JSONL 与服务端日志只作幕后证据，不得成为理解或收口流程的必经步骤。
 - **run agent 骑 run 括号**：wrapper 私有快照/diff 退役，改 `run begin → 调 CLI → run end` 薄编排（`workspace.py` 同源测量，全系统一条测量路径）。**BREAKING**（内部）：`changes.json` 平面文件路径让位于括号测量产物。
 - **`--actor` 贯通**：会话/CLI 子进程注入 `SIMULANKA_ACTOR`，CLI 缺省 actor 读环境——agent 会话里跑的写图命令自动带正确身份过写权闸。
 - **锚定会话 UI**：讨论/核对会话迁入同一 ChatNode 壳挂批次锚（一批一场/写权闸/checkpoint 机制全保留，DiscussPanel 不复活）。

@@ -9,6 +9,7 @@
 **Goals:**
 
 - 玩具 task 全链前端可见：派工 → 会话流式 → agent 自己 `run begin/end` 打卡 → diff/验收/落图经 SSE 上画布。
+- 用户验收全程只用浏览器：每个动作有即时可见反馈，停止后的 run 收口、diff 与 acceptance 检查均有前端入口。
 - 一条测量路径（run agent 骑括号）；一套会话壳（ChatNode）；一套转录机制（所有会话共用）。
 - actor 身份贯通写权闸（env 注入，agent 会话里的 CLI 写图自动带正确身份）。
 
@@ -26,6 +27,7 @@
 6. **run agent 骑括号**：wrapper 改 `begin → invoke CLI → end` 薄编排，测量全走 `workspace.py` 同源；detached 同构（wrapper script 内 begin/end）；acceptance 时机沿既定（end/finalize）。wrapper 私有快照与 `changes.json` 退役（BREAKING 内部）。
 7. **壳统一**：干活/图聊/核对讨论都是 ChatNode；工具调用卡片默认折叠、点开看详情；放大态＝同组件 CSS 展示态（非第二套壳）；锚定会话＝挂批次锚的同壳会话（一批一场/写权闸/checkpoint 全保留）。
 8. **派工入口**：task 节点右键「派工」→ ChatNode 预填锚定戳（server 渲染 task 卡片级上下文，07-16 锚定戳规格的最小先行件：v1 只做 task 卡）；ChatDock 也可自由起干活会话。不立新按钮。
+9. **用户验收门优先于工程任务数**：按可独立目验的纵向切片汇报进度。U1＝派工/流式文本/工具卡片/全屏；U2＝排队/停止/未闭 run 的前端收口动作；U3＝刷新恢复/run-diff-acceptance 前端可追溯；U4＝统一壳/失败诚实/免费模型全链彩排。每道门都必须只用浏览器完成，后端测试通过不能替代用户目验。
 
 ## Risks / Trade-offs
 

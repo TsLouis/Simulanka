@@ -234,6 +234,87 @@ export interface DiscussionState {
   batch?: string[]
 }
 
+// --- S8 embedded work sessions -------------------------------------------
+
+export type SessionEventType =
+  | 'user_msg'
+  | 'agent_text'
+  | 'tool_call'
+  | 'tool_result'
+  | 'status'
+  | 'error'
+
+export interface TaskAnchorDTO {
+  id: string
+  name: string
+  goal: unknown
+  allowed_outputs: unknown[]
+  acceptance_command: unknown
+}
+
+export interface WorkSessionDTO {
+  session_id: string
+  anchor: TaskAnchorDTO | null
+  model: string | null
+  status: 'idle'
+}
+
+export interface SessionEventDTO {
+  type: SessionEventType
+  text?: string
+  status?: string
+  tool_name?: string
+  call_id?: string
+  input?: unknown
+  output?: unknown
+  provider_session_id?: string
+  details?: Record<string, unknown>
+}
+
+export async function createWorkSession(task?: string): Promise<WorkSessionDTO> {
+  const resp = await fetch('/session', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(task ? { task } : {}),
+  })
+  if (!resp.ok) {
+    throw new Error(`POST /session failed: ${resp.status} ${await resp.text()}`)
+  }
+  return (await resp.json()) as WorkSessionDTO
+}
+
+export async function streamWorkSessionMessage(
+  sessionId: string,
+  text: string,
+  onEvent: (event: SessionEventDTO) => void,
+): Promise<void> {
+  const resp = await fetch(`/session/${encodeURIComponent(sessionId)}/message`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  })
+  if (!resp.ok) {
+    throw new Error(`POST /session/${sessionId}/message failed: ${resp.status} ${await resp.text()}`)
+  }
+  if (!resp.body) throw new Error('agent session response has no readable stream')
+
+  const reader = resp.body.getReader()
+  const decoder = new TextDecoder()
+  let pending = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    pending += decoder.decode(value, { stream: !done })
+    const lines = pending.split('\n')
+    pending = lines.pop() ?? ''
+    for (const line of lines) {
+      if (!line.trim()) continue
+      onEvent(JSON.parse(line) as SessionEventDTO)
+    }
+    if (done) break
+  }
+  if (pending.trim()) onEvent(JSON.parse(pending) as SessionEventDTO)
+}
+
 // Safety fuse over the server's 180s harness timeout: the UI must never wait
 // unbounded — a fuse trip surfaces as an ⚠ bubble in the stream.
 const CHAT_TIMEOUT_MS = 200_000

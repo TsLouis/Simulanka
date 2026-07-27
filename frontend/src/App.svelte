@@ -7,6 +7,7 @@
     acceptGhost,
     createEdge,
     createNode,
+    createWorkSession,
     deleteEdge,
     deleteNode,
     deleteTemplate,
@@ -23,11 +24,14 @@
     sendDiscussionMessage,
     setDiscuss,
     startDiscussion,
+    streamWorkSessionMessage,
     type CustomTemplateDTO,
     type DiscussionTurn,
     type FileOpenRequest,
     type HumanVerdict,
     type Positions,
+    type SessionEventDTO,
+    type WorkSessionDTO,
   } from './lib/api'
   import { subscribeEvents, type EventSubscription } from './lib/events'
   import { buildLiteGraph, type LineageEdge } from './lib/litegraph-adapter'
@@ -293,15 +297,28 @@
   // §13.6 discussion chat state. Lives here, not in the panel: closing the
   // panel must not drop the thread. Applied ops come back over SSE like any
   // other kernel commit — no manual canvas refresh needed.
-  let chatMessages: ChatMsg[] = []
+  let discussionMessages: ChatMsg[] = []
+  let workMessages: ChatMsg[] = []
   let chatBusy = false
   let discussionActive = false
+  let activeChatKind: 'discussion' | 'work' = 'discussion'
+  let workSession: WorkSessionDTO | null = null
+  $: chatMessages = activeChatKind === 'work' ? workMessages : discussionMessages
+  $: chatTitle =
+    activeChatKind === 'work' && workSession?.anchor
+      ? `干活 · ${workSession.anchor.name}`
+      : '会话'
+  $: chatSubtitle =
+    activeChatKind === 'work' && workSession?.anchor
+      ? `task:${workSession.anchor.name}`
+      : anchorLabel
 
   function chatTurn(turn: DiscussionTurn) {
-    chatMessages = [
-      ...chatMessages,
+    discussionMessages = [
+      ...discussionMessages,
       { role: 'agent', text: turn.reply, applied: turn.applied, rejected: turn.rejected },
     ]
+    activeChatKind = 'discussion'
     chatPanelOpen = true
     if (turn.op_errors.length > 0) {
       status = `agent op-block errors: ${turn.op_errors.join('; ')}`
@@ -310,18 +327,25 @@
 
   // 锚定标签(§13.6):选中集优先,否则当前容器。随消息一起送给 agent,
   // 也显示在 dock 上——人和 agent 对「在谈什么」保持同一认知。
-  $: anchorLabel = selectedNode
-    ? `${selectedNode.type}:${selectedNode.name}`
-    : crumbs.length > 0
-      ? `容器:${crumbs[crumbs.length - 1].name}`
-      : '全图'
+  $: anchorLabel =
+    activeChatKind === 'work' && workSession?.anchor
+      ? `task:${workSession.anchor.name}`
+      : selectedNode
+        ? `${selectedNode.type}:${selectedNode.name}`
+        : crumbs.length > 0
+          ? `容器:${crumbs[crumbs.length - 1].name}`
+          : '全图'
 
   // One send path: first message auto-starts the opencode session (the
   // opening turn snapshots the disagreement set server-side), then the text
   // goes out with its anchor stamped in front.
   async function chatSend(text: string) {
+    if (activeChatKind === 'work' && workSession) {
+      await workChatSend(text)
+      return
+    }
     const stamped = `（锚定：${anchorLabel}）\n${text}`
-    chatMessages = [...chatMessages, { role: 'user', text }]
+    discussionMessages = [...discussionMessages, { role: 'user', text }]
     chatPanelOpen = true
     chatBusy = true
     try {
@@ -334,9 +358,67 @@
     } catch (err) {
       // Failures land in the stream itself — a status-bar whisper reads as a
       // dead click (彩排实测: user perceived it as a freeze).
-      chatMessages = [
-        ...chatMessages,
+      discussionMessages = [
+        ...discussionMessages,
         { role: 'agent', text: `⚠ 会话失败: ${(err as Error).message}` },
+      ]
+    } finally {
+      chatBusy = false
+    }
+  }
+
+  function workEvent(event: SessionEventDTO) {
+    if (event.type === 'user_msg') {
+      workMessages = [...workMessages, { role: 'user', text: event.text ?? '' }]
+    } else if (event.type === 'agent_text') {
+      workMessages = [...workMessages, { role: 'agent', text: event.text ?? '' }]
+    } else if (event.type === 'tool_call' || event.type === 'tool_result') {
+      workMessages = [
+        ...workMessages,
+        {
+          role: 'agent',
+          kind: event.type,
+          text: event.tool_name ?? 'tool',
+          status: event.status,
+          toolName: event.tool_name,
+          callId: event.call_id,
+          input: event.input,
+          output: event.output,
+        },
+      ]
+    } else if (event.type === 'error') {
+      workMessages = [
+        ...workMessages.filter(m => m.kind !== 'status' || m.status === 'idle'),
+        { role: 'agent', kind: 'error', text: event.text ?? 'Agent 会话失败' },
+      ]
+    } else {
+      workMessages = [
+        ...workMessages.filter(m => m.kind !== 'status' || m.status === 'idle'),
+        {
+          role: 'system',
+          kind: 'status',
+          status: event.status,
+          text: event.text ?? event.status ?? '状态更新',
+        },
+      ]
+    }
+    chatPanelOpen = true
+  }
+
+  async function workChatSend(text: string) {
+    if (!workSession) return
+    chatPanelOpen = true
+    chatBusy = true
+    try {
+      await streamWorkSessionMessage(workSession.session_id, text, workEvent)
+    } catch (err) {
+      workMessages = [
+        ...workMessages.filter(m => m.kind !== 'status' || m.status === 'idle'),
+        {
+          role: 'agent',
+          kind: 'error',
+          text: `⚠ 会话失败: ${(err as Error).message}`,
+        },
       ]
     } finally {
       chatBusy = false
@@ -520,6 +602,28 @@
       status = `模板已存: ${name.trim()}`
     } catch (err) {
       status = `save template failed: ${(err as Error).message}`
+    }
+  }
+
+  async function menuDispatch() {
+    if (!menu?.node || menu.node.type !== 'task') return
+    const task = menu.node
+    menu = null
+    try {
+      const session = await createWorkSession(task.id)
+      workSession = session
+      activeChatKind = 'work'
+      workMessages = [
+        {
+          role: 'system',
+          kind: 'status',
+          status: 'idle',
+          text: `已锚定任务「${session.anchor?.name ?? task.name}」，可以开始派工`,
+        },
+      ]
+      chatPanelOpen = true
+    } catch (err) {
+      status = `派工失败: ${(err as Error).message}`
     }
   }
 
@@ -902,6 +1006,7 @@
       onEnter={menuEnter}
       onRename={menuRename}
       onSaveTemplate={menuSaveTemplate}
+      onDispatch={menuDispatch}
       onDelete={menuDelete}
       onDeleteTemplate={menuDeleteTemplate}
     />
@@ -916,8 +1021,10 @@
   {#if chatPanelOpen}
     <ChatNode
       messages={chatMessages}
-      active={discussionActive}
-      busy={chatBusy}
+      active={activeChatKind === 'work' ? workSession !== null : discussionActive}
+      busy={activeChatKind === 'discussion' && chatBusy}
+      title={chatTitle}
+      subtitle={chatSubtitle}
       onClose={() => (chatPanelOpen = false)}
     />
   {/if}

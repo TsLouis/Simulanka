@@ -7,7 +7,8 @@ import logging
 import os
 import subprocess
 import tempfile
-from collections.abc import AsyncIterator
+import threading
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,7 @@ from simulanka.agent.harness import (
     OpenCodeTurn,
     run_opencode_turn,
 )
+from simulanka.agent.session import StreamRunner
 from simulanka.disagreements import disagreement_list, edge_payload
 from simulanka.kernel.apply import apply_patch_now
 from simulanka.kernel.events import Event, iter_events
@@ -40,6 +42,14 @@ from simulanka.layout.project import ProjectLayout
 from simulanka.plan import PlanError, resolve_escalate
 from simulanka.schema.entities import Edge
 from simulanka.server.agent_ops import apply_agent_ops
+from simulanka.server.sessions import (
+    SessionNotFound,
+    create_work_session,
+    load_work_session,
+    read_session_events,
+    stream_work_session_turn,
+    task_anchor,
+)
 from simulanka.storage.checkpoint import ensure_repo, repo_exists, tag_checkpoint
 from simulanka.storage.entity_store import (
     iter_edges,
@@ -67,6 +77,7 @@ def create_app(
     layout: ProjectLayout | None = None,
     *,
     opencode_runner: CommandRunner | None = None,
+    opencode_stream_runner: StreamRunner | None = None,
 ) -> FastAPI:
     if layout is None:
         layout = ProjectLayout.require()
@@ -89,6 +100,8 @@ def create_app(
         allow_methods=["GET", "POST", "DELETE"],
         allow_headers=["*"],
     )
+    active_work_sessions: set[str] = set()
+    active_work_sessions_lock = threading.Lock()
 
     @app.get("/graph")
     def get_graph(root: str | None = Query(default=None)) -> dict[str, Any]:
@@ -601,6 +614,96 @@ def create_app(
         in by hand. One edge can match several buckets — ``reasons`` lists all.
         """
         return {"disagreements": disagreement_list(layout)}
+
+    # --- S8 work sessions: browser-first agent turns -----------------------
+    # Work sessions deliberately do not share the global §13.6 discussion
+    # state. Their local id names the Simulanka transcript; provider_session_id
+    # is discovered from opencode and used only for later ``-s`` continuation.
+
+    @app.post("/session")
+    def create_agent_session(
+        body: dict[str, Any] = Body(default_factory=dict),
+    ) -> dict[str, Any]:
+        task_id = body.get("task")
+        model = body.get("model")
+        if task_id is not None and not isinstance(task_id, str):
+            raise HTTPException(status_code=422, detail="task must be a node id")
+        if model is not None and (not isinstance(model, str) or not model.strip()):
+            raise HTTPException(status_code=422, detail="model must be a string")
+
+        anchor: dict[str, Any] | None = None
+        if isinstance(task_id, str):
+            try:
+                task_node = load_node(layout, task_id)
+                anchor = task_anchor(task_node)
+            except FileNotFoundError:
+                raise HTTPException(
+                    status_code=404, detail=f"no node {task_id!r}",
+                ) from None
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        state = create_work_session(
+            layout,
+            anchor=anchor,
+            model=model.strip() if isinstance(model, str) else None,
+        )
+        return {
+            "session_id": state.session_id,
+            "anchor": state.anchor,
+            "model": state.model,
+            "status": "idle",
+        }
+
+    @app.get("/session/{session_id}/history")
+    def agent_session_history(session_id: str) -> dict[str, Any]:
+        try:
+            events = read_session_events(layout, session_id)
+        except SessionNotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"session_id": session_id, "events": events}
+
+    @app.post("/session/{session_id}/message")
+    def agent_session_message(
+        session_id: str,
+        body: dict[str, Any] = Body(default_factory=dict),
+    ) -> StreamingResponse:
+        text = body.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise HTTPException(status_code=422, detail="text is required")
+        try:
+            state = load_work_session(layout, session_id)
+        except SessionNotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        with active_work_sessions_lock:
+            if session_id in active_work_sessions or state.turn_running:
+                raise HTTPException(
+                    status_code=409,
+                    detail="a turn is already running for this session",
+                )
+            active_work_sessions.add(session_id)
+
+        def event_stream() -> Iterator[str]:
+            try:
+                yield from stream_work_session_turn(
+                    layout,
+                    state,
+                    text.strip(),
+                    runner=opencode_stream_runner,
+                )
+            finally:
+                with active_work_sessions_lock:
+                    active_work_sessions.discard(session_id)
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="application/x-ndjson",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     # --- §13.6 discussion session: the agent op channel --------------------
     # One batch, one session (一批一场): /start snapshots the disagreement

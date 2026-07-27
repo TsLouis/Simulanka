@@ -4,8 +4,14 @@
   // One chat entry. Applied/rejected are the agent's op-block results — the
   // write-matrix gate's outcome rides with the message that caused it.
   export interface ChatMsg {
-    role: 'user' | 'agent'
+    role: 'user' | 'agent' | 'system'
     text: string
+    kind?: 'message' | 'tool_call' | 'tool_result' | 'status' | 'error'
+    status?: string
+    toolName?: string
+    callId?: string
+    input?: unknown
+    output?: unknown
     applied?: DiscussionOpResult[]
     rejected?: DiscussionOpResult[]
   }
@@ -21,7 +27,10 @@
   export let messages: ChatMsg[] = []
   export let active = false
   export let busy = false
+  export let title = '会话'
+  export let subtitle: string | null = null
   export let onClose: () => void = () => {}
+  let fullscreen = false
 
   // Drag by header. position is component-local; default parks at the right
   // edge above the dock.
@@ -29,6 +38,7 @@
   let y = 64
   let dragging: { dx: number; dy: number } | null = null
   function dragStart(e: MouseEvent) {
+    if (fullscreen) return
     dragging = { dx: e.clientX - x, dy: e.clientY - y }
   }
   function dragMove(e: MouseEvent) {
@@ -38,6 +48,16 @@
   }
   function dragEnd() {
     dragging = null
+  }
+
+  function formatDetail(value: unknown): string {
+    if (typeof value === 'string') return value
+    if (value === undefined) return '(无)'
+    try {
+      return JSON.stringify(value, null, 2)
+    } catch {
+      return String(value)
+    }
   }
 
   // Follow the tail as messages stream in — but never via tick() inside a
@@ -58,17 +78,51 @@
 
 <svelte:window on:mousemove={dragMove} on:mouseup={dragEnd} />
 
-<section class="chat-node" style="left: {x}px; top: {y}px;">
+<section class="chat-node" class:fullscreen style="left: {x}px; top: {y}px;">
   <header role="toolbar" tabindex="-1" on:mousedown|preventDefault={dragStart}>
     <span class="dot" class:on={active} title={active ? '会话进行中' : '未开会话'}></span>
-    <strong>会话</strong>
-    <button class="close" on:click={onClose} title="收起">✕</button>
+    <span class="heading">
+      <strong>{title}</strong>
+      {#if subtitle}<small title={subtitle}>{subtitle}</small>{/if}
+    </span>
+    <button
+      class="icon-btn expand"
+      on:mousedown|stopPropagation
+      on:click={() => (fullscreen = !fullscreen)}
+      title={fullscreen ? '退出全屏' : '全屏'}
+    >{fullscreen ? '↙' : '⛶'}</button>
+    <button
+      class="icon-btn close"
+      on:mousedown|stopPropagation
+      on:click={onClose}
+      title="收起"
+    >✕</button>
   </header>
 
   <div class="scroll" bind:this={scrollEl}>
     {#each messages as m, i (i)}
       <div class="msg {m.role}">
-        <div class="bubble">{m.text}</div>
+        {#if m.kind === 'tool_call' || m.kind === 'tool_result'}
+          <details class="tool-card">
+            <summary>
+              <span class="tool-icon">{m.kind === 'tool_call' ? '⚙' : '✓'}</span>
+              <strong>{m.toolName ?? 'tool'}</strong>
+              <span class="tool-status">{m.status ?? (m.kind === 'tool_call' ? 'running' : 'done')}</span>
+            </summary>
+            {#if m.callId}<code class="call-id">{m.callId}</code>{/if}
+            {#if m.kind === 'tool_call'}
+              <span class="detail-label">输入</span>
+              <pre>{formatDetail(m.input)}</pre>
+            {:else}
+              <span class="detail-label">结果</span>
+              <pre>{formatDetail(m.output)}</pre>
+            {/if}
+          </details>
+        {:else if m.kind === 'status'}
+          <div class="status-line status-{m.status ?? 'event'}">{m.text}</div>
+        {:else}
+          <div class="bubble" class:error={m.kind === 'error'}>{m.text}</div>
+        {/if}
         {#if m.applied && m.applied.length > 0}
           <div class="ops ok">✓ 落图 {m.applied.length} 项</div>
         {/if}
@@ -102,6 +156,12 @@
       0 0 0 1px rgba(217, 186, 125, 0.08);
     font-size: 13px;
   }
+  .chat-node.fullscreen {
+    inset: 44px 18px 18px 18px !important;
+    width: auto;
+    max-height: none;
+    z-index: 60;
+  }
   header {
     display: flex;
     align-items: center;
@@ -115,6 +175,20 @@
   header:active {
     cursor: grabbing;
   }
+  .heading {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .heading small {
+    max-width: 230px;
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 10px;
+    font-weight: normal;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .dot {
     width: 8px;
     height: 8px;
@@ -125,15 +199,17 @@
     background: var(--jade);
     box-shadow: 0 0 6px rgba(126, 207, 165, 0.8);
   }
-  .close {
-    margin-left: auto;
+  .icon-btn {
     background: transparent;
     border: none;
     color: var(--muted);
     cursor: pointer;
     font-size: 12px;
   }
-  .close:hover {
+  .expand {
+    margin-left: auto;
+  }
+  .icon-btn:hover {
     color: var(--ivory);
   }
   .scroll {
@@ -151,6 +227,9 @@
   .msg.user {
     align-items: flex-end;
   }
+  .msg.system {
+    align-items: stretch;
+  }
   .bubble {
     max-width: 85%;
     padding: 6px 10px;
@@ -164,6 +243,64 @@
     background: rgba(217, 186, 125, 0.14);
     border: 1px solid rgba(217, 186, 125, 0.3);
     color: var(--ivory);
+  }
+  .bubble.error {
+    border: 1px solid rgba(232, 106, 106, 0.45);
+    color: #f6b0b0;
+  }
+  .status-line {
+    align-self: center;
+    padding: 3px 8px;
+    color: var(--muted);
+    font-size: 11px;
+  }
+  .status-line.status-done {
+    color: var(--jade);
+  }
+  .status-line.status-failed {
+    color: var(--crimson);
+  }
+  .tool-card {
+    width: min(100%, 520px);
+    overflow: hidden;
+    border: 1px solid var(--hairline);
+    border-radius: 8px;
+    background: rgba(9, 17, 31, 0.72);
+  }
+  .tool-card summary {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 7px 9px;
+    cursor: pointer;
+    color: var(--text);
+  }
+  .tool-icon {
+    color: var(--gold);
+  }
+  .tool-status {
+    margin-left: auto;
+    color: var(--muted);
+    font-size: 10px;
+    text-transform: uppercase;
+  }
+  .detail-label,
+  .call-id {
+    display: block;
+    margin: 6px 9px 2px;
+    color: var(--gold-dim);
+    font-size: 10px;
+  }
+  .tool-card pre {
+    max-height: 240px;
+    margin: 4px 9px 9px;
+    overflow: auto;
+    padding: 7px;
+    border-radius: 5px;
+    background: var(--panel-3);
+    color: var(--text);
+    font-size: 11px;
+    white-space: pre-wrap;
   }
   .thinking {
     color: var(--muted);
