@@ -1,47 +1,61 @@
-# S8 agent 插座 — tasks
+## 0. 用户可目验门
 
-## 0. 用户可目验门（主汇报口径）
+- [ ] U1 通用会话：不选择节点也可直接发消息；首条消息懒创建会话；界面没有派工、讨论/干活或开始实验模式
+- [ ] U2 增量上下文：任意 node/edge/port 可附加、预览；同一未变化 bundle 第二轮不重发；无附加时用户消息保持原样
+- [ ] U3 原生续接：Codex 首轮拿到 thread id，第二轮走原生 resume；转录不 replay；Provider 报告的 cached_input_tokens 可检查
+- [ ] U4 会话管理：刷新恢复、会话列表、切换、fork、归档、暂停/已中断和能力降级全程前端可见
+- [ ] U5 可替换 Provider：OpenCode 与 Codex 复用同一 SessionEvent、storage 和 ChatNode，无 Provider-name 前端分支
 
-- [x] U1 派工可见：task 右键派工 → 锚定 ChatNode → 流式文本 → 默认折叠工具卡片 → 同组件全屏
-- [ ] U2 人可控制：轮中输入排队 → 轮末自动发 → 停止/已中断 → 未闭 run「结束并测量 / 暂不处理」
-- [ ] U3 结果可追溯：刷新恢复完整会话；run/task 关联、diff、acceptance、越界与 actor 均可在前端检查
-- [ ] U4 全链诚实：图聊/核对/干活统一壳；错误与写权拒绝可见；免费模型玩具 task 全程只用浏览器验收
+## 1. 已有可复用地基
 
-## 1. actor 贯通（最小、先行）
+- [x] 1.1 CLI actor 解析序：显式 `--actor` > `SIMULANKA_ACTOR` > `user`
+- [x] 1.2 归一事件词表与 OpenCode 样本锁；未知事件降级不中断
+- [x] 1.3 Session JSONL 边流边追加与单场 history 端点
+- [x] 1.4 ChatNode 流式文本、折叠工具卡片和同组件全屏展示
+- [x] 1.5 `/session` vite proxy 与 server 最小 create/message 路径
 
-- [x] 1.1 CLI actor 解析序：显式 `--actor` > `SIMULANKA_ACTOR` env > `user`（含单测）
-- [x] 1.2 operator 机械写命令核对 `--actor` 收齐（task create 等），事件日志记账验证
-- [x] 1.3 `run agent` 起 agent CLI 时注入 `SIMULANKA_ACTOR=agent`
+## 2. Provider Adapter
 
-## 2. 会话后端（转录 + 事件流）
+- [ ] 2.1 定义 ProviderCapabilities、ProviderAdapter、ProviderTurn/TurnHandle 合同与 Adapter registry
+- [ ] 2.2 将现有 OpenCode 参数构造、原生续聊和事件 normalize 收进 OpenCode Adapter，保持既有样本行为
+- [ ] 2.3 实现 Codex Adapter：`codex exec --json`、thread.started、`exec resume <id> --json`、文本/工具/状态事件
+- [ ] 2.4 映射 Codex turn.completed usage，保留 cached_input_tokens 缺失与存在两种诚实状态
+- [ ] 2.5 样本锁原生续接命令，证明第二轮不含 transcript replay，仅含本轮消息和新增 supplement
+- [ ] 2.6 Provider 能力驱动 interrupt；一 Session 同时最多一个活动 TurnHandle
 
-- [x] 2.1 归一事件词表 types + opencode 薄展示适配器（样本锁测试，未知事件降级不中断）
-- [x] 2.2 转录自持：`.simulanka/agent/sessions/<id>.jsonl` 边流边追加 + `GET /session/{id}/history`
-- [x] 2.3 `POST /session` 创建 task/自由会话；`POST /session/{id}/message` 起续聊子进程（注入 `SIMULANKA_ACTOR=agent`）→ StreamingResponse NDJSON
-- [ ] 2.4 `POST /session/{id}/stop`：杀当轮进程组 + 追加 `status: interrupted`
-- [ ] 2.5 图聊/讨论会话迁入同一转录机制（`discussion.json` 降为索引指针）
-- [x] 2.6 vite proxy 加正则键 `'^/session(/|$)'`（第三坑规矩）
+## 3. Supplemental Context
 
-## 3. 会话前端（统一壳）
+- [ ] 3.1 定义有序去重 RefSet 与不可变 ContextBundle 模型（schema/compiler version、refs、graph version、payload、omissions、digest）
+- [ ] 3.2 实现 node/edge/port 解析和确定性 canonical serializer；未知/失效引用显式报错或 omission
+- [ ] 3.3 将 bundle 内容寻址写入 `.simulanka/agent/contexts/<digest>.json`，重复内容复用
+- [ ] 3.4 按 native session id 记录 sent digests；相同未变化 bundle 跳过，新 digest 增量发送
+- [ ] 3.5 实现上下文 preview API，返回最终 payload、来源、send/skip 与 omissions
+- [ ] 3.6 instruction/reference 分区；图 attrs、文件和工具内容默认作为带来源的不可信 reference
+- [ ] 3.7 测试无 supplement 时原消息逐字不变、重复 bundle 不重发、变化 bundle 新增量、canonical bytes 稳定
 
-- [x] 3.1 ChatNode 接流式 NDJSON（fetch + ReadableStream；滚动只用 afterUpdate＋计数 gate）
-- [x] 3.2 工具调用卡片（默认折叠、点开详情）+ 放大全屏抽屉（同组件展示态）
-- [ ] 3.3 排队输入（轮中可打字、轮末自动发）+ 停止按钮
-- [ ] 3.4 挂载恢复走 history 端点（刷新不丢，验证工具卡片还原）
-- [x] 3.5 task 右键「派工」：server 渲染 task 卡片级锚定戳预填首轮上下文
-- [ ] 3.6 叫停收口提示：检出未配对 `run begin` → 「run 还开着」＋「结束并测量 / 暂不处理」前端动作（不自动收）
-- [ ] 3.7 锚定会话迁壳：讨论/核对会话挂批次锚走同一 ChatNode（一批一场/写权闸/checkpoint 不变）
-- [ ] 3.8 run 结构化结果视图：task 关联、文件 diff、acceptance、out_of_scope、写权拒绝与 actor 前端可查
+## 4. 通用 Session 后端
 
-## 4. run agent 骑括号
+- [ ] 4.1 以领域无关 Session 替代 WorkSession/task_anchor，持久化 Provider/native id/workspace/parent/status；旧 JSONL 兼容读取
+- [ ] 4.2 create/message 端点改接 Adapter + supplements，首条懒创建；删除 task 专属请求契约
+- [ ] 4.3 增加会话 list、history、fork、archive API；Provider/模型变更只能新建或 fork
+- [ ] 4.4 增加 stop API 与活动 handle 追踪；中断保留 native id、transcript、bundle 和工作区副作用
+- [ ] 4.5 server 重启后将无 handle 的遗留 running 会话显示为 orphaned/interrupted
+- [ ] 4.6 legacy discussion 端点迁到通用 Session 兼容层，不再拥有独立 transcript 或前端 mode
 
-- [ ] 4.1 规格出单：Issue 关联本 OpenSpec task（wrapper 改薄编排、changes.json 退役、detached 同构、判定序不变）
-- [ ] 4.2 wrapper 改造合入（task 实现者施工、另一方交叉审）：同步/detached 双路走 begin→invoke→end
-- [ ] 4.3 回归验证：run agent 产出的 run 与人肉括号结构一致（diff/契约/fulfills/acceptance 同源）
+## 5. 统一前端会话壳
 
-## 5. 验收（静态末位关）
+- [ ] 5.1 API DTO 收敛为 Session、ProviderCapabilities、ContextPreview 和统一 SessionEvent
+- [ ] 5.2 App 状态收敛为 sessions/active_session_id/pending_refs/events，删除 discussionMessages/workMessages/activeChatKind
+- [ ] 5.3 ChatDock 增加 pending refs 标签、移除/固定和 preview；支持 node/edge/port 与跨层收集
+- [ ] 5.4 发送首条消息懒创建 Session；无 supplement 时不改变用户文本
+- [ ] 5.5 删除 task 右键派工、干活标题与开始类入口；选择 task 只产生普通 RefSet
+- [ ] 5.6 根据 ProviderCapabilities 显示暂停等控制；显示 running/interrupted/orphaned/native_missing/stateless
+- [ ] 5.7 会话列表、刷新恢复、切换、fork、归档与 usage/cache 详情可见
 
-- [ ] 5.1 玩具 task 定义（免费模型 deepseek-v4-flash-free；契约含 allowed_outputs + acceptance）
-- [ ] 5.2 全链彩排：仅用浏览器完成派工 → 会话流式 → agent 自己 run begin/end → diff/验收/落图 SSE 上画布
-- [ ] 5.3 三件套全绿（ruff / mypy --strict / pytest）+ svelte-check + vite build
-- [ ] 5.4 docs 状态翻牌：overview 清单 S8 ✅、assembly/frontend 🔲 摘除；memory 落账
+## 6. 验证与交付
+
+- [ ] 6.1 后端定向测试覆盖 OpenCode/Codex adapter、native resume、无 replay、ContextBundle 和 stop/recovery
+- [ ] 6.2 前端组件/浏览器验收覆盖 U1-U5，失败与能力降级不得显示成功
+- [ ] 6.3 GitNexus detect_changes 确认影响范围；ruff、mypy --strict、pytest、svelte-check、vite build 全绿
+- [ ] 6.4 `openspec validate s8-agent-socket --strict` 通过并同步 authoritative docs
+- [ ] 6.5 GitHub Issue 记录规格改道、实现提交、验证证据与用户目验入口

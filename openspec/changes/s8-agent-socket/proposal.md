@@ -1,32 +1,33 @@
-# S8 agent 插座（静态末位件）
-
 ## Why
 
-静态验收关已过（2026-07-17 彩排二轮），静态线只余 S8：agent 调用插座的前端闭环。目标＝「免费模型跑一个玩具 task，会话/diff/验收/落图全链前端可见，输出不作数」——把 agent 从 CLI 幕后请到画布上，同时消掉 run agent 与 run 括号两套并行测量真相。规格权威来源：`docs/assembly.md`「agent 插座子任务」＋`docs/frontend.md` S8 节（含 2026-07-18 grill 增补）。
+S8 已经证明浏览器能够显示流式 agent 文本与工具事件，但当前实现把通用会话壳绑定到 `task` 派工、`discussion/work` 模式和 OpenCode。平台需要先建立一个不理解“讨论、实验或派工”的原生 CLI 会话插座：Simulanka 管理会话、可见性和补充上下文，Codex、Claude、OpenCode 等 Provider 继续管理自己的历史、工具、压缩与 prompt cache。
 
 ## What Changes
 
-- **前端内嵌干活 agent 会话**：统一 ChatNode 壳（图聊/核对讨论/干活会话一张脸），干活会话＝工具调用卡片（默认折叠）＋一键放大全屏抽屉；opencode 非交互续聊，`--format json` 事件流边到边转；转录自持（每场一文件、挂载恢复；词表 `user_msg / agent_text / tool_call / tool_result / status / error`）。
-- **交互契约**：task 右键「派工」＋ChatDock 自由起；一问一答＋打字排队（轮末自动发）＋停止按钮（杀当轮、如实标中断；**run 括号留人收口**，doctor stale 检查兜底）。护栏 v1＝测量不拦（无批准流）。
-- **纯前端验收**：用户从派工到查看会话、工具调用、run、diff、契约验收与写权拒绝，全程只用浏览器；CLI、JSONL 与服务端日志只作幕后证据，不得成为理解或收口流程的必经步骤。
-- **run agent 骑 run 括号**：wrapper 私有快照/diff 退役，改 `run begin → 调 CLI → run end` 薄编排（`workspace.py` 同源测量，全系统一条测量路径）。**BREAKING**（内部）：`changes.json` 平面文件路径让位于括号测量产物。
-- **`--actor` 贯通**：会话/CLI 子进程注入 `SIMULANKA_ACTOR`，CLI 缺省 actor 读环境——agent 会话里跑的写图命令自动带正确身份过写权闸。
-- **锚定会话 UI**：讨论/核对会话迁入同一 ChatNode 壳挂批次锚（一批一场/写权闸/checkpoint 机制全保留，DiscussPanel 不复活）。
+- 把 `WorkSession` 收敛为领域无关 Session：任意会话均可创建、恢复、分叉、中断和归档，不再要求 task/run。
+- **BREAKING（前端交互）**：删除 task 专属「派工」入口与 `discussion/work` 模式选择；用户在统一 ChatNode 中直接发送消息，首条消息懒创建会话。
+- 新增结构化 `RefSet` 与不可变 `ContextBundle`。上下文只来自用户或上层程序显式附加的节点、边、端口，并且只是本轮增量补充，不替代 Provider 原生上下文。
+- 新增 Provider Adapter 合同。适配器 MUST 优先使用原生 session/thread resume，不得把完整 Simulanka transcript 重新拼回 prompt；Codex 首个适配器走 `codex exec --json` / `codex exec resume <SESSION_ID>`，OpenCode 适配器承接现有实现。
+- 增量上下文序列化保持确定、可寻址、可预览；相同 bundle 不重复注入。Provider 报告 cache usage 时，前端与转录显示 `cached_input_tokens` 等原生遥测，但平台不伪造 cache 命中。
+- 保留现有归一事件流、JSONL 转录、actor 贯通、工具调用卡片和统一 ChatNode 外壳；补齐会话索引、历史恢复、停止和 Provider 能力降级展示。
+- `run agent` 骑 run 括号及 run/diff/acceptance 工作流退出本 change，后续作为上层执行程序独立提案。
 
 ## Capabilities
 
 ### New Capabilities
 
-- `agent-session`：前端内嵌干活 agent 会话——server 起停/续聊/事件流/转录持久化/停止，与统一 ChatNode 壳的交互契约（派工入口、排队、叫停收口、锚定会话挂批次锚）。
-- `run-agent-bracket`：`run agent` 骑 run 括号——薄编排、同源测量、detached 同构、acceptance 时机沿既定（end/finalize）。
-- `actor-passthrough`：`SIMULANKA_ACTOR` 环境注入与 CLI 缺省 actor 解析，operator/agent 身份贯通写权闸。
+- `agent-session`: 领域无关的会话生命周期、事件流、持久化、恢复、分叉、中断、归档与统一前端壳。
+- `supplemental-context`: `RefSet → ContextBundle` 的显式补充上下文、确定性序列化、增量注入、预览与可追溯要求。
+- `provider-adapter`: 外部 agent CLI 的能力声明、原生会话续接、事件归一、取消与 cache usage 遥测合同。
+- `actor-passthrough`: Provider 子进程继承 Simulanka actor 身份，CLI 显式参数仍拥有最高优先级。
 
 ### Modified Capabilities
 
-（无——openspec specs 目前为空，S8 是试点第一单。）
+（无；主规格目录尚无已归档 capability。）
 
 ## Impact
 
-- **后端**：`server/`（会话端点＋SSE/流式转发）、`agent/harness.py`（复用续聊）、`agent/wrapper.py`（骑括号改造）、`runner/bracket.py`（不动或微调）、`cli/`（actor env 缺省）。
-- **前端**：`ChatNode`/`ChatDock`（工具卡片、放大态、派工入口、排队/停止）、右键菜单。
-- **不动**：kernel 写权矩阵、契约检查、转录之外的图状态机制。验收跑免费模型（deepseek-v4-flash-free），零 API 花销。
+- 后端：`agent/session.py`、`server/sessions.py`、`server/app.py`，新增 Provider/Context 边界与会话索引。
+- 前端：`App.svelte`、`ChatNode`、`ChatDock`、API DTO；删除 type/mode 专属分支，增加会话管理与上下文预览。
+- 兼容：现有 session JSONL 可读；旧 `discussion` 端点在迁移期保留为兼容入口，但不再定义平台会话类型。
+- 不动：Node/Edge/Port schema、PatchIntent 原子性、写权矩阵、run 测量和领域工作流。
