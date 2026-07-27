@@ -16,6 +16,14 @@ from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
+from simulanka.agent.context import (
+    ContextRef,
+    ContextReferenceError,
+    ContextSnapshotError,
+    RefSet,
+    compile_context,
+    decide_context_delivery,
+)
 from simulanka.agent.harness import (
     CommandRunner,
     HarnessError,
@@ -45,6 +53,7 @@ from simulanka.server.agent_ops import apply_agent_ops
 from simulanka.server.sessions import (
     SessionNotFound,
     create_work_session,
+    load_session,
     load_work_session,
     read_session_events,
     stream_work_session_turn,
@@ -662,6 +671,89 @@ def create_app(
         except SessionNotFound as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"session_id": session_id, "events": events}
+
+    @app.post("/session/context/preview")
+    def preview_context(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+        """Compile explicit references and read their incremental delivery state."""
+        allowed = {"refs", "session_id", "expected_graph_version", "missing"}
+        unknown = set(body) - allowed
+        if unknown:
+            raise HTTPException(
+                status_code=422, detail=f"unknown preview fields: {sorted(unknown)}"
+            )
+        raw_refs = body.get("refs")
+        if not isinstance(raw_refs, list):
+            raise HTTPException(status_code=422, detail="refs must be a list")
+        refs: list[ContextRef] = []
+        for raw_ref in raw_refs:
+            if not isinstance(raw_ref, dict) or set(raw_ref) != {"kind", "ref_id"}:
+                raise HTTPException(
+                    status_code=422,
+                    detail="each ref must contain exactly kind and ref_id",
+                )
+            kind = raw_ref.get("kind")
+            ref_id = raw_ref.get("ref_id")
+            if not isinstance(kind, str) or not isinstance(ref_id, str):
+                raise HTTPException(status_code=422, detail="ref kind and ref_id must be strings")
+            try:
+                refs.append(ContextRef(kind, ref_id))  # type: ignore[arg-type]
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        session_id = body.get("session_id")
+        if session_id is not None and (not isinstance(session_id, str) or not session_id):
+            raise HTTPException(status_code=422, detail="session_id must be a non-empty string")
+        expected_graph_version = body.get("expected_graph_version")
+        if expected_graph_version is not None and type(expected_graph_version) is not int:
+            raise HTTPException(status_code=422, detail="expected_graph_version must be an integer")
+        missing = body.get("missing", "error")
+        if not isinstance(missing, str):
+            raise HTTPException(status_code=422, detail="missing must be error or omit")
+
+        try:
+            bundle = compile_context(
+                layout,
+                RefSet(tuple(refs)),
+                missing=missing,  # type: ignore[arg-type]
+                expected_graph_version=expected_graph_version,
+            )
+        except ContextSnapshotError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (ContextReferenceError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        session = None
+        if session_id is not None:
+            try:
+                session = load_session(layout, session_id)
+            except SessionNotFound as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        payload = bundle.payload_object()
+        if not refs:
+            action, reason = "skip", "no_supplement"
+            bundle_record: dict[str, Any] | None = None
+        elif not payload["reference"]:
+            action, reason = "skip", "no_resolved_content"
+            bundle_record = bundle.as_record()
+        elif session is None:
+            action, reason = "send", "new_session"
+            bundle_record = bundle.as_record()
+        elif session.native_session_id is None:
+            action, reason = "send", "native_session_pending"
+            bundle_record = bundle.as_record()
+        else:
+            decision = decide_context_delivery(layout, session.native_session_id, bundle)
+            action = decision.action
+            reason = "already_sent" if action == "skip" else "new_digest"
+            bundle_record = bundle.as_record()
+        return {
+            "bundle": bundle_record,
+            "payload": payload,
+            "sources": [reference["source"] for reference in payload["reference"]],
+            "omissions": [omission.as_dict() for omission in bundle.omissions],
+            "delivery": {"action": action, "reason": reason},
+        }
 
     @app.post("/session/{session_id}/message")
     def agent_session_message(
