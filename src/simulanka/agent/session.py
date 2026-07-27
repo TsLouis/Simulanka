@@ -272,6 +272,148 @@ class OpenCodeAdapter:
                 yield event
 
 
+class CodexAdapter:
+    """Codex CLI transport and raw-event translation."""
+
+    provider_id = "codex"
+    capabilities = ProviderCapabilities(
+        native_resume=True,
+        native_fork=False,
+        interrupt=False,
+        tool_events=True,
+        usage=True,
+    )
+
+    def __init__(self, *, runner: StreamRunner | None = None) -> None:
+        self._runner = runner
+
+    def start_turn(
+        self,
+        message: str,
+        *,
+        model: str | None = None,
+        agent: str | None = None,
+    ) -> ProviderTurn:
+        del agent
+        return ProviderTurn(
+            events=self._stream_events(message, model=model, native_session_id=None),
+            handle=UnsupportedTurnHandle(self.provider_id),
+        )
+
+    def resume_turn(
+        self,
+        native_session_id: str,
+        message: str,
+        *,
+        model: str | None = None,
+        agent: str | None = None,
+    ) -> ProviderTurn:
+        del agent
+        return ProviderTurn(
+            events=self._stream_events(
+                message,
+                model=model,
+                native_session_id=native_session_id,
+            ),
+            handle=UnsupportedTurnHandle(self.provider_id),
+        )
+
+    @staticmethod
+    def normalize_event(raw: dict[str, Any]) -> list[SessionEvent]:
+        """Translate one Codex JSONL event into the stable session vocabulary."""
+        event_type = raw.get("type")
+        if event_type == "thread.started":
+            thread_id = _first_string(raw, "thread_id", "threadId", "id")
+            return [
+                SessionEvent(
+                    type="status",
+                    status="running",
+                    text="Codex 会话已启动",
+                    provider_session_id=thread_id,
+                )
+            ]
+        if event_type == "turn.started":
+            return [SessionEvent(type="status", status="running", text="Codex 正在处理…")]
+        if event_type == "turn.completed":
+            usage = raw.get("usage")
+            details = {"usage": dict(usage)} if isinstance(usage, Mapping) else {}
+            return [
+                SessionEvent(
+                    type="status",
+                    status="completed",
+                    text="Codex 本轮完成",
+                    details=details,
+                )
+            ]
+        if event_type in {"turn.failed", "error"}:
+            error = raw.get("error")
+            nested_message = (
+                _first_string(error, "message") if isinstance(error, Mapping) else None
+            )
+            message = (
+                nested_message
+                or _first_string(raw, "message", "error", "text")
+                or "Codex 返回错误"
+            )
+            return [SessionEvent(type="error", status="failed", text=message)]
+
+        item = raw.get("item")
+        if isinstance(item, dict):
+            return _normalize_codex_item(event_type, item)
+
+        label = event_type if isinstance(event_type, str) and event_type else "unknown"
+        return [
+            SessionEvent(
+                type="status",
+                status="event",
+                text=f"Codex 事件：{label}",
+                details={"event_type": label},
+            )
+        ]
+
+    def _stream_events(
+        self,
+        message: str,
+        *,
+        model: str | None,
+        native_session_id: str | None,
+    ) -> Iterator[SessionEvent]:
+        if not message.strip():
+            raise HarnessError("message must be non-empty.")
+
+        if native_session_id is None:
+            args = ["codex", "exec", "--json"]
+        else:
+            args = ["codex", "exec", "resume", native_session_id, "--json"]
+        if model:
+            args.extend(["--model", model])
+        args.append(message)
+
+        env = dict(os.environ)
+        env["SIMULANKA_ACTOR"] = "agent"
+        lines = (
+            self._runner(args, env)
+            if self._runner is not None
+            else _run_stream(args, env, cli_name="codex")
+        )
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                raw = json.loads(stripped)
+            except json.JSONDecodeError:
+                yield SessionEvent(
+                    type="status",
+                    status="event",
+                    text="Codex 正在处理非结构化输出…",
+                )
+                continue
+            if not isinstance(raw, dict):
+                continue
+            yield from self.normalize_event(raw)
+
+
 def stream_opencode_events(
     message: str,
     *,
@@ -292,6 +434,7 @@ def stream_opencode_events(
 
 provider_adapters = ProviderAdapterRegistry()
 provider_adapters.register(OpenCodeAdapter.provider_id, OpenCodeAdapter)
+provider_adapters.register(CodexAdapter.provider_id, CodexAdapter)
 
 
 def _normalize_tool_part(part: dict[str, Any]) -> list[SessionEvent]:
@@ -324,6 +467,54 @@ def _normalize_tool_part(part: dict[str, Any]) -> list[SessionEvent]:
     return [call, result]
 
 
+def _normalize_codex_item(event_type: object, item: dict[str, Any]) -> list[SessionEvent]:
+    item_type = item.get("type")
+    if item_type == "agent_message":
+        text = _first_string(item, "text", "content")
+        return [SessionEvent(type="agent_text", text=text)] if text else []
+
+    if item_type in {"command_execution", "mcp_tool_call"}:
+        tool_name = _first_string(item, "tool", "name", "server") or "tool"
+        call_id = _first_string(item, "id", "call_id")
+        status = _first_string(item, "status") or "running"
+        tool_input: Any = item.get("arguments")
+        if tool_input is None:
+            tool_input = item.get("command")
+        call = SessionEvent(
+            type="tool_call",
+            status=status,
+            tool_name=tool_name,
+            call_id=call_id,
+            input=tool_input,
+        )
+        if event_type == "item.started" or status in {"in_progress", "running"}:
+            return [call]
+        tool_output = item.get("output")
+        if tool_output is None:
+            tool_output = item.get("aggregated_output")
+        failed = status in {"failed", "error"}
+        return [
+            call,
+            SessionEvent(
+                type="tool_result",
+                status="failed" if failed else "done",
+                tool_name=tool_name,
+                call_id=call_id,
+                output=tool_output,
+            ),
+        ]
+
+    label = item_type if isinstance(item_type, str) and item_type else "unknown"
+    return [
+        SessionEvent(
+            type="status",
+            status="event",
+            text=f"Codex 条目：{label}",
+            details={"item_type": label},
+        )
+    ]
+
+
 def _assistant_text(raw: dict[str, Any]) -> str | None:
     role = raw.get("role")
     if role is not None and role != "assistant":
@@ -339,7 +530,9 @@ def _first_string(value: Mapping[str, Any], *keys: str) -> str | None:
     return None
 
 
-def _run_stream(args: list[str], env: Mapping[str, str]) -> Iterator[str]:
+def _run_stream(
+    args: list[str], env: Mapping[str, str], *, cli_name: str = "opencode"
+) -> Iterator[str]:
     try:
         proc = subprocess.Popen(
             args,
@@ -350,7 +543,7 @@ def _run_stream(args: list[str], env: Mapping[str, str]) -> Iterator[str]:
             env=dict(env),
         )
     except FileNotFoundError as exc:
-        raise HarnessError("`opencode` CLI not found on PATH.") from exc
+        raise HarnessError(f"`{cli_name}` CLI not found on PATH.") from exc
 
     assert proc.stdout is not None
     tail: deque[str] = deque(maxlen=20)
@@ -361,7 +554,7 @@ def _run_stream(args: list[str], env: Mapping[str, str]) -> Iterator[str]:
         returncode = proc.wait()
         if returncode != 0:
             detail = "\n".join(tail)[-500:]
-            raise HarnessError(f"opencode exited {returncode}: {detail}")
+            raise HarnessError(f"{cli_name} exited {returncode}: {detail}")
     finally:
         if proc.poll() is None:
             proc.terminate()

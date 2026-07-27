@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 
 from simulanka.agent.harness import HarnessError
 from simulanka.agent.session import (
+    CodexAdapter,
     OpenCodeAdapter,
     ProviderCapabilities,
     SessionEvent,
@@ -143,6 +144,85 @@ def test_opencode_adapter_contract_registry_and_native_resume() -> None:
         "provider-1",
         "continue",
     ]
+
+
+def test_codex_adapter_uses_native_resume_and_preserves_usage() -> None:
+    calls: list[list[str]] = []
+
+    def runner(args: list[str], env: Mapping[str, str]) -> Iterable[str]:
+        calls.append(args)
+        assert env["SIMULANKA_ACTOR"] == "agent"
+        if args[2] == "--json":
+            return [
+                json.dumps({"type": "thread.started", "thread_id": "thread-1"}),
+                json.dumps({"type": "turn.started"}),
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {"type": "agent_message", "text": "hello"},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "id": "call-1",
+                            "type": "command_execution",
+                            "command": "pwd",
+                            "aggregated_output": "/repo",
+                            "status": "completed",
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "turn.completed",
+                        "usage": {
+                            "input_tokens": 12,
+                            "cached_input_tokens": 8,
+                            "output_tokens": 3,
+                        },
+                    }
+                ),
+            ]
+        return [json.dumps({"type": "turn.completed"})]
+
+    adapter = provider_adapters.create("codex", runner=runner)
+    assert isinstance(adapter, CodexAdapter)
+    assert adapter.capabilities.usage is True
+    first_events = list(adapter.start_turn("first message").events)
+    assert calls[0] == ["codex", "exec", "--json", "first message"]
+    assert first_events[0].provider_session_id == "thread-1"
+    assert [event.type for event in first_events] == [
+        "status",
+        "status",
+        "agent_text",
+        "tool_call",
+        "tool_result",
+        "status",
+    ]
+    assert first_events[-1].details == {
+        "usage": {
+            "input_tokens": 12,
+            "cached_input_tokens": 8,
+            "output_tokens": 3,
+        }
+    }
+
+    message = "second message\n\n<new-supplement>only this turn</new-supplement>"
+    resumed_events = list(adapter.resume_turn("thread-1", message).events)
+    assert calls[1] == ["codex", "exec", "resume", "thread-1", "--json", message]
+    assert resumed_events[-1].details == {}
+
+
+def test_codex_failed_turn_keeps_nested_error_message() -> None:
+    [event] = CodexAdapter.normalize_event(
+        {"type": "turn.failed", "error": {"message": "sandbox rejected command"}}
+    )
+
+    assert event.type == "error"
+    assert event.status == "failed"
+    assert event.text == "sandbox rejected command"
 
 
 def test_work_session_uses_one_jsonl_and_preserves_provider_id(tmp_path: Path) -> None:
