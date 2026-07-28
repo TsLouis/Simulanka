@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from pathlib import Path
 from typing import Any, cast
 
@@ -10,6 +10,7 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 
+from simulanka.agent.context import SUPPLEMENT_BOUNDARY_START
 from simulanka.agent.harness import HarnessError
 from simulanka.agent.session import (
     CodexAdapter,
@@ -28,6 +29,7 @@ from simulanka.server.app import create_app
 from simulanka.server.sessions import (
     append_session_event,
     create_work_session,
+    load_session,
     load_work_session,
     read_session_events,
     render_first_message,
@@ -294,7 +296,7 @@ def test_work_session_uses_one_jsonl_and_preserves_provider_id(tmp_path: Path) -
     ]
 
 
-def test_server_work_session_streams_ndjson_and_rejects_concurrent_turn(
+def test_server_lazy_session_streams_context_and_resumes_without_replay(
     tmp_path: Path,
 ) -> None:
     layout, task_id = _seed_task(tmp_path)
@@ -303,64 +305,99 @@ def test_server_work_session_streams_ndjson_and_rejects_concurrent_turn(
     def runner(args: list[str], env: Mapping[str, str]) -> Iterable[str]:
         calls.append(args)
         assert env["SIMULANKA_ACTOR"] == "agent"
-        return [
-            json.dumps(
-                {
-                    "type": "step_start",
-                    "sessionID": "provider-1",
-                    "part": {"type": "step-start"},
-                }
-            ),
-            json.dumps(
-                {
-                    "type": "text",
-                    "sessionID": "provider-1",
-                    "part": {"type": "text", "text": "working"},
-                }
-            ),
-        ]
+        if len(calls) == 1:
+            return [
+                json.dumps({"type": "thread.started", "thread_id": "thread-1"}),
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {"type": "agent_message", "text": "working"},
+                    }
+                ),
+                json.dumps({"type": "turn.completed"}),
+            ]
+        return [json.dumps({"type": "turn.completed"})]
 
     app = create_app(layout, opencode_stream_runner=runner)
-    create_session = _endpoint(app, "/session", "POST")
+    start_session = _endpoint(app, "/session", "POST")
     send_message = _endpoint(app, "/session/{session_id}/message", "POST")
     history = _endpoint(app, "/session/{session_id}/history", "GET")
+    refs = [{"kind": "node", "ref_id": task_id}]
 
-    created = create_session({"task": task_id})
-    assert created["anchor"]["id"] == task_id
-    assert created["anchor"]["goal"] == "visible task"
-
-    first = send_message(created["session_id"], {"text": "begin"})
+    first_text = "  begin\n"
+    first = start_session(
+        {
+            "text": first_text,
+            "provider_id": "codex",
+            "refs": refs,
+        }
+    )
     assert isinstance(first, StreamingResponse)
+    session_id = first.headers["x-simulanka-session-id"]
     with pytest.raises(HTTPException) as conflict:
-        send_message(created["session_id"], {"text": "too soon"})
+        send_message(session_id, {"text": "too soon"})
     assert conflict.value.status_code == 409
 
-    state = load_work_session(layout, created["session_id"])
-    events = [
-        json.loads(line)
-        for line in stream_work_session_turn(
-            layout,
-            state,
-            "begin",
-            runner=runner,
-        )
-    ]
+    events = _streaming_events(first)
     assert [event["type"] for event in events] == [
+        "status",
         "user_msg",
         "status",
         "status",
         "agent_text",
         "status",
+        "status",
     ]
-    assert events[1]["status"] == "running"
+    assert events[0]["status"] == "created"
+    assert events[0]["details"]["session_id"] == session_id
+    assert events[0]["details"]["provider_id"] == "codex"
+    assert events[1]["text"] == first_text
     assert events[-1]["status"] == "done"
+    assert calls[0][:3] == ["codex", "exec", "--json"]
+    assert calls[0][-1].startswith(first_text + "\n\n" + SUPPLEMENT_BOUNDARY_START)
     assert task_id in calls[0][-1]
 
-    state = load_work_session(layout, created["session_id"])
-    list(stream_work_session_turn(layout, state, "continue", runner=runner))
-    assert calls[1][-3:-1] == ["-s", "provider-1"]
-    stored = history(created["session_id"])
-    assert stored["events"] == read_session_events(layout, created["session_id"])
+    second_text = "  continue\n"
+    second = send_message(session_id, {"text": second_text, "refs": refs})
+    second_events = _streaming_events(second)
+    assert second_events[0]["text"] == second_text
+    assert second_events[0]["details"]["context_bundles"][0]["decision"] == "skip"
+    assert second_events[-1]["status"] == "done"
+    assert calls[1] == [
+        "codex",
+        "exec",
+        "resume",
+        "thread-1",
+        "--json",
+        second_text,
+    ]
+    assert first_text not in calls[1][-1]
+    assert SUPPLEMENT_BOUNDARY_START not in calls[1][-1]
+    assert load_session(layout, session_id).native_session_id == "thread-1"
+
+    stored = history(session_id)
+    assert stored["events"] == read_session_events(layout, session_id)
+
+    with pytest.raises(HTTPException) as task_contract:
+        start_session({"text": "legacy", "provider_id": "codex", "task": task_id})
+    assert task_contract.value.status_code == 422
+    assert "task" in task_contract.value.detail
+
+    with pytest.raises(HTTPException) as provider_change:
+        send_message(session_id, {"text": "switch", "provider_id": "opencode"})
+    assert provider_change.value.status_code == 422
+
+
+def _streaming_events(response: StreamingResponse) -> list[dict[str, Any]]:
+    frame = getattr(response.body_iterator, "ag_frame", None)
+    assert frame is not None
+    iterator = cast(Iterator[str], frame.f_locals["iterator"])
+    return [
+        json.loads(line)
+        for chunk in iterator
+        for line in chunk.splitlines()
+        if line.strip()
+    ]
 
 
 def test_work_session_failure_and_disconnect_never_record_done(tmp_path: Path) -> None:

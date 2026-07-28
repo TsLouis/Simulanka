@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 from simulanka.agent.context import (
+    ContextBundle,
     ContextRef,
     ContextReferenceError,
     ContextSnapshotError,
@@ -30,7 +31,7 @@ from simulanka.agent.harness import (
     OpenCodeTurn,
     run_opencode_turn,
 )
-from simulanka.agent.session import StreamRunner
+from simulanka.agent.session import StreamRunner, provider_adapters
 from simulanka.disagreements import disagreement_list, edge_payload
 from simulanka.kernel.apply import apply_patch_now
 from simulanka.kernel.events import Event, iter_events
@@ -51,13 +52,12 @@ from simulanka.plan import PlanError, resolve_escalate
 from simulanka.schema.entities import Edge
 from simulanka.server.agent_ops import apply_agent_ops
 from simulanka.server.sessions import (
+    Session,
     SessionNotFound,
-    create_work_session,
+    create_session,
     load_session,
-    load_work_session,
     read_session_events,
-    stream_work_session_turn,
-    task_anchor,
+    stream_session_turn,
 )
 from simulanka.storage.checkpoint import ensure_repo, repo_exists, tag_checkpoint
 from simulanka.storage.entity_store import (
@@ -624,45 +624,149 @@ def create_app(
         """
         return {"disagreements": disagreement_list(layout)}
 
-    # --- S8 work sessions: browser-first agent turns -----------------------
-    # Work sessions deliberately do not share the global §13.6 discussion
-    # state. Their local id names the Simulanka transcript; provider_session_id
-    # is discovered from opencode and used only for later ``-s`` continuation.
+    # --- S8 provider-neutral sessions --------------------------------------
+
+    def message_context_bundles(body: dict[str, Any]) -> tuple[ContextBundle, ...]:
+        raw_refs = body.get("refs", [])
+        if not isinstance(raw_refs, list):
+            raise HTTPException(status_code=422, detail="refs must be a list")
+        refs: list[ContextRef] = []
+        for raw_ref in raw_refs:
+            if not isinstance(raw_ref, dict) or set(raw_ref) != {"kind", "ref_id"}:
+                raise HTTPException(
+                    status_code=422,
+                    detail="each ref must contain exactly kind and ref_id",
+                )
+            kind = raw_ref.get("kind")
+            ref_id = raw_ref.get("ref_id")
+            if not isinstance(kind, str) or not isinstance(ref_id, str):
+                raise HTTPException(
+                    status_code=422,
+                    detail="ref kind and ref_id must be strings",
+                )
+            try:
+                refs.append(ContextRef(kind, ref_id))  # type: ignore[arg-type]
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if not refs:
+            return ()
+
+        expected_graph_version = body.get("expected_graph_version")
+        if expected_graph_version is not None and type(expected_graph_version) is not int:
+            raise HTTPException(
+                status_code=422,
+                detail="expected_graph_version must be an integer",
+            )
+        missing = body.get("missing", "error")
+        if not isinstance(missing, str):
+            raise HTTPException(status_code=422, detail="missing must be error or omit")
+        try:
+            bundle = compile_context(
+                layout,
+                RefSet(tuple(refs)),
+                missing=missing,  # type: ignore[arg-type]
+                expected_graph_version=expected_graph_version,
+            )
+        except ContextSnapshotError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (ContextReferenceError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return (bundle,)
+
+    def session_stream_response(
+        state: Session,
+        text: str,
+        bundles: tuple[ContextBundle, ...],
+        *,
+        include_created: bool,
+    ) -> StreamingResponse:
+        session_id = state.session_id
+        with active_work_sessions_lock:
+            if session_id in active_work_sessions or state.turn_running:
+                raise HTTPException(
+                    status_code=409,
+                    detail="a turn is already running for this session",
+                )
+            active_work_sessions.add(session_id)
+
+        def event_stream() -> Iterator[str]:
+            try:
+                if include_created:
+                    created = read_session_events(layout, session_id)[0]
+                    yield json.dumps(created, ensure_ascii=False) + "\n"
+                yield from stream_session_turn(
+                    layout,
+                    state,
+                    text,
+                    bundles=bundles,
+                    runner=opencode_stream_runner,
+                )
+            finally:
+                with active_work_sessions_lock:
+                    active_work_sessions.discard(session_id)
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="application/x-ndjson",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "X-Simulanka-Session-Id": session_id,
+            },
+        )
 
     @app.post("/session")
     def create_agent_session(
         body: dict[str, Any] = Body(default_factory=dict),
-    ) -> dict[str, Any]:
-        task_id = body.get("task")
+    ) -> StreamingResponse:
+        allowed = {
+            "text",
+            "provider_id",
+            "model",
+            "refs",
+            "expected_graph_version",
+            "missing",
+        }
+        unknown = set(body) - allowed
+        if unknown:
+            raise HTTPException(
+                status_code=422,
+                detail=f"unknown session fields: {sorted(unknown)}",
+            )
+        text = body.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise HTTPException(status_code=422, detail="text is required")
+        provider_id = body.get("provider_id")
+        if not isinstance(provider_id, str) or not provider_id.strip():
+            raise HTTPException(
+                status_code=422,
+                detail="provider_id must be a non-empty string",
+            )
+        provider_id = provider_id.strip()
         model = body.get("model")
-        if task_id is not None and not isinstance(task_id, str):
-            raise HTTPException(status_code=422, detail="task must be a node id")
         if model is not None and (not isinstance(model, str) or not model.strip()):
             raise HTTPException(status_code=422, detail="model must be a string")
-
-        anchor: dict[str, Any] | None = None
-        if isinstance(task_id, str):
-            try:
-                task_node = load_node(layout, task_id)
-                anchor = task_anchor(task_node)
-            except FileNotFoundError:
-                raise HTTPException(
-                    status_code=404, detail=f"no node {task_id!r}",
-                ) from None
-            except ValueError as exc:
-                raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-        state = create_work_session(
+        bundles = message_context_bundles(body)
+        try:
+            provider_adapters.create(
+                provider_id,
+                runner=opencode_stream_runner,
+                workspace=str(layout.root),
+            )
+        except HarnessError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        state = create_session(
             layout,
-            anchor=anchor,
+            provider_id=provider_id,
             model=model.strip() if isinstance(model, str) else None,
+            workspace=layout.root,
         )
-        return {
-            "session_id": state.session_id,
-            "anchor": state.anchor,
-            "model": state.model,
-            "status": "idle",
-        }
+        return session_stream_response(
+            state,
+            text,
+            bundles,
+            include_created=True,
+        )
 
     @app.get("/session/{session_id}/history")
     def agent_session_history(session_id: str) -> dict[str, Any]:
@@ -760,41 +864,26 @@ def create_app(
         session_id: str,
         body: dict[str, Any] = Body(default_factory=dict),
     ) -> StreamingResponse:
+        allowed = {"text", "refs", "expected_graph_version", "missing"}
+        unknown = set(body) - allowed
+        if unknown:
+            raise HTTPException(
+                status_code=422,
+                detail=f"unknown message fields: {sorted(unknown)}",
+            )
         text = body.get("text")
         if not isinstance(text, str) or not text.strip():
             raise HTTPException(status_code=422, detail="text is required")
+        bundles = message_context_bundles(body)
         try:
-            state = load_work_session(layout, session_id)
+            state = load_session(layout, session_id)
         except SessionNotFound as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-        with active_work_sessions_lock:
-            if session_id in active_work_sessions or state.turn_running:
-                raise HTTPException(
-                    status_code=409,
-                    detail="a turn is already running for this session",
-                )
-            active_work_sessions.add(session_id)
-
-        def event_stream() -> Iterator[str]:
-            try:
-                yield from stream_work_session_turn(
-                    layout,
-                    state,
-                    text.strip(),
-                    runner=opencode_stream_runner,
-                )
-            finally:
-                with active_work_sessions_lock:
-                    active_work_sessions.discard(session_id)
-
-        return StreamingResponse(
-            event_stream(),
-            media_type="application/x-ndjson",
-            headers={
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no",
-            },
+        return session_stream_response(
+            state,
+            text,
+            bundles,
+            include_created=False,
         )
 
     # --- §13.6 discussion session: the agent op channel --------------------
