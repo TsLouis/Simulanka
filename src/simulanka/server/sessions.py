@@ -4,16 +4,24 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
 from ulid import ULID
 
+from simulanka.agent.context import (
+    ContextBundle,
+    compose_message,
+    decide_context_delivery,
+    mark_context_sent,
+    store_context_bundle,
+)
 from simulanka.agent.session import (
     SessionEvent,
     StreamRunner,
+    provider_adapters,
     stream_opencode_events,
 )
 from simulanka.layout.project import ProjectLayout
@@ -314,6 +322,165 @@ def render_first_message(state: WorkSession, message: str) -> str:
         f"Task anchor:\n```json\n{context}\n```\n\n"
         f"Human message:\n{message}"
     )
+
+
+def stream_session_turn(
+    layout: ProjectLayout,
+    state: Session,
+    message: str,
+    *,
+    bundles: Sequence[ContextBundle] = (),
+    runner: StreamRunner | None = None,
+) -> Iterator[str]:
+    """Run one provider-neutral turn without replaying transcript history."""
+
+    def emit(event: SessionEvent) -> str:
+        append_session_event(layout, state.session_id, event)
+        return json.dumps(event.as_dict(), ensure_ascii=False) + "\n"
+
+    terminal = False
+    provider_events: Iterator[SessionEvent] | None = None
+    try:
+        send_bundles, context_details = _context_delivery_plan(layout, state, bundles)
+        for bundle in send_bundles:
+            store_context_bundle(layout, bundle)
+
+        yield emit(
+            SessionEvent(
+                type="user_msg",
+                text=message,
+                details={"context_bundles": context_details} if context_details else {},
+            )
+        )
+        yield emit(
+            SessionEvent(
+                type="status",
+                status="running",
+                text="请求已接收，agent 正在启动…",
+            )
+        )
+
+        adapter = provider_adapters.create(
+            state.provider_id,
+            runner=runner,
+            workspace=state.workspace,
+        )
+        if state.native_session_id is not None and not adapter.capabilities.native_resume:
+            yield emit(
+                SessionEvent(
+                    type="status",
+                    status="stateless",
+                    text="当前 Provider 不支持原生续接；请新建会话",
+                )
+            )
+            terminal = True
+            return
+
+        provider_message = compose_message(message, send_bundles)
+        turn = (
+            adapter.resume_turn(
+                state.native_session_id,
+                provider_message,
+                model=state.model,
+            )
+            if state.native_session_id is not None
+            else adapter.start_turn(provider_message, model=state.model)
+        )
+        provider_events = turn.events
+        resolved_native_id = state.native_session_id
+        provider_failed = False
+        for event in provider_events:
+            candidate = event.provider_session_id
+            if candidate:
+                if resolved_native_id is None:
+                    resolved_native_id = candidate
+                elif resolved_native_id != candidate:
+                    raise SessionStateError(
+                        f"session {state.session_id!r} changed native session id "
+                        f"from {resolved_native_id!r} to {candidate!r}"
+                    )
+            provider_failed = provider_failed or event.type == "error" or (
+                event.type == "status" and event.status == "failed"
+            )
+            yield emit(event)
+
+        if provider_failed:
+            yield emit(SessionEvent(type="status", status="failed", text="本轮失败"))
+        elif adapter.capabilities.native_resume and resolved_native_id is None:
+            yield emit(
+                SessionEvent(
+                    type="status",
+                    status="native_missing",
+                    text="Provider 未返回可续接的原生会话标识",
+                )
+            )
+        elif not adapter.capabilities.native_resume:
+            yield emit(
+                SessionEvent(
+                    type="status",
+                    status="stateless",
+                    text="本轮完成，但 Provider 不支持原生续接",
+                )
+            )
+        else:
+            assert resolved_native_id is not None
+            for bundle in send_bundles:
+                mark_context_sent(layout, resolved_native_id, bundle)
+            yield emit(SessionEvent(type="status", status="done", text="本轮完成"))
+        terminal = True
+    except Exception as exc:
+        yield emit(SessionEvent(type="error", status="failed", text=str(exc)))
+        yield emit(SessionEvent(type="status", status="failed", text="本轮失败"))
+        terminal = True
+    finally:
+        if provider_events is not None:
+            close = getattr(provider_events, "close", None)
+            if callable(close):
+                close()
+        if not terminal:
+            append_session_event(
+                layout,
+                state.session_id,
+                SessionEvent(
+                    type="status",
+                    status="failed",
+                    text="连接中断，本轮未完成",
+                ),
+            )
+
+
+def _context_delivery_plan(
+    layout: ProjectLayout,
+    state: Session,
+    bundles: Sequence[ContextBundle],
+) -> tuple[tuple[ContextBundle, ...], list[dict[str, str]]]:
+    send: list[ContextBundle] = []
+    details: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for bundle in bundles:
+        if bundle.digest in seen:
+            continue
+        seen.add(bundle.digest)
+        payload = bundle.payload_object()
+        if not payload.get("instruction") and not payload.get("reference"):
+            decision, reason = "skip", "no_resolved_content"
+        elif state.native_session_id is None:
+            decision, reason = "send", "native_session_pending"
+            send.append(bundle)
+        else:
+            delivery = decide_context_delivery(layout, state.native_session_id, bundle)
+            decision = delivery.action
+            reason = "already_sent" if decision == "skip" else "new_digest"
+            if decision == "send":
+                send.append(bundle)
+        details.append(
+            {
+                "digest": bundle.digest,
+                "decision": decision,
+                "reason": reason,
+            }
+        )
+    return tuple(send), details
 
 
 def stream_work_session_turn(
