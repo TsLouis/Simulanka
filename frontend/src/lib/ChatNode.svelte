@@ -1,8 +1,5 @@
 <script lang="ts" context="module">
-  import type { DiscussionOpResult } from './api'
-
-  // One chat entry. Applied/rejected are the agent's op-block results — the
-  // write-matrix gate's outcome rides with the message that caused it.
+  // One provider-neutral chat entry projected from the normalized event stream.
   export interface ChatMsg {
     role: 'user' | 'agent' | 'system'
     text: string
@@ -12,8 +9,6 @@
     callId?: string
     input?: unknown
     output?: unknown
-    applied?: DiscussionOpResult[]
-    rejected?: DiscussionOpResult[]
   }
 </script>
 
@@ -123,19 +118,13 @@
         {:else}
           <div class="bubble" class:error={m.kind === 'error'}>{m.text}</div>
         {/if}
-        {#if m.applied && m.applied.length > 0}
-          <div class="ops ok">✓ 落图 {m.applied.length} 项</div>
-        {/if}
-        {#if m.rejected && m.rejected.length > 0}
-          <div class="ops bad">⚠ 写权闸拒绝 {m.rejected.length} 项</div>
-        {/if}
       </div>
     {/each}
     {#if busy}
       <div class="msg agent"><div class="bubble thinking">正在思考…</div></div>
     {/if}
     {#if messages.length === 0 && !busy}
-      <div class="empty">还没有消息。底部输入条发一句,会话会锚定当前选择。</div>
+      <div class="empty">还没有消息。直接在底部输入；画布选择不会自动加入上下文。</div>
     {/if}
   </div>
 </section>
@@ -305,16 +294,6 @@
   .thinking {
     color: var(--muted);
     letter-spacing: 2px;
-  }
-  .ops {
-    font-size: 11px;
-    margin-top: 2px;
-  }
-  .ops.ok {
-    color: var(--jade);
-  }
-  .ops.bad {
-    color: var(--crimson);
   }
   .empty {
     color: var(--muted);

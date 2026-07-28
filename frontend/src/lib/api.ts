@@ -234,7 +234,7 @@ export interface DiscussionState {
   batch?: string[]
 }
 
-// --- S8 embedded work sessions -------------------------------------------
+// --- S8 provider-neutral sessions ----------------------------------------
 
 export type SessionEventType =
   | 'user_msg'
@@ -244,19 +244,41 @@ export type SessionEventType =
   | 'status'
   | 'error'
 
-export interface TaskAnchorDTO {
-  id: string
-  name: string
-  goal: unknown
-  allowed_outputs: unknown[]
-  acceptance_command: unknown
+export type ContextRefKind = 'node' | 'edge' | 'port'
+
+export interface ContextRefDTO {
+  kind: ContextRefKind
+  ref_id: string
 }
 
-export interface WorkSessionDTO {
+export type SessionStatusDTO =
+  | 'idle'
+  | 'running'
+  | 'done'
+  | 'failed'
+  | 'interrupted'
+  | 'orphaned'
+  | 'native_missing'
+  | 'stateless'
+  | 'archived'
+
+export interface SessionDTO {
   session_id: string
-  anchor: TaskAnchorDTO | null
+  provider_id: string
   model: string | null
-  status: 'idle'
+  native_session_id: string | null
+  workspace: string
+  parent_session_id: string | null
+  forked_from_event_id: string | null
+  status: SessionStatusDTO
+}
+
+export interface ProviderCapabilitiesDTO {
+  native_resume: boolean
+  native_fork: boolean
+  interrupt: boolean
+  tool_events: boolean
+  usage: boolean
 }
 
 export interface SessionEventDTO {
@@ -271,33 +293,76 @@ export interface SessionEventDTO {
   details?: Record<string, unknown>
 }
 
-export async function createWorkSession(task?: string): Promise<WorkSessionDTO> {
-  const resp = await fetch('/session', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(task ? { task } : {}),
-  })
-  if (!resp.ok) {
-    throw new Error(`POST /session failed: ${resp.status} ${await resp.text()}`)
+export interface ContextPreviewDTO {
+  bundle: Record<string, unknown> | null
+  payload: {
+    instruction: unknown[]
+    reference: unknown[]
   }
-  return (await resp.json()) as WorkSessionDTO
+  sources: Array<{ kind: ContextRefKind; id: string }>
+  omissions: Array<Record<string, unknown>>
+  delivery: {
+    action: 'send' | 'skip'
+    reason: string
+  }
 }
 
-export async function streamWorkSessionMessage(
-  sessionId: string,
-  text: string,
-  onEvent: (event: SessionEventDTO) => void,
-): Promise<void> {
-  const resp = await fetch(`/session/${encodeURIComponent(sessionId)}/message`, {
+export interface StreamSessionOptions {
+  sessionId: string | null
+  text: string
+  providerId?: string
+  model?: string | null
+  refs?: ContextRefDTO[]
+}
+
+export const DEFAULT_PROVIDER_ID = 'codex'
+
+export async function previewSessionContext(
+  refs: ContextRefDTO[],
+  sessionId: string | null = null,
+): Promise<ContextPreviewDTO> {
+  const body: Record<string, unknown> = { refs }
+  if (sessionId) body.session_id = sessionId
+  const resp = await fetch('/session/context/preview', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text }),
+    body: JSON.stringify(body),
   })
   if (!resp.ok) {
-    throw new Error(`POST /session/${sessionId}/message failed: ${resp.status} ${await resp.text()}`)
+    throw new Error(
+      `POST /session/context/preview failed: ${resp.status} ${await resp.text()}`,
+    )
+  }
+  return (await resp.json()) as ContextPreviewDTO
+}
+
+export async function streamSessionMessage(
+  options: StreamSessionOptions,
+  onEvent: (event: SessionEventDTO) => void,
+): Promise<string> {
+  const initial = options.sessionId === null
+  const endpoint = initial
+    ? '/session'
+    : `/session/${encodeURIComponent(options.sessionId!)}/message`
+  const body: Record<string, unknown> = { text: options.text }
+  if (initial) {
+    body.provider_id = options.providerId ?? DEFAULT_PROVIDER_ID
+    if (options.model) body.model = options.model
+  }
+  if (options.refs && options.refs.length > 0) body.refs = options.refs
+
+  const resp = await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!resp.ok) {
+    throw new Error(`POST ${endpoint} failed: ${resp.status} ${await resp.text()}`)
   }
   if (!resp.body) throw new Error('agent session response has no readable stream')
 
+  let resolvedSessionId =
+    options.sessionId ?? resp.headers.get('X-Simulanka-Session-Id')
   const reader = resp.body.getReader()
   const decoder = new TextDecoder()
   let pending = ''
@@ -308,11 +373,27 @@ export async function streamWorkSessionMessage(
     pending = lines.pop() ?? ''
     for (const line of lines) {
       if (!line.trim()) continue
-      onEvent(JSON.parse(line) as SessionEventDTO)
+      const event = JSON.parse(line) as SessionEventDTO
+      resolvedSessionId = sessionIdFromCreated(event) ?? resolvedSessionId
+      onEvent(event)
     }
     if (done) break
   }
-  if (pending.trim()) onEvent(JSON.parse(pending) as SessionEventDTO)
+  if (pending.trim()) {
+    const event = JSON.parse(pending) as SessionEventDTO
+    resolvedSessionId = sessionIdFromCreated(event) ?? resolvedSessionId
+    onEvent(event)
+  }
+  if (!resolvedSessionId) {
+    throw new Error('agent session stream did not report a session id')
+  }
+  return resolvedSessionId
+}
+
+function sessionIdFromCreated(event: SessionEventDTO): string | null {
+  if (event.type !== 'status' || event.status !== 'created') return null
+  const sessionId = event.details?.session_id
+  return typeof sessionId === 'string' && sessionId ? sessionId : null
 }
 
 // Safety fuse over the server's 180s harness timeout: the UI must never wait

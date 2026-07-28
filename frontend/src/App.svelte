@@ -4,14 +4,13 @@
   // searchbox, dialogs), all of which we disabled in favour of our own chrome.
   import { LGraphCanvas, type LGraphNode } from 'litegraph.js'
   import {
+    DEFAULT_PROVIDER_ID,
     acceptGhost,
     createEdge,
     createNode,
-    createWorkSession,
     deleteEdge,
     deleteNode,
     deleteTemplate,
-    fetchDiscussionState,
     fetchGraph,
     fetchNodeInfo,
     fetchPositions,
@@ -21,17 +20,15 @@
     resolveNote,
     savePositions,
     saveTemplate,
-    sendDiscussionMessage,
     setDiscuss,
-    startDiscussion,
-    streamWorkSessionMessage,
+    streamSessionMessage,
+    type ContextRefDTO,
     type CustomTemplateDTO,
-    type DiscussionTurn,
     type FileOpenRequest,
     type HumanVerdict,
     type Positions,
+    type SessionDTO,
     type SessionEventDTO,
-    type WorkSessionDTO,
   } from './lib/api'
   import { subscribeEvents, type EventSubscription } from './lib/events'
   import { buildLiteGraph, type LineageEdge } from './lib/litegraph-adapter'
@@ -294,129 +291,135 @@
     }
   }
 
-  // §13.6 discussion chat state. Lives here, not in the panel: closing the
-  // panel must not drop the thread. Applied ops come back over SSE like any
-  // other kernel commit — no manual canvas refresh needed.
-  let discussionMessages: ChatMsg[] = []
-  let workMessages: ChatMsg[] = []
+  // S8 generic session shell. Provider-native history remains authoritative;
+  // this event list is the normalized transcript used only for UI/audit.
+  let sessions: SessionDTO[] = []
+  let activeSessionId: string | null = null
+  let pendingRefs: ContextRefDTO[] = []
+  let sessionEvents: SessionEventDTO[] = []
   let chatBusy = false
-  let discussionActive = false
-  let activeChatKind: 'discussion' | 'work' = 'discussion'
-  let workSession: WorkSessionDTO | null = null
-  $: chatMessages = activeChatKind === 'work' ? workMessages : discussionMessages
-  $: chatTitle =
-    activeChatKind === 'work' && workSession?.anchor
-      ? `干活 · ${workSession.anchor.name}`
-      : '会话'
-  $: chatSubtitle =
-    activeChatKind === 'work' && workSession?.anchor
-      ? `task:${workSession.anchor.name}`
-      : anchorLabel
+  $: activeSession = sessions.find(session => session.session_id === activeSessionId) ?? null
+  $: chatMessages = sessionEvents.map(sessionEventMessage)
+  $: chatTitle = '会话'
+  $: chatSubtitle = activeSession
+    ? `${activeSession.provider_id} · ${activeSession.status}`
+    : `${DEFAULT_PROVIDER_ID} · 新会话`
+  $: contextLabel =
+    pendingRefs.length > 0 ? `已附加 ${pendingRefs.length} 项` : '未附加上下文'
 
-  function chatTurn(turn: DiscussionTurn) {
-    discussionMessages = [
-      ...discussionMessages,
-      { role: 'agent', text: turn.reply, applied: turn.applied, rejected: turn.rejected },
-    ]
-    activeChatKind = 'discussion'
-    chatPanelOpen = true
-    if (turn.op_errors.length > 0) {
-      status = `agent op-block errors: ${turn.op_errors.join('; ')}`
-    }
-  }
-
-  // 锚定标签(§13.6):选中集优先,否则当前容器。随消息一起送给 agent,
-  // 也显示在 dock 上——人和 agent 对「在谈什么」保持同一认知。
-  $: anchorLabel =
-    activeChatKind === 'work' && workSession?.anchor
-      ? `task:${workSession.anchor.name}`
-      : selectedNode
-        ? `${selectedNode.type}:${selectedNode.name}`
-        : crumbs.length > 0
-          ? `容器:${crumbs[crumbs.length - 1].name}`
-          : '全图'
-
-  // One send path: first message auto-starts the opencode session (the
-  // opening turn snapshots the disagreement set server-side), then the text
-  // goes out with its anchor stamped in front.
-  async function chatSend(text: string) {
-    if (activeChatKind === 'work' && workSession) {
-      await workChatSend(text)
-      return
-    }
-    const stamped = `（锚定：${anchorLabel}）\n${text}`
-    discussionMessages = [...discussionMessages, { role: 'user', text }]
-    chatPanelOpen = true
-    chatBusy = true
-    try {
-      if (!discussionActive) {
-        const opening = await startDiscussion()
-        discussionActive = true
-        chatTurn(opening)
-      }
-      chatTurn(await sendDiscussionMessage(stamped))
-    } catch (err) {
-      // Failures land in the stream itself — a status-bar whisper reads as a
-      // dead click (彩排实测: user perceived it as a freeze).
-      discussionMessages = [
-        ...discussionMessages,
-        { role: 'agent', text: `⚠ 会话失败: ${(err as Error).message}` },
-      ]
-    } finally {
-      chatBusy = false
-    }
-  }
-
-  function workEvent(event: SessionEventDTO) {
+  function sessionEventMessage(event: SessionEventDTO): ChatMsg {
     if (event.type === 'user_msg') {
-      workMessages = [...workMessages, { role: 'user', text: event.text ?? '' }]
-    } else if (event.type === 'agent_text') {
-      workMessages = [...workMessages, { role: 'agent', text: event.text ?? '' }]
-    } else if (event.type === 'tool_call' || event.type === 'tool_result') {
-      workMessages = [
-        ...workMessages,
-        {
-          role: 'agent',
-          kind: event.type,
-          text: event.tool_name ?? 'tool',
-          status: event.status,
-          toolName: event.tool_name,
-          callId: event.call_id,
-          input: event.input,
-          output: event.output,
-        },
+      return { role: 'user', text: event.text ?? '' }
+    }
+    if (event.type === 'agent_text') {
+      return { role: 'agent', text: event.text ?? '' }
+    }
+    if (event.type === 'tool_call' || event.type === 'tool_result') {
+      return {
+        role: 'agent',
+        kind: event.type,
+        text: event.tool_name ?? 'tool',
+        status: event.status,
+        toolName: event.tool_name,
+        callId: event.call_id,
+        input: event.input,
+        output: event.output,
+      }
+    }
+    if (event.type === 'error') {
+      return {
+        role: 'agent',
+        kind: 'error',
+        text: event.text ?? 'Agent 会话失败',
+      }
+    }
+    return {
+      role: 'system',
+      kind: 'status',
+      status: event.status,
+      text: event.text ?? event.status ?? '状态更新',
+    }
+  }
+
+  function sessionEvent(event: SessionEventDTO) {
+    sessionEvents = [...sessionEvents, event]
+    if (event.type === 'status' && event.status === 'created') {
+      const details = event.details
+      const sessionId = details?.session_id
+      const providerId = details?.provider_id
+      const workspace = details?.workspace
+      if (
+        typeof sessionId === 'string' &&
+        typeof providerId === 'string' &&
+        typeof workspace === 'string'
+      ) {
+        const session: SessionDTO = {
+          session_id: sessionId,
+          provider_id: providerId,
+          model: typeof details?.model === 'string' ? details.model : null,
+          native_session_id: null,
+          workspace,
+          parent_session_id:
+            typeof details?.parent_session_id === 'string'
+              ? details.parent_session_id
+              : null,
+          forked_from_event_id:
+            typeof details?.forked_from_event_id === 'string'
+              ? details.forked_from_event_id
+              : null,
+          status: 'idle',
+        }
+        sessions = [...sessions.filter(item => item.session_id !== sessionId), session]
+        activeSessionId = sessionId
+      }
+    } else if (activeSessionId) {
+      const lifecycle = event.status
+      const lifecycleStatuses: SessionDTO['status'][] = [
+        'idle',
+        'running',
+        'done',
+        'failed',
+        'interrupted',
+        'orphaned',
+        'native_missing',
+        'stateless',
+        'archived',
       ]
-    } else if (event.type === 'error') {
-      workMessages = [
-        ...workMessages.filter(m => m.kind !== 'status' || m.status === 'idle'),
-        { role: 'agent', kind: 'error', text: event.text ?? 'Agent 会话失败' },
-      ]
-    } else {
-      workMessages = [
-        ...workMessages.filter(m => m.kind !== 'status' || m.status === 'idle'),
-        {
-          role: 'system',
-          kind: 'status',
-          status: event.status,
-          text: event.text ?? event.status ?? '状态更新',
-        },
-      ]
+      sessions = sessions.map(session => {
+        if (session.session_id !== activeSessionId) return session
+        return {
+          ...session,
+          native_session_id:
+            event.provider_session_id ?? session.native_session_id,
+          status:
+            lifecycle && lifecycleStatuses.includes(lifecycle as SessionDTO['status'])
+              ? (lifecycle as SessionDTO['status'])
+              : session.status,
+        }
+      })
     }
     chatPanelOpen = true
   }
 
-  async function workChatSend(text: string) {
-    if (!workSession) return
+  async function chatSend(text: string) {
     chatPanelOpen = true
     chatBusy = true
     try {
-      await streamWorkSessionMessage(workSession.session_id, text, workEvent)
-    } catch (err) {
-      workMessages = [
-        ...workMessages.filter(m => m.kind !== 'status' || m.status === 'idle'),
+      activeSessionId = await streamSessionMessage(
         {
-          role: 'agent',
-          kind: 'error',
+          sessionId: activeSessionId,
+          text,
+          providerId: DEFAULT_PROVIDER_ID,
+          refs: pendingRefs,
+        },
+        sessionEvent,
+      )
+    } catch (err) {
+      sessionEvents = [
+        ...sessionEvents,
+        {
+          type: 'error',
+          status: 'failed',
           text: `⚠ 会话失败: ${(err as Error).message}`,
         },
       ]
@@ -602,28 +605,6 @@
       status = `模板已存: ${name.trim()}`
     } catch (err) {
       status = `save template failed: ${(err as Error).message}`
-    }
-  }
-
-  async function menuDispatch() {
-    if (!menu?.node || menu.node.type !== 'task') return
-    const task = menu.node
-    menu = null
-    try {
-      const session = await createWorkSession(task.id)
-      workSession = session
-      activeChatKind = 'work'
-      workMessages = [
-        {
-          role: 'system',
-          kind: 'status',
-          status: 'idle',
-          text: `已锚定任务「${session.anchor?.name ?? task.name}」，可以开始派工`,
-        },
-      ]
-      chatPanelOpen = true
-    } catch (err) {
-      status = `派工失败: ${(err as Error).message}`
     }
   }
 
@@ -850,13 +831,6 @@
         customTemplates = t
       })
       .catch(() => undefined)
-    // An opencode session survives a page reload (state file + session id);
-    // history doesn't — the transcript lives in the session, not the server.
-    void fetchDiscussionState()
-      .then(s => {
-        discussionActive = s.active
-      })
-      .catch(() => undefined)
     void load()
     subscription = subscribeEvents({
       onReady: gv => {
@@ -1006,13 +980,12 @@
       onEnter={menuEnter}
       onRename={menuRename}
       onSaveTemplate={menuSaveTemplate}
-      onDispatch={menuDispatch}
       onDelete={menuDelete}
       onDeleteTemplate={menuDeleteTemplate}
     />
   {/if}
   <ChatDock
-    {anchorLabel}
+    {contextLabel}
     busy={chatBusy}
     panelOpen={chatPanelOpen}
     onSend={t => void chatSend(t)}
@@ -1021,8 +994,8 @@
   {#if chatPanelOpen}
     <ChatNode
       messages={chatMessages}
-      active={activeChatKind === 'work' ? workSession !== null : discussionActive}
-      busy={activeChatKind === 'discussion' && chatBusy}
+      active={activeSessionId !== null}
+      busy={chatBusy}
       title={chatTitle}
       subtitle={chatSubtitle}
       onClose={() => (chatPanelOpen = false)}

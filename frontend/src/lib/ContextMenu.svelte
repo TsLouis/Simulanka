@@ -15,7 +15,6 @@
   export let onEnter: () => void = () => {}
   export let onRename: () => void = () => {}
   export let onSaveTemplate: () => void = () => {}
-  export let onDispatch: () => void = () => {}
   export let onDelete: () => void = () => {}
   export let onDeleteTemplate: (name: string) => void = () => {}
 
@@ -99,9 +98,6 @@
     </button>
     <button class="row action" on:click={onRename}>重命名 ✎</button>
     <button class="row action" on:click={onSaveTemplate}>存为模板 ⧉</button>
-    {#if node.type === 'task'}
-      <button class="row action dispatch" on:click={onDispatch}>派工 ✦</button>
-    {/if}
     {#if deletable}
       <button class="row action danger" on:click={onDelete}>删除 ✕</button>
     {/if}
@@ -163,9 +159,6 @@
     border-radius: 5px;
     cursor: pointer;
     font: inherit;
-  }
-  .dispatch {
-    color: var(--gold-bright);
   }
   .row:hover {
     background: var(--panel-2);

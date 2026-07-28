@@ -44,10 +44,10 @@
 
 ## 5. 统一前端会话壳
 
-- [ ] 5.1 API DTO 收敛为 Session、ProviderCapabilities、ContextPreview 和统一 SessionEvent
-- [ ] 5.2 App 状态收敛为 sessions/active_session_id/pending_refs/events，删除 discussionMessages/workMessages/activeChatKind
+- [x] 5.1 API DTO 收敛为 Session、ProviderCapabilities、ContextPreview 和统一 SessionEvent
+- [x] 5.2 App 状态收敛为 sessions/active_session_id/pending_refs/events，删除 discussionMessages/workMessages/activeChatKind
 - [ ] 5.3 ChatDock 增加 pending refs 标签、移除/固定和 preview；支持 node/edge/port 与跨层收集
-- [ ] 5.4 发送首条消息懒创建 Session；无 supplement 时不改变用户文本
+- [x] 5.4 发送首条消息懒创建 Session；无 supplement 时不改变用户文本
 - [ ] 5.5 删除 task 右键派工、干活标题与开始类入口；选择 task 只产生普通 RefSet
 - [ ] 5.6 根据 ProviderCapabilities 显示暂停等控制；显示 running/interrupted/orphaned/native_missing/stateless
 - [ ] 5.7 会话列表、刷新恢复、切换、fork、归档与 usage/cache 详情可见

@@ -1,7 +1,6 @@
 <script lang="ts">
-  // 底部常驻输入条:只做输入(用户拍板 2026-07-12)。对话历史在会话节点
-  // (ChatNode)里;锚定=当前画布选中集,没选中就锚定当前容器。
-  export let anchorLabel: string
+  // 底部常驻输入条只负责消息和显式上下文提示；画布选择不会被静默注入。
+  export let contextLabel: string
   export let busy = false
   export let panelOpen = false
   export let onSend: (text: string) => void
@@ -10,10 +9,10 @@
   let text = ''
 
   function send() {
-    const t = text.trim()
-    if (!t || busy) return
+    if (!text.trim() || busy) return
+    const message = text
     text = ''
-    onSend(t)
+    onSend(message)
   }
 
   function onKeydown(e: KeyboardEvent) {
@@ -25,11 +24,11 @@
 </script>
 
 <div class="dock">
-  <span class="anchor" title="消息锚定在这里(§13.6:对话必锚定画布选择)">
-    ⚓ {anchorLabel}
+  <span class="context" title="只发送你显式附加的上下文">
+    ◇ {contextLabel}
   </span>
   <input
-    placeholder="给 agent 留话…(Enter 发送)"
+    placeholder="直接和 agent 对话…（Enter 发送）"
     bind:value={text}
     on:keydown={onKeydown}
     disabled={busy}
@@ -60,7 +59,7 @@
       0 0 0 1px rgba(217, 186, 125, 0.08);
     font-size: 13px;
   }
-  .anchor {
+  .context {
     color: var(--gold-dim);
     font-size: 11px;
     white-space: nowrap;
