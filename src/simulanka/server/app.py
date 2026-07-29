@@ -54,9 +54,14 @@ from simulanka.server.agent_ops import apply_agent_ops
 from simulanka.server.sessions import (
     Session,
     SessionNotFound,
+    SessionStateError,
+    archive_session,
     create_session,
+    fork_session,
+    list_sessions,
     load_session,
     read_session_events,
+    session_record,
     stream_session_turn,
 )
 from simulanka.storage.checkpoint import ensure_repo, repo_exists, tag_checkpoint
@@ -768,13 +773,113 @@ def create_app(
             include_created=True,
         )
 
+    @app.get("/session")
+    def agent_session_list() -> dict[str, Any]:
+        return {
+            "sessions": [session_record(state) for state in list_sessions(layout)]
+        }
+
     @app.get("/session/{session_id}/history")
     def agent_session_history(session_id: str) -> dict[str, Any]:
         try:
+            state = load_session(layout, session_id)
             events = read_session_events(layout, session_id)
         except SessionNotFound as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        return {"session_id": session_id, "events": events}
+        return {
+            "session_id": session_id,
+            "session": session_record(state),
+            "events": events,
+        }
+
+    @app.post("/session/{session_id}/fork")
+    def agent_session_fork(
+        session_id: str,
+        body: dict[str, Any] = Body(default_factory=dict),
+    ) -> dict[str, Any]:
+        allowed = {"provider_id", "model", "forked_from_event_id"}
+        unknown = set(body) - allowed
+        if unknown:
+            raise HTTPException(
+                status_code=422,
+                detail=f"unknown fork fields: {sorted(unknown)}",
+            )
+        provider_id = body.get("provider_id")
+        if provider_id is not None and (
+            not isinstance(provider_id, str) or not provider_id.strip()
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="provider_id must be a non-empty string",
+            )
+        model = body.get("model")
+        if model is not None and (not isinstance(model, str) or not model.strip()):
+            raise HTTPException(
+                status_code=422,
+                detail="model must be a string or null",
+            )
+        forked_from_event_id = body.get("forked_from_event_id")
+        if forked_from_event_id is not None and (
+            not isinstance(forked_from_event_id, str)
+            or not forked_from_event_id.strip()
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="forked_from_event_id must be a non-empty string",
+            )
+        try:
+            parent = load_session(layout, session_id)
+            resolved_provider_id = (
+                parent.provider_id
+                if provider_id is None
+                else provider_id.strip()
+            )
+            provider_adapters.create(
+                resolved_provider_id,
+                runner=opencode_stream_runner,
+                workspace=parent.workspace,
+            )
+            child = fork_session(
+                layout,
+                session_id,
+                provider_id=resolved_provider_id,
+                model=model.strip() if isinstance(model, str) else None,
+                inherit_model="model" not in body,
+                forked_from_event_id=(
+                    forked_from_event_id.strip()
+                    if isinstance(forked_from_event_id, str)
+                    else None
+                ),
+            )
+        except SessionNotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except HarnessError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return session_record(child)
+
+    @app.post("/session/{session_id}/archive")
+    def agent_session_archive(
+        session_id: str,
+        body: dict[str, Any] = Body(default_factory=dict),
+    ) -> dict[str, Any]:
+        if body:
+            raise HTTPException(
+                status_code=422,
+                detail=f"unknown archive fields: {sorted(body)}",
+            )
+        with active_work_sessions_lock:
+            if session_id in active_work_sessions:
+                raise HTTPException(
+                    status_code=409,
+                    detail="cannot archive a running session",
+                )
+        try:
+            state = archive_session(layout, session_id)
+        except SessionNotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except SessionStateError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return session_record(state)
 
     @app.post("/session/context/preview")
     def preview_context(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
@@ -879,6 +984,11 @@ def create_app(
             state = load_session(layout, session_id)
         except SessionNotFound as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if state.status == "archived":
+            raise HTTPException(
+                status_code=409,
+                detail="archived sessions are read-only; fork or create a new session",
+            )
         return session_stream_response(
             state,
             text,

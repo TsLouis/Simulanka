@@ -37,7 +37,7 @@
 
 - [x] 4.1 以领域无关 Session 替代 WorkSession/task_anchor，持久化 Provider/native id/workspace/parent/status；旧 JSONL 兼容读取
 - [x] 4.2 create/message 端点改接 Adapter + supplements，首条懒创建；删除 task 专属请求契约
-- [ ] 4.3 增加会话 list、history、fork、archive API；Provider/模型变更只能新建或 fork
+- [x] 4.3 增加会话 list、history、fork、archive API；Provider/模型变更只能新建或 fork
 - [ ] 4.4 增加 stop API 与活动 handle 追踪；中断保留 native id、transcript、bundle 和工作区副作用
 - [ ] 4.5 server 重启后将无 handle 的遗留 running 会话显示为 orphaned/interrupted
 - [ ] 4.6 legacy discussion 端点迁到通用 Session 兼容层，不再拥有独立 transcript 或前端 mode

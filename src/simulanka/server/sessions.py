@@ -287,6 +287,73 @@ def load_session(layout: ProjectLayout, session_id: str) -> Session:
     )
 
 
+def list_sessions(layout: ProjectLayout) -> list[Session]:
+    """Scan durable JSONL sessions without maintaining a second index."""
+    directory = layout.dot_dir / "agent" / "sessions"
+    if not directory.is_dir():
+        return []
+    sessions: list[Session] = []
+    for path in sorted(directory.glob("ses_*.jsonl"), reverse=True):
+        try:
+            sessions.append(load_session(layout, path.stem))
+        except (SessionNotFound, SessionStateError):
+            # A malformed sidecar must not hide every otherwise recoverable
+            # session. Direct history access still reports the damaged id.
+            continue
+    return sessions
+
+
+def fork_session(
+    layout: ProjectLayout,
+    parent_session_id: str,
+    *,
+    provider_id: str | None = None,
+    model: str | None = None,
+    inherit_model: bool = True,
+    forked_from_event_id: str | None = None,
+) -> Session:
+    """Create a blank child session; Provider history is never replayed."""
+    parent = load_session(layout, parent_session_id)
+    return create_session(
+        layout,
+        provider_id=parent.provider_id if provider_id is None else provider_id,
+        model=parent.model if inherit_model else model,
+        workspace=parent.workspace,
+        parent_session_id=parent.session_id,
+        forked_from_event_id=forked_from_event_id,
+    )
+
+
+def archive_session(layout: ProjectLayout, session_id: str) -> Session:
+    """Archive a session non-destructively and idempotently."""
+    state = load_session(layout, session_id)
+    if state.status == "running":
+        raise SessionStateError("cannot archive a running session")
+    if state.status == "archived":
+        return state
+    append_session_event(
+        layout,
+        session_id,
+        SessionEvent(type="status", status="archived", text="会话已归档"),
+    )
+    return load_session(layout, session_id)
+
+
+def session_record(state: Session) -> dict[str, Any]:
+    """Return the stable provider-neutral API representation."""
+    return {
+        "session_id": state.session_id,
+        "provider_id": state.provider_id,
+        "model": state.model,
+        "native_session_id": state.native_session_id,
+        "workspace": state.workspace,
+        "parent_session_id": state.parent_session_id,
+        "forked_from_event_id": state.forked_from_event_id,
+        "status": state.status,
+        "legacy": state.legacy_anchor is not None,
+    }
+
+
 def load_work_session(layout: ProjectLayout, session_id: str) -> WorkSession:
     """Load a generic Session through the old task-oriented shape."""
     state = load_session(layout, session_id)
