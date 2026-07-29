@@ -10,6 +10,8 @@
   // S6 血缘链逐跳可点 / S7 escalate 就地已处理——动作由宿主执行。
   export let onJumpTo: (id: string) => void = () => {}
   export let onResolveNote: (id: string) => void = () => {}
+  export let onAttachNode: (node: NodeDTO) => void = () => {}
+  export let onAttachPort: (port: PortDTO) => void = () => {}
 
   $: ports = node ? node.ports.map(id => portsById.get(id)).filter(Boolean) as PortDTO[] : []
   $: attrEntries = node ? Object.entries(node.attrs) : []
@@ -78,6 +80,9 @@
       {/if}
       <h2>{node.name}</h2>
       <code class="id">{node.id}</code>
+      <button class="attach-btn" on:click={() => onAttachNode(node!)}>
+        ＋ 附加节点
+      </button>
     </header>
 
     {#if openEscalate}
@@ -155,6 +160,12 @@
               {#if portConfidence(p)}
                 <span class="conf conf-{portConfidence(p)}">{portConfidence(p)}</span>
               {/if}
+              <button
+                class="port-attach"
+                title={`附加端口 ${p.id}`}
+                aria-label={`附加端口 ${portLabel(p) ?? p.name}`}
+                on:click={() => onAttachPort(p)}
+              >＋</button>
             </li>
           {/each}
         </ul>
@@ -258,6 +269,28 @@
     content: '✦ ';
     font-size: 8px;
     color: var(--gold-dim);
+  }
+  .attach-btn {
+    margin-top: 8px;
+    border: 1px solid var(--hairline);
+    border-radius: 5px;
+    background: var(--panel-3);
+    color: var(--gold-bright);
+    padding: 4px 8px;
+    cursor: pointer;
+    font: inherit;
+  }
+  .attach-btn:hover,
+  .port-attach:hover {
+    border-color: var(--gold);
+  }
+  .port-attach {
+    margin-left: auto;
+    border: 1px solid var(--hairline);
+    border-radius: 4px;
+    background: var(--panel-3);
+    color: var(--gold-bright);
+    cursor: pointer;
   }
   section {
     margin-bottom: 14px;

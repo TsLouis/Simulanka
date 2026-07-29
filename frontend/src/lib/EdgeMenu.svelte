@@ -13,6 +13,7 @@
   export let onVerdict: (verdict: 'correct' | 'wrong' | 'disputed') => void
   export let onAccept: () => void
   export let onToggleDiscuss: () => void
+  export let onAttach: () => void = () => {}
 
   const str = (key: string): string | null =>
     typeof edge.attrs[key] === 'string' ? (edge.attrs[key] as string) : null
@@ -49,23 +50,26 @@
     <span class="chip src-{str('source') ?? 'user'}">{str('source') ?? '?'}</span>
     <span class="ends" title={edge.id}>{srcName} → {dstName}</span>
   </div>
-  {#if verdict}
-    <div class="state">
-      裁决: <b class="v-{verdict}">{verdict}</b>{#if verdictBy}&nbsp;by {verdictBy}{/if}
-    </div>
-  {/if}
+  {#if edge.type === 'data_flow'}
+    {#if verdict}
+      <div class="state">
+        裁决: <b class="v-{verdict}">{verdict}</b>{#if verdictBy}&nbsp;by {verdictBy}{/if}
+      </div>
+    {/if}
 
-  {#if isGhost}
-    <button class="row good" on:click={onAccept}>✓ 接受提议</button>
-    <button class="row bad" on:click={() => onVerdict('wrong')}>✗ 拒绝（要理由）</button>
-  {:else}
-    <button class="row good" on:click={() => onVerdict('correct')}>✓ 裁决：正确</button>
-    <button class="row bad" on:click={() => onVerdict('wrong')}>✗ 裁决：错误</button>
-    <button class="row" on:click={() => onVerdict('disputed')}>⚖ 裁决：存疑</button>
+    {#if isGhost}
+      <button class="row good" on:click={onAccept}>✓ 接受提议</button>
+      <button class="row bad" on:click={() => onVerdict('wrong')}>✗ 拒绝（要理由）</button>
+    {:else}
+      <button class="row good" on:click={() => onVerdict('correct')}>✓ 裁决：正确</button>
+      <button class="row bad" on:click={() => onVerdict('wrong')}>✗ 裁决：错误</button>
+      <button class="row" on:click={() => onVerdict('disputed')}>⚖ 裁决：存疑</button>
+    {/if}
+    <button class="row" on:click={onToggleDiscuss}>
+      ⇄ {inDiscuss ? '移出讨论' : '拉入讨论'}
+    </button>
   {/if}
-  <button class="row" on:click={onToggleDiscuss}>
-    ⇄ {inDiscuss ? '移出讨论' : '拉入讨论'}
-  </button>
+  <button class="row" on:click={onAttach}>附加上下文 ＋</button>
 </div>
 
 <style>

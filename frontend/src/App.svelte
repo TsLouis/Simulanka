@@ -16,6 +16,7 @@
     fetchPositions,
     fetchTemplates,
     postVerdict,
+    previewSessionContext,
     renameNode,
     resolveNote,
     savePositions,
@@ -23,6 +24,7 @@
     setDiscuss,
     streamSessionMessage,
     type ContextRefDTO,
+    type ContextPreviewDTO,
     type CustomTemplateDTO,
     type FileOpenRequest,
     type HumanVerdict,
@@ -240,8 +242,7 @@
     }).showLinkMenu = (link, e) => {
       const id = (link as { simulanka_edge_id?: string }).simulanka_edge_id
       const dto = id ? edgesById.get(id) : undefined
-      // 裁决只对 data_flow 有意义(server 422 同一条线)。
-      if (!dto || dto.type !== 'data_flow') return
+      if (!dto) return
       edgeMenu = { x: e.clientX, y: e.clientY, edge: dto }
     }
   }
@@ -295,7 +296,15 @@
   // this event list is the normalized transcript used only for UI/audit.
   let sessions: SessionDTO[] = []
   let activeSessionId: string | null = null
-  let pendingRefs: ContextRefDTO[] = []
+  type PendingContextRef = ContextRefDTO & {
+    label: string
+    pinned: boolean
+  }
+  let pendingRefs: PendingContextRef[] = []
+  let contextPreview: ContextPreviewDTO | null = null
+  let previewBusy = false
+  let previewError: string | null = null
+  let previewRequest = 0
   let sessionEvents: SessionEventDTO[] = []
   let chatBusy = false
   $: activeSession = sessions.find(session => session.session_id === activeSessionId) ?? null
@@ -306,6 +315,57 @@
     : `${DEFAULT_PROVIDER_ID} · 新会话`
   $: contextLabel =
     pendingRefs.length > 0 ? `已附加 ${pendingRefs.length} 项` : '未附加上下文'
+
+  function addPendingRef(ref: ContextRefDTO, label: string) {
+    const exists = pendingRefs.some(
+      item => item.kind === ref.kind && item.ref_id === ref.ref_id,
+    )
+    if (!exists) {
+      pendingRefs = [...pendingRefs, { ...ref, label, pinned: false }]
+    }
+    previewRequest += 1
+    previewBusy = false
+    contextPreview = null
+    previewError = null
+    chatPanelOpen = true
+  }
+
+  function removePendingRef(ref: ContextRefDTO) {
+    pendingRefs = pendingRefs.filter(
+      item => item.kind !== ref.kind || item.ref_id !== ref.ref_id,
+    )
+    previewRequest += 1
+    previewBusy = false
+    contextPreview = null
+    previewError = null
+  }
+
+  function togglePendingPin(ref: ContextRefDTO) {
+    pendingRefs = pendingRefs.map(item =>
+      item.kind === ref.kind && item.ref_id === ref.ref_id
+        ? { ...item, pinned: !item.pinned }
+        : item,
+    )
+  }
+
+  async function previewPendingRefs() {
+    const request = ++previewRequest
+    previewBusy = true
+    previewError = null
+    try {
+      const result = await previewSessionContext(
+        pendingRefs.map(({ kind, ref_id }) => ({ kind, ref_id })),
+        activeSessionId,
+      )
+      if (request === previewRequest) contextPreview = result
+    } catch (err) {
+      if (request !== previewRequest) return
+      contextPreview = null
+      previewError = (err as Error).message
+    } finally {
+      if (request === previewRequest) previewBusy = false
+    }
+  }
 
   function sessionEventMessage(event: SessionEventDTO): ChatMsg {
     if (event.type === 'user_msg') {
@@ -404,16 +464,37 @@
   async function chatSend(text: string) {
     chatPanelOpen = true
     chatBusy = true
+    previewRequest += 1
+    previewBusy = false
+    contextPreview = null
+    previewError = null
+    let turnDone = false
+    const sentRefs = pendingRefs.map(ref => ({ ...ref }))
     try {
       activeSessionId = await streamSessionMessage(
         {
           sessionId: activeSessionId,
           text,
           providerId: DEFAULT_PROVIDER_ID,
-          refs: pendingRefs,
+          refs: sentRefs.map(({ kind, ref_id }) => ({ kind, ref_id })),
         },
-        sessionEvent,
+        event => {
+          if (event.type === 'status' && event.status === 'done') {
+            turnDone = true
+          }
+          sessionEvent(event)
+        },
       )
+      if (turnDone) {
+        const sentKeys = new Set(
+          sentRefs.map(ref => `${ref.kind}:${ref.ref_id}`),
+        )
+        pendingRefs = pendingRefs.filter(
+          ref => ref.pinned || !sentKeys.has(`${ref.kind}:${ref.ref_id}`),
+        )
+        contextPreview = null
+        previewError = null
+      }
     } catch (err) {
       sessionEvents = [
         ...sessionEvents,
@@ -951,6 +1032,13 @@
     onOpenFile={(req) => (fileRequest = req)}
     onJumpTo={(id) => void jumpToEntity(id)}
     onResolveNote={(id) => void resolveEscalate(id)}
+    onAttachNode={(node) =>
+      addPendingRef({ kind: 'node', ref_id: node.id }, `${node.type} · ${node.name}`)}
+    onAttachPort={(port) =>
+      addPendingRef(
+        { kind: 'port', ref_id: port.id },
+        `port · ${selectedNode?.name ?? port.node_id}/${port.name}`,
+      )}
   />
   {#if fileRequest}
     <FileViewer request={fileRequest} onClose={() => (fileRequest = null)} />
@@ -966,6 +1054,14 @@
       onVerdict={(v) => void edgeVerdict(edgeMenu!.edge, v)}
       onAccept={() => void edgeAccept(edgeMenu!.edge)}
       onToggleDiscuss={() => void edgeToggleDiscuss(edgeMenu!.edge)}
+      onAttach={() => {
+        const activeEdge = edgeMenu!.edge
+        addPendingRef(
+          { kind: 'edge', ref_id: activeEdge.id },
+          `edge · ${namesById.get(activeEdge.src) ?? activeEdge.src} → ${namesById.get(activeEdge.dst) ?? activeEdge.dst}`,
+        )
+        edgeMenu = null
+      }}
     />
   {/if}
   {#if menu}
@@ -982,14 +1078,31 @@
       onSaveTemplate={menuSaveTemplate}
       onDelete={menuDelete}
       onDeleteTemplate={menuDeleteTemplate}
+      onAttach={() => {
+        const activeNode = menu!.node
+        if (activeNode) {
+          addPendingRef(
+            { kind: 'node', ref_id: activeNode.id },
+            `${activeNode.type} · ${activeNode.name}`,
+          )
+        }
+        menu = null
+      }}
     />
   {/if}
   <ChatDock
     {contextLabel}
     busy={chatBusy}
     panelOpen={chatPanelOpen}
+    refs={pendingRefs}
+    preview={contextPreview}
+    {previewBusy}
+    {previewError}
     onSend={t => void chatSend(t)}
     onTogglePanel={() => (chatPanelOpen = !chatPanelOpen)}
+    onRemoveRef={removePendingRef}
+    onTogglePin={togglePendingPin}
+    onPreview={() => void previewPendingRefs()}
   />
   {#if chatPanelOpen}
     <ChatNode

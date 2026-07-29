@@ -17,6 +17,7 @@
   export let onSaveTemplate: () => void = () => {}
   export let onDelete: () => void = () => {}
   export let onDeleteTemplate: (name: string) => void = () => {}
+  export let onAttach: () => void = () => {}
 
   // Canvas delete covers the model-sketch domain only (server policy) — the
   // menu doesn't offer what the kernel would refuse.
@@ -97,6 +98,7 @@
       {#if node.child_count > 0}<span class="hint">{node.child_count} 项</span>{/if}
     </button>
     <button class="row action" on:click={onRename}>重命名 ✎</button>
+    <button class="row action" on:click={onAttach}>附加上下文 ＋</button>
     <button class="row action" on:click={onSaveTemplate}>存为模板 ⧉</button>
     {#if deletable}
       <button class="row action danger" on:click={onDelete}>删除 ✕</button>
