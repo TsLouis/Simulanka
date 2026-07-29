@@ -130,6 +130,31 @@ def test_session_lifecycle_routes_enforce_binding_and_archived_read_only(
     assert running.value.status_code == 409
 
 
+def test_corrupt_session_state_is_reported_as_conflict(tmp_path: Path) -> None:
+    layout = init_project(tmp_path, with_scaffold=False).layout
+    parent = create_session(layout, provider_id="codex")
+    append_session_event(
+        layout,
+        parent.session_id,
+        SessionEvent(type="status", provider_session_id="thread-one"),
+    )
+    append_session_event(
+        layout,
+        parent.session_id,
+        SessionEvent(type="status", provider_session_id="thread-two"),
+    )
+    app = create_app(layout)
+    history_route = _endpoint(app, "/session/{session_id}/history", "GET")
+    fork_route = _endpoint(app, "/session/{session_id}/fork", "POST")
+
+    with pytest.raises(HTTPException) as history_conflict:
+        history_route(parent.session_id)
+    assert history_conflict.value.status_code == 409
+    with pytest.raises(HTTPException) as fork_conflict:
+        fork_route(parent.session_id, {})
+    assert fork_conflict.value.status_code == 409
+
+
 def _endpoint(app: FastAPI, path: str, method: str) -> Callable[..., Any]:
     for route in app.routes:
         if getattr(route, "path", None) == path and method in getattr(

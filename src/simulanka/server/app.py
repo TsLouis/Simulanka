@@ -786,6 +786,8 @@ def create_app(
             events = read_session_events(layout, session_id)
         except SessionNotFound as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except SessionStateError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {
             "session_id": session_id,
             "session": session_record(state),
@@ -853,6 +855,8 @@ def create_app(
             )
         except SessionNotFound as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except SessionStateError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except HarnessError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return session_record(child)
