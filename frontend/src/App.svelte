@@ -6,6 +6,7 @@
   import {
     DEFAULT_PROVIDER_ID,
     acceptGhost,
+    archiveSession,
     createEdge,
     createNode,
     deleteEdge,
@@ -14,7 +15,10 @@
     fetchGraph,
     fetchNodeInfo,
     fetchPositions,
+    fetchSessionHistory,
+    fetchSessions,
     fetchTemplates,
+    forkSession,
     postVerdict,
     previewSessionContext,
     renameNode,
@@ -296,6 +300,11 @@
   // this event list is the normalized transcript used only for UI/audit.
   let sessions: SessionDTO[] = []
   let activeSessionId: string | null = null
+  const ACTIVE_SESSION_KEY = 'simulanka.active_session_id'
+  let historyRequest = 0
+  let sessionListBusy = false
+  let sessionActionBusy = false
+  let sessionListError: string | null = null
   type PendingContextRef = ContextRefDTO & {
     label: string
     pinned: boolean
@@ -309,12 +318,144 @@
   let chatBusy = false
   $: activeSession = sessions.find(session => session.session_id === activeSessionId) ?? null
   $: chatMessages = sessionEvents.map(sessionEventMessage)
+  $: latestUsage = latestSessionUsage(sessionEvents)
+  $: cacheLabel =
+    activeSessionId === null
+      ? null
+      : latestUsage
+        ? `cache ${typeof latestUsage.cached_input_tokens === 'number' ? latestUsage.cached_input_tokens : '未报告'}`
+        : sessionEvents.some(
+              event => event.type === 'status' && event.status === 'done',
+            )
+          ? 'cache 未报告'
+          : null
+  $: chatReadOnly =
+    activeSession?.status === 'archived' ||
+    activeSession?.status === 'orphaned' ||
+    activeSession?.status === 'native_missing' ||
+    activeSession?.status === 'stateless'
   $: chatTitle = '会话'
   $: chatSubtitle = activeSession
     ? `${activeSession.provider_id} · ${activeSession.status}`
     : `${DEFAULT_PROVIDER_ID} · 新会话`
   $: contextLabel =
     pendingRefs.length > 0 ? `已附加 ${pendingRefs.length} 项` : '未附加上下文'
+
+  function latestSessionUsage(
+    events: SessionEventDTO[],
+  ): Record<string, unknown> | null {
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const usage = events[index].details?.usage
+      if (usage && typeof usage === 'object' && !Array.isArray(usage)) {
+        return usage as Record<string, unknown>
+      }
+    }
+    return null
+  }
+
+  function rememberActiveSession(sessionId: string | null) {
+    if (sessionId === null) {
+      window.localStorage.removeItem(ACTIVE_SESSION_KEY)
+    } else {
+      window.localStorage.setItem(ACTIVE_SESSION_KEY, sessionId)
+    }
+  }
+
+  async function openSession(sessionId: string, clearDraft = true) {
+    const request = ++historyRequest
+    sessionListBusy = true
+    sessionListError = null
+    activeSessionId = sessionId
+    sessionEvents = []
+    rememberActiveSession(sessionId)
+    if (clearDraft) {
+      pendingRefs = []
+      contextPreview = null
+      previewError = null
+    }
+    try {
+      const history = await fetchSessionHistory(sessionId)
+      if (request !== historyRequest) return
+      sessions = sessions.some(item => item.session_id === sessionId)
+        ? sessions.map(item =>
+            item.session_id === sessionId ? history.session : item,
+          )
+        : [history.session, ...sessions]
+      sessionEvents = history.events
+      chatPanelOpen = true
+    } catch (err) {
+      if (request !== historyRequest) return
+      sessionListError = (err as Error).message
+    } finally {
+      if (request === historyRequest) sessionListBusy = false
+    }
+  }
+
+  async function restoreSessions() {
+    sessionListBusy = true
+    sessionListError = null
+    try {
+      sessions = await fetchSessions()
+      const remembered = window.localStorage.getItem(ACTIVE_SESSION_KEY)
+      const candidate =
+        sessions.find(session => session.session_id === remembered) ??
+        sessions.find(session => session.status !== 'archived') ??
+        sessions[0]
+      if (candidate) {
+        await openSession(candidate.session_id, false)
+      } else {
+        activeSessionId = null
+        sessionEvents = []
+        rememberActiveSession(null)
+      }
+    } catch (err) {
+      sessionListError = (err as Error).message
+    } finally {
+      sessionListBusy = false
+    }
+  }
+
+  function startNewSession() {
+    historyRequest += 1
+    activeSessionId = null
+    sessionEvents = []
+    pendingRefs = []
+    contextPreview = null
+    previewError = null
+    rememberActiveSession(null)
+    chatPanelOpen = true
+  }
+
+  async function forkActiveSession() {
+    if (!activeSessionId || sessionActionBusy) return
+    sessionActionBusy = true
+    sessionListError = null
+    try {
+      const child = await forkSession(activeSessionId)
+      sessions = [child, ...sessions]
+      await openSession(child.session_id)
+    } catch (err) {
+      sessionListError = (err as Error).message
+    } finally {
+      sessionActionBusy = false
+    }
+  }
+
+  async function archiveActiveSession() {
+    if (!activeSessionId || sessionActionBusy) return
+    sessionActionBusy = true
+    sessionListError = null
+    try {
+      const archived = await archiveSession(activeSessionId)
+      sessions = sessions.map(session =>
+        session.session_id === archived.session_id ? archived : session,
+      )
+    } catch (err) {
+      sessionListError = (err as Error).message
+    } finally {
+      sessionActionBusy = false
+    }
+  }
 
   function addPendingRef(ref: ContextRefDTO, label: string) {
     const exists = pendingRefs.some(
@@ -369,10 +510,10 @@
 
   function sessionEventMessage(event: SessionEventDTO): ChatMsg {
     if (event.type === 'user_msg') {
-      return { role: 'user', text: event.text ?? '' }
+      return { role: 'user', text: event.text ?? '', details: event.details }
     }
     if (event.type === 'agent_text') {
-      return { role: 'agent', text: event.text ?? '' }
+      return { role: 'agent', text: event.text ?? '', details: event.details }
     }
     if (event.type === 'tool_call' || event.type === 'tool_result') {
       return {
@@ -384,6 +525,7 @@
         callId: event.call_id,
         input: event.input,
         output: event.output,
+        details: event.details,
       }
     }
     if (event.type === 'error') {
@@ -391,6 +533,7 @@
         role: 'agent',
         kind: 'error',
         text: event.text ?? 'Agent 会话失败',
+        details: event.details,
       }
     }
     return {
@@ -398,6 +541,7 @@
       kind: 'status',
       status: event.status,
       text: event.text ?? event.status ?? '状态更新',
+      details: event.details,
     }
   }
 
@@ -428,9 +572,11 @@
               ? details.forked_from_event_id
               : null,
           status: 'idle',
+          legacy: false,
         }
         sessions = [...sessions.filter(item => item.session_id !== sessionId), session]
         activeSessionId = sessionId
+        rememberActiveSession(sessionId)
       }
     } else if (activeSessionId) {
       const lifecycle = event.status
@@ -485,6 +631,7 @@
           sessionEvent(event)
         },
       )
+      rememberActiveSession(activeSessionId)
       if (turnDone) {
         const sentKeys = new Set(
           sentRefs.map(ref => `${ref.kind}:${ref.ref_id}`),
@@ -913,6 +1060,7 @@
       })
       .catch(() => undefined)
     void load()
+    void restoreSessions()
     subscription = subscribeEvents({
       onReady: gv => {
         liveOk = true
@@ -1093,6 +1241,7 @@
   <ChatDock
     {contextLabel}
     busy={chatBusy}
+    readOnly={chatReadOnly}
     panelOpen={chatPanelOpen}
     refs={pendingRefs}
     preview={contextPreview}
@@ -1111,6 +1260,17 @@
       busy={chatBusy}
       title={chatTitle}
       subtitle={chatSubtitle}
+      sessionId={activeSessionId}
+      {sessions}
+      loading={sessionListBusy}
+      actionBusy={sessionActionBusy}
+      error={sessionListError}
+      {cacheLabel}
+      onSelectSession={(sessionId) => void openSession(sessionId)}
+      onNewSession={startNewSession}
+      onRefreshSessions={() => void restoreSessions()}
+      onForkSession={() => void forkActiveSession()}
+      onArchiveSession={() => void archiveActiveSession()}
       onClose={() => (chatPanelOpen = false)}
     />
   {/if}

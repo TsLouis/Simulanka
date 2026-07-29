@@ -4,6 +4,7 @@
   // 底部常驻输入条只负责消息和显式上下文提示；画布选择不会被静默注入。
   export let contextLabel: string
   export let busy = false
+  export let readOnly = false
   export let panelOpen = false
   export let refs: Array<
     ContextRefDTO & { label: string; pinned: boolean }
@@ -20,7 +21,7 @@
   let text = ''
 
   function send() {
-    if (!text.trim() || busy) return
+    if (!text.trim() || busy || readOnly) return
     const message = text
     text = ''
     onSend(message)
@@ -98,12 +99,12 @@
       ◇ {contextLabel}
     </span>
     <input
-      placeholder="直接和 agent 对话…（Enter 发送）"
+      placeholder={readOnly ? '该会话只读；请新建或 fork 后继续' : '直接和 agent 对话…（Enter 发送）'}
       bind:value={text}
       on:keydown={onKeydown}
-      disabled={busy}
+      disabled={busy || readOnly}
     />
-    <button class="send" on:click={send} disabled={busy || !text.trim()}>
+    <button class="send" on:click={send} disabled={busy || readOnly || !text.trim()}>
       {busy ? '…' : '发送'}
     </button>
     <button class="toggle" class:on={panelOpen} on:click={onTogglePanel}>消息</button>

@@ -271,6 +271,7 @@ export interface SessionDTO {
   parent_session_id: string | null
   forked_from_event_id: string | null
   status: SessionStatusDTO
+  legacy: boolean
 }
 
 export interface ProviderCapabilitiesDTO {
@@ -316,6 +317,56 @@ export interface StreamSessionOptions {
 }
 
 export const DEFAULT_PROVIDER_ID = 'codex'
+
+export async function fetchSessions(): Promise<SessionDTO[]> {
+  const resp = await fetch('/session')
+  if (!resp.ok) {
+    throw new Error(`GET /session failed: ${resp.status} ${await resp.text()}`)
+  }
+  const payload = (await resp.json()) as { sessions: SessionDTO[] }
+  return payload.sessions
+}
+
+export async function fetchSessionHistory(
+  sessionId: string,
+): Promise<{ session: SessionDTO; events: SessionEventDTO[] }> {
+  const endpoint = `/session/${encodeURIComponent(sessionId)}/history`
+  const resp = await fetch(endpoint)
+  if (!resp.ok) {
+    throw new Error(`GET ${endpoint} failed: ${resp.status} ${await resp.text()}`)
+  }
+  const payload = (await resp.json()) as {
+    session: SessionDTO
+    events: SessionEventDTO[]
+  }
+  return { session: payload.session, events: payload.events }
+}
+
+export async function forkSession(sessionId: string): Promise<SessionDTO> {
+  const endpoint = `/session/${encodeURIComponent(sessionId)}/fork`
+  const resp = await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  })
+  if (!resp.ok) {
+    throw new Error(`POST ${endpoint} failed: ${resp.status} ${await resp.text()}`)
+  }
+  return (await resp.json()) as SessionDTO
+}
+
+export async function archiveSession(sessionId: string): Promise<SessionDTO> {
+  const endpoint = `/session/${encodeURIComponent(sessionId)}/archive`
+  const resp = await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  })
+  if (!resp.ok) {
+    throw new Error(`POST ${endpoint} failed: ${resp.status} ${await resp.text()}`)
+  }
+  return (await resp.json()) as SessionDTO
+}
 
 export async function previewSessionContext(
   refs: ContextRefDTO[],

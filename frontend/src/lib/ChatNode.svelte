@@ -9,11 +9,13 @@
     callId?: string
     input?: unknown
     output?: unknown
+    details?: Record<string, unknown>
   }
 </script>
 
 <script lang="ts">
   import { afterUpdate } from 'svelte'
+  import type { SessionDTO } from './api'
 
   // 会话节点：画布上的浮动消息面（node 观感、可拖动）。这是框架原语——
   // 只做消息的展示；将来的消息类型（分歧、escalate、快检……）作为内容长在
@@ -24,8 +26,22 @@
   export let busy = false
   export let title = '会话'
   export let subtitle: string | null = null
+  export let sessionId: string | null = null
+  export let sessions: SessionDTO[] = []
+  export let loading = false
+  export let actionBusy = false
+  export let error: string | null = null
+  export let cacheLabel: string | null = null
+  export let onSelectSession: (sessionId: string) => void = () => {}
+  export let onNewSession: () => void = () => {}
+  export let onRefreshSessions: () => void = () => {}
+  export let onForkSession: () => void = () => {}
+  export let onArchiveSession: () => void = () => {}
   export let onClose: () => void = () => {}
   let fullscreen = false
+  let sessionsOpen = false
+  $: activeSession =
+    sessions.find(session => session.session_id === sessionId) ?? null
 
   // Drag by header. position is component-local; default parks at the right
   // edge above the dock.
@@ -55,6 +71,21 @@
     }
   }
 
+  function shortSessionId(value: string): string {
+    return value.length > 12 ? `…${value.slice(-10)}` : value
+  }
+
+  function detailSummary(details: Record<string, unknown>): string {
+    const usage = details.usage
+    if (usage && typeof usage === 'object' && !Array.isArray(usage)) {
+      const cached = (usage as Record<string, unknown>).cached_input_tokens
+      return `usage · cache ${typeof cached === 'number' ? cached : '未报告'}`
+    }
+    const bundles = details.context_bundles
+    if (Array.isArray(bundles)) return `context · ${bundles.length} bundle`
+    return '事件详情'
+  }
+
   // Follow the tail as messages stream in — but never via tick() inside a
   // reactive statement: Svelte 5's tick() is microtask + flushSync, and from
   // a legacy `$:` that re-enters the flush forever. Mounting this component
@@ -75,7 +106,7 @@
 
 <section class="chat-node" class:fullscreen style="left: {x}px; top: {y}px;">
   <header role="toolbar" tabindex="-1" on:mousedown|preventDefault={dragStart}>
-    <span class="dot" class:on={active} title={active ? '会话进行中' : '未开会话'}></span>
+    <span class="dot" class:on={active} title={active ? '已绑定持久化会话' : '新会话草稿'}></span>
     <span class="heading">
       <strong>{title}</strong>
       {#if subtitle}<small title={subtitle}>{subtitle}</small>{/if}
@@ -93,6 +124,58 @@
       title="收起"
     >✕</button>
   </header>
+
+  <div class="session-strip">
+    <button
+      class:open={sessionsOpen}
+      on:click={() => (sessionsOpen = !sessionsOpen)}
+      title="查看和切换持久化会话"
+    >☷ {sessions.length}</button>
+    {#if sessionId}
+      <code class="session-id" title={sessionId}>{shortSessionId(sessionId)}</code>
+    {:else}
+      <span class="new-label">新会话草稿</span>
+    {/if}
+    {#if cacheLabel}<span class="cache-label">{cacheLabel}</span>{/if}
+    <span class="session-spacer"></span>
+    <button on:click={onRefreshSessions} disabled={loading} title="刷新会话与当前历史">↻</button>
+    <button on:click={onForkSession} disabled={!sessionId || busy || actionBusy} title="从当前会话分叉">分叉</button>
+    <button
+      on:click={onArchiveSession}
+      disabled={!sessionId || busy || actionBusy || activeSession?.status === 'archived' || activeSession?.status === 'running'}
+      title="非破坏归档当前会话"
+    >归档</button>
+    <button on:click={onNewSession} disabled={busy || actionBusy} title="新建空白会话草稿">＋</button>
+  </div>
+
+  {#if sessionsOpen}
+    <div class="session-list" aria-label="持久化会话列表">
+      {#if sessions.length === 0}
+        <span class="session-empty">{loading ? '正在加载…' : '还没有持久化会话'}</span>
+      {:else}
+        {#each sessions as session (session.session_id)}
+          <button
+            class:selected={session.session_id === sessionId}
+            class:archived={session.status === 'archived'}
+            disabled={busy || actionBusy}
+            title={session.session_id}
+            on:click={() => {
+              onSelectSession(session.session_id)
+              sessionsOpen = false
+            }}
+          >
+            <code>{shortSessionId(session.session_id)}</code>
+            <span>{session.provider_id}</span>
+            <i>{session.status}</i>
+          </button>
+        {/each}
+      {/if}
+    </div>
+  {/if}
+
+  {#if error}
+    <div class="session-error" role="alert">{error}</div>
+  {/if}
 
   <div class="scroll" bind:this={scrollEl}>
     {#each messages as m, i (i)}
@@ -117,6 +200,12 @@
           <div class="status-line status-{m.status ?? 'event'}">{m.text}</div>
         {:else}
           <div class="bubble" class:error={m.kind === 'error'}>{m.text}</div>
+        {/if}
+        {#if m.details && Object.keys(m.details).length > 0}
+          <details class="event-details">
+            <summary>{detailSummary(m.details)}</summary>
+            <pre>{formatDetail(m.details)}</pre>
+          </details>
         {/if}
       </div>
     {/each}
@@ -208,6 +297,99 @@
     flex-direction: column;
     gap: 8px;
   }
+  .session-strip {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 5px;
+    min-height: 30px;
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--hairline-2);
+    background: rgba(9, 17, 31, 0.35);
+  }
+  .session-strip button {
+    border: 1px solid var(--hairline);
+    border-radius: 5px;
+    background: var(--panel-3);
+    color: var(--text);
+    cursor: pointer;
+    font: inherit;
+    font-size: 10px;
+    padding: 3px 6px;
+  }
+  .session-strip button:hover:not(:disabled),
+  .session-strip button.open {
+    border-color: var(--gold-dim);
+    color: var(--ivory);
+  }
+  .session-strip button:disabled {
+    cursor: default;
+    opacity: 0.45;
+  }
+  .session-id,
+  .new-label,
+  .cache-label {
+    color: var(--muted);
+    font-size: 9px;
+    white-space: nowrap;
+  }
+  .cache-label {
+    color: var(--gold-dim);
+  }
+  .session-spacer {
+    flex: 1;
+  }
+  .session-list {
+    max-height: 180px;
+    overflow-y: auto;
+    padding: 5px;
+    border-bottom: 1px solid var(--hairline);
+    background: #0d1629;
+  }
+  .session-list > button {
+    width: 100%;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 7px;
+    margin-bottom: 3px;
+    padding: 5px 7px;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--text);
+    cursor: pointer;
+    text-align: left;
+  }
+  .session-list > button:hover,
+  .session-list > button.selected {
+    border-color: var(--gold-dim);
+    background: rgba(217, 186, 125, 0.08);
+  }
+  .session-list > button.archived {
+    opacity: 0.62;
+  }
+  .session-list code {
+    overflow: hidden;
+    color: var(--gold-bright);
+    text-overflow: ellipsis;
+  }
+  .session-list i {
+    color: var(--muted);
+    font-size: 9px;
+    font-style: normal;
+  }
+  .session-empty,
+  .session-error {
+    display: block;
+    padding: 7px;
+    color: var(--muted);
+    font-size: 10px;
+  }
+  .session-error {
+    border-bottom: 1px solid rgba(232, 106, 106, 0.25);
+    color: #f6b0b0;
+  }
   .msg {
     display: flex;
     flex-direction: column;
@@ -289,6 +471,26 @@
     background: var(--panel-3);
     color: var(--text);
     font-size: 11px;
+    white-space: pre-wrap;
+  }
+  .event-details {
+    max-width: 85%;
+    margin-top: 3px;
+    color: var(--muted);
+    font-size: 10px;
+  }
+  .event-details summary {
+    cursor: pointer;
+    color: var(--gold-dim);
+  }
+  .event-details pre {
+    max-height: 180px;
+    overflow: auto;
+    margin: 3px 0 0;
+    padding: 6px;
+    border-radius: 5px;
+    background: var(--panel-3);
+    color: var(--text);
     white-space: pre-wrap;
   }
   .thinking {

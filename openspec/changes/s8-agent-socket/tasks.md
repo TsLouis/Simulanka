@@ -50,7 +50,7 @@
 - [x] 5.4 发送首条消息懒创建 Session；无 supplement 时不改变用户文本
 - [x] 5.5 删除 task 右键派工、干活标题与开始类入口；选择 task 只产生普通 RefSet
 - [ ] 5.6 根据 ProviderCapabilities 显示暂停等控制；显示 running/interrupted/orphaned/native_missing/stateless
-- [ ] 5.7 会话列表、刷新恢复、切换、fork、归档与 usage/cache 详情可见
+- [x] 5.7 会话列表、刷新恢复、切换、fork、归档与 usage/cache 详情可见
 
 ## 6. 验证与交付
 
