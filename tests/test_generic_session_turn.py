@@ -13,11 +13,13 @@ from simulanka.agent.context import (
     compile_context,
     decide_context_delivery,
 )
+from simulanka.agent.session import SessionEvent
 from simulanka.kernel.apply import apply_patch_now
 from simulanka.kernel.intent import CreateNodeOp
 from simulanka.layout import init_project
 from simulanka.layout.project import ProjectLayout
 from simulanka.server.sessions import (
+    append_session_event,
     create_session,
     load_session,
     stream_session_turn,
@@ -136,6 +138,41 @@ def test_provider_failure_does_not_mark_context_sent(tmp_path: Path) -> None:
     assert events[-1]["status"] == "failed"
     assert all(event.get("status") != "done" for event in events)
     assert decide_context_delivery(layout, "thread-failed", bundle).action == "send"
+
+
+def test_codex_clean_eof_without_completion_never_marks_context_sent(
+    tmp_path: Path,
+) -> None:
+    layout, bundle = _bundle(tmp_path)
+    state = create_session(layout, provider_id="codex")
+    append_session_event(
+        layout,
+        state.session_id,
+        SessionEvent(
+            type="status",
+            status="done",
+            provider_session_id="thread-incomplete",
+        ),
+    )
+
+    events = _events(
+        stream_session_turn(
+            layout,
+            load_session(layout, state.session_id),
+            "resume",
+            bundles=(bundle,),
+            runner=lambda args, env: (),
+        )
+    )
+
+    assert events[-1]["status"] == "failed"
+    assert events[-1]["text"] == "Provider 未确认本轮完成"
+    assert all(event.get("status") != "done" for event in events)
+    assert decide_context_delivery(
+        layout,
+        "thread-incomplete",
+        bundle,
+    ).action == "send"
 
 
 def test_missing_native_id_never_records_done_or_context_sent(tmp_path: Path) -> None:

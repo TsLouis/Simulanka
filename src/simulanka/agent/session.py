@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
@@ -48,6 +49,10 @@ class TurnHandle(Protocol):
     def cancel(self) -> None:
         """Request cancellation of the active turn."""
 
+    @property
+    def cancel_requested(self) -> bool:
+        """Whether cancellation has been requested."""
+
 
 @dataclass(frozen=True)
 class UnsupportedTurnHandle:
@@ -58,12 +63,50 @@ class UnsupportedTurnHandle:
     def cancel(self) -> None:
         raise HarnessError(f"provider {self.provider_id!r} does not support turn interruption")
 
+    @property
+    def cancel_requested(self) -> bool:
+        return False
+
+
+class ProcessTurnHandle:
+    """Thread-safe, lazy-bound cancellation for one provider process."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._cancel_requested = False
+        self._cancel_callback: Callable[[], None] | None = None
+
+    @property
+    def cancel_requested(self) -> bool:
+        with self._lock:
+            return self._cancel_requested
+
+    def cancel(self) -> None:
+        with self._lock:
+            if self._cancel_requested:
+                return
+            self._cancel_requested = True
+            callback = self._cancel_callback
+        if callback is not None:
+            callback()
+
+    def bind(self, callback: Callable[[], None]) -> None:
+        """Attach the live transport, honoring a request made before spawn."""
+        with self._lock:
+            if self._cancel_callback is not None:
+                raise RuntimeError("turn handle is already bound")
+            self._cancel_callback = callback
+            cancel_requested = self._cancel_requested
+        if cancel_requested:
+            callback()
+
 
 class ProviderAdapter(Protocol):
     """Boundary between a provider CLI and Simulanka's session runtime."""
 
     provider_id: str
     capabilities: ProviderCapabilities
+    completion_on_clean_eof: bool
 
     def start_turn(
         self,
@@ -105,6 +148,13 @@ class ProviderAdapterRegistry:
         except KeyError as exc:
             raise HarnessError(f"unknown provider adapter {provider_id!r}") from exc
         return factory(**kwargs)
+
+    def capabilities(self) -> dict[str, ProviderCapabilities]:
+        """Return runtime capabilities without exposing provider-name UI rules."""
+        return {
+            provider_id: factory().capabilities
+            for provider_id, factory in sorted(self._factories.items())
+        }
 
 
 @dataclass(frozen=True)
@@ -149,6 +199,7 @@ class OpenCodeAdapter:
     """OpenCode CLI transport and raw-event translation."""
 
     provider_id = "opencode"
+    completion_on_clean_eof = True
     capabilities = ProviderCapabilities(
         native_resume=True,
         native_fork=False,
@@ -286,10 +337,11 @@ class CodexAdapter:
     """Codex CLI transport and raw-event translation."""
 
     provider_id = "codex"
+    completion_on_clean_eof = False
     capabilities = ProviderCapabilities(
         native_resume=True,
         native_fork=False,
-        interrupt=False,
+        interrupt=True,
         tool_events=True,
         usage=True,
     )
@@ -311,9 +363,15 @@ class CodexAdapter:
         agent: str | None = None,
     ) -> ProviderTurn:
         del agent
+        handle = ProcessTurnHandle()
         return ProviderTurn(
-            events=self._stream_events(message, model=model, native_session_id=None),
-            handle=UnsupportedTurnHandle(self.provider_id),
+            events=self._stream_events(
+                message,
+                model=model,
+                native_session_id=None,
+                handle=handle,
+            ),
+            handle=handle,
         )
 
     def resume_turn(
@@ -325,13 +383,15 @@ class CodexAdapter:
         agent: str | None = None,
     ) -> ProviderTurn:
         del agent
+        handle = ProcessTurnHandle()
         return ProviderTurn(
             events=self._stream_events(
                 message,
                 model=model,
                 native_session_id=native_session_id,
+                handle=handle,
             ),
-            handle=UnsupportedTurnHandle(self.provider_id),
+            handle=handle,
         )
 
     @staticmethod
@@ -393,6 +453,7 @@ class CodexAdapter:
         *,
         model: str | None,
         native_session_id: str | None,
+        handle: ProcessTurnHandle,
     ) -> Iterator[SessionEvent]:
         if not message.strip():
             raise HarnessError("message must be non-empty.")
@@ -407,12 +468,22 @@ class CodexAdapter:
 
         env = dict(os.environ)
         env["SIMULANKA_ACTOR"] = "agent"
-        lines = (
-            self._runner(args, env)
-            if self._runner is not None
-            else _run_stream(args, env, cli_name="codex", cwd=self._workspace)
-        )
+        if self._runner is not None:
+            lines = self._runner(args, env)
+            cancel = getattr(lines, "cancel", None)
+            if callable(cancel):
+                handle.bind(cancel)
+        else:
+            lines = _run_stream(
+                args,
+                env,
+                cli_name="codex",
+                cwd=self._workspace,
+                handle=handle,
+            )
         for line in lines:
+            if handle.cancel_requested:
+                break
             stripped = line.strip()
             if not stripped:
                 continue
@@ -552,6 +623,7 @@ def _run_stream(
     *,
     cli_name: str = "opencode",
     cwd: str | None = None,
+    handle: ProcessTurnHandle | None = None,
 ) -> Iterator[str]:
     try:
         proc = subprocess.Popen(
@@ -566,6 +638,9 @@ def _run_stream(
     except FileNotFoundError as exc:
         raise HarnessError(f"`{cli_name}` CLI not found on PATH.") from exc
 
+    if handle is not None:
+        handle.bind(lambda: _cancel_process(proc))
+
     assert proc.stdout is not None
     tail: deque[str] = deque(maxlen=20)
     try:
@@ -573,14 +648,27 @@ def _run_stream(
             tail.append(line.rstrip())
             yield line
         returncode = proc.wait()
-        if returncode != 0:
+        if returncode != 0 and not (
+            handle is not None and handle.cancel_requested
+        ):
             detail = "\n".join(tail)[-500:]
             raise HarnessError(f"{cli_name} exited {returncode}: {detail}")
     finally:
-        if proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=2.0)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait()
+        _cancel_process(proc)
+
+
+def _cancel_process(proc: subprocess.Popen[str]) -> None:
+    """Terminate one CLI process, escalating to kill after a short grace."""
+    if proc.poll() is not None:
+        return
+    try:
+        proc.terminate()
+        proc.wait(timeout=2.0)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+            proc.wait()
+        except ProcessLookupError:
+            return
+    except ProcessLookupError:
+        return

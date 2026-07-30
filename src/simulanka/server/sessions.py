@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -19,8 +19,10 @@ from simulanka.agent.context import (
     store_context_bundle,
 )
 from simulanka.agent.session import (
+    ProviderAdapter,
     SessionEvent,
     StreamRunner,
+    TurnHandle,
     provider_adapters,
     stream_opencode_events,
 )
@@ -340,6 +342,25 @@ def list_sessions(layout: ProjectLayout) -> list[Session]:
     return sessions
 
 
+def recover_orphaned_sessions(layout: ProjectLayout) -> list[str]:
+    """Close persisted running states whose in-memory turn handles were lost."""
+    recovered: list[str] = []
+    for state in list_sessions(layout):
+        if state.status != "running":
+            continue
+        append_session_event(
+            layout,
+            state.session_id,
+            SessionEvent(
+                type="status",
+                status="orphaned",
+                text="服务已重启，上一轮运行句柄已丢失",
+            ),
+        )
+        recovered.append(state.session_id)
+    return recovered
+
+
 def session_tree_bindings(
     layout: ProjectLayout,
     sessions: Sequence[Session] | None = None,
@@ -524,6 +545,9 @@ def stream_session_turn(
     *,
     bundles: Sequence[ContextBundle] = (),
     runner: StreamRunner | None = None,
+    adapter: ProviderAdapter | None = None,
+    on_turn_handle: Callable[[TurnHandle], None] | None = None,
+    claim_terminal: Callable[[], Literal["provider", "interrupted"]] | None = None,
 ) -> Iterator[str]:
     """Run one provider-neutral turn without replaying transcript history."""
 
@@ -553,35 +577,50 @@ def stream_session_turn(
             )
         )
 
-        adapter = provider_adapters.create(
+        active_adapter = adapter or provider_adapters.create(
             state.provider_id,
             runner=runner,
             workspace=state.workspace,
         )
-        if state.native_session_id is not None and not adapter.capabilities.native_resume:
+        if (
+            state.native_session_id is not None
+            and not active_adapter.capabilities.native_resume
+        ):
+            terminal_result = claim_terminal() if claim_terminal else "provider"
+            terminal = True
             yield emit(
                 SessionEvent(
                     type="status",
-                    status="stateless",
-                    text="当前 Provider 不支持原生续接；请新建会话",
+                    status=(
+                        "interrupted"
+                        if terminal_result == "interrupted"
+                        else "stateless"
+                    ),
+                    text=(
+                        "本轮已暂停"
+                        if terminal_result == "interrupted"
+                        else "当前 Provider 不支持原生续接；请新建会话"
+                    ),
                 )
             )
-            terminal = True
             return
 
         provider_message = compose_message(message, send_bundles)
         turn = (
-            adapter.resume_turn(
+            active_adapter.resume_turn(
                 state.native_session_id,
                 provider_message,
                 model=state.model,
             )
             if state.native_session_id is not None
-            else adapter.start_turn(provider_message, model=state.model)
+            else active_adapter.start_turn(provider_message, model=state.model)
         )
+        if on_turn_handle is not None:
+            on_turn_handle(turn.handle)
         provider_events = turn.events
         resolved_native_id = state.native_session_id
         provider_failed = False
+        provider_completed = active_adapter.completion_on_clean_eof
         for event in provider_events:
             candidate = event.provider_session_id
             if candidate:
@@ -595,11 +634,38 @@ def stream_session_turn(
             provider_failed = provider_failed or event.type == "error" or (
                 event.type == "status" and event.status == "failed"
             )
+            provider_completed = provider_completed or (
+                event.type == "status" and event.status == "completed"
+            )
             yield emit(event)
 
-        if provider_failed:
+        terminal_result = claim_terminal() if claim_terminal else "provider"
+        if terminal_result == "interrupted":
+            terminal = True
+            yield emit(
+                SessionEvent(
+                    type="status",
+                    status="interrupted",
+                    text="本轮已暂停",
+                )
+            )
+        elif provider_failed:
+            terminal = True
             yield emit(SessionEvent(type="status", status="failed", text="本轮失败"))
-        elif adapter.capabilities.native_resume and resolved_native_id is None:
+        elif not provider_completed:
+            terminal = True
+            yield emit(
+                SessionEvent(
+                    type="status",
+                    status="failed",
+                    text="Provider 未确认本轮完成",
+                )
+            )
+        elif (
+            active_adapter.capabilities.native_resume
+            and resolved_native_id is None
+        ):
+            terminal = True
             yield emit(
                 SessionEvent(
                     type="status",
@@ -607,7 +673,8 @@ def stream_session_turn(
                     text="Provider 未返回可续接的原生会话标识",
                 )
             )
-        elif not adapter.capabilities.native_resume:
+        elif not active_adapter.capabilities.native_resume:
+            terminal = True
             yield emit(
                 SessionEvent(
                     type="status",
@@ -619,25 +686,44 @@ def stream_session_turn(
             assert resolved_native_id is not None
             for bundle in send_bundles:
                 mark_context_sent(layout, resolved_native_id, bundle)
+            terminal = True
             yield emit(SessionEvent(type="status", status="done", text="本轮完成"))
-        terminal = True
     except Exception as exc:
-        yield emit(SessionEvent(type="error", status="failed", text=str(exc)))
-        yield emit(SessionEvent(type="status", status="failed", text="本轮失败"))
+        terminal_result = claim_terminal() if claim_terminal else "provider"
         terminal = True
+        if terminal_result == "interrupted":
+            yield emit(
+                SessionEvent(
+                    type="status",
+                    status="interrupted",
+                    text="本轮已暂停",
+                )
+            )
+        else:
+            yield emit(SessionEvent(type="error", status="failed", text=str(exc)))
+            yield emit(SessionEvent(type="status", status="failed", text="本轮失败"))
     finally:
         if provider_events is not None:
             close = getattr(provider_events, "close", None)
             if callable(close):
                 close()
         if not terminal:
+            terminal_result = claim_terminal() if claim_terminal else "provider"
             append_session_event(
                 layout,
                 state.session_id,
                 SessionEvent(
                     type="status",
-                    status="failed",
-                    text="连接中断，本轮未完成",
+                    status=(
+                        "interrupted"
+                        if terminal_result == "interrupted"
+                        else "failed"
+                    ),
+                    text=(
+                        "本轮已暂停"
+                        if terminal_result == "interrupted"
+                        else "连接中断，本轮未完成"
+                    ),
                 ),
             )
 

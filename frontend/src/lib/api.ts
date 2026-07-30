@@ -291,6 +291,11 @@ export interface ProviderCapabilitiesDTO {
   usage: boolean
 }
 
+export interface ProviderDescriptorDTO {
+  provider_id: string
+  capabilities: ProviderCapabilitiesDTO
+}
+
 export interface SessionEventDTO {
   type: SessionEventType
   text?: string
@@ -343,6 +348,18 @@ export async function fetchSessions(
   return payload.sessions
 }
 
+export async function fetchProviderDescriptors(): Promise<ProviderDescriptorDTO[]> {
+  const endpoint = '/session/providers'
+  const resp = await fetch(endpoint)
+  if (!resp.ok) {
+    throw new Error(`GET ${endpoint} failed: ${resp.status} ${await resp.text()}`)
+  }
+  const payload = (await resp.json()) as {
+    providers: ProviderDescriptorDTO[]
+  }
+  return payload.providers
+}
+
 export async function fetchSessionHistory(
   sessionId: string,
 ): Promise<{ session: SessionDTO; events: SessionEventDTO[] }> {
@@ -382,6 +399,18 @@ export async function archiveSession(sessionId: string): Promise<SessionDTO> {
     throw new Error(`POST ${endpoint} failed: ${resp.status} ${await resp.text()}`)
   }
   return (await resp.json()) as SessionDTO
+}
+
+export async function stopSession(sessionId: string): Promise<void> {
+  const endpoint = `/session/${encodeURIComponent(sessionId)}/stop`
+  const resp = await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  })
+  if (!resp.ok) {
+    throw new Error(`POST ${endpoint} failed: ${resp.status} ${await resp.text()}`)
+  }
 }
 
 export async function previewSessionContext(

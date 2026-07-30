@@ -15,6 +15,7 @@
     fetchGraph,
     fetchNodeInfo,
     fetchPositions,
+    fetchProviderDescriptors,
     fetchSessionHistory,
     fetchSessions,
     fetchTemplates,
@@ -26,6 +27,7 @@
     savePositions,
     saveTemplate,
     setDiscuss,
+    stopSession,
     streamSessionMessage,
     type ContextRefDTO,
     type ContextPreviewDTO,
@@ -33,6 +35,7 @@
     type FileOpenRequest,
     type HumanVerdict,
     type Positions,
+    type ProviderCapabilitiesDTO,
     type SessionDTO,
     type SessionEventDTO,
   } from './lib/api'
@@ -331,6 +334,8 @@
   let sessionListBusy = false
   let sessionActionBusy = false
   let sessionListError: string | null = null
+  let providerCapabilitiesById: Record<string, ProviderCapabilitiesDTO> = {}
+  let stoppingSessionIds = new Set<string>()
   let recoveryOpen = false
   let recoverySessions: SessionDTO[] = []
   let recoverySessionId: string | null = null
@@ -414,7 +419,7 @@
   function isReadOnly(session: SessionDTO | null): boolean {
     return (
       session?.status === 'archived' ||
-      session?.status === 'orphaned' ||
+      (session?.status === 'orphaned' && session.native_session_id === null) ||
       session?.status === 'native_missing' ||
       session?.status === 'stateless'
     )
@@ -703,6 +708,21 @@
     }
   }
 
+  async function stopActiveSession(treeId: string) {
+    const sessionId = activeSessionIdForTree(treeId)
+    if (!sessionId || stoppingSessionIds.has(sessionId)) return
+    stoppingSessionIds = new Set([...stoppingSessionIds, sessionId])
+    sessionListError = null
+    try {
+      await stopSession(sessionId)
+    } catch (err) {
+      const nextStopping = new Set(stoppingSessionIds)
+      nextStopping.delete(sessionId)
+      stoppingSessionIds = nextStopping
+      sessionListError = (err as Error).message
+    }
+  }
+
   function addPendingRef(ref: ContextRefDTO, label: string) {
     const chatKey = selectedChatKey
     const refs = pendingRefsByChat[chatKey] ?? []
@@ -946,6 +966,16 @@
           },
         }
       }
+      if (
+        lifecycle &&
+        ['done', 'failed', 'interrupted', 'orphaned', 'native_missing', 'stateless'].includes(
+          lifecycle,
+        )
+      ) {
+        const nextStopping = new Set(stoppingSessionIds)
+        nextStopping.delete(target.sessionId)
+        stoppingSessionIds = nextStopping
+      }
     }
   }
 
@@ -1031,6 +1061,11 @@
       nextBusy.delete(originChatKey)
       nextBusy.delete(target.chatKey)
       busyChatKeys = nextBusy
+      if (target.sessionId) {
+        const nextStopping = new Set(stoppingSessionIds)
+        nextStopping.delete(target.sessionId)
+        stoppingSessionIds = nextStopping
+      }
     }
   }
 
@@ -1488,6 +1523,16 @@
         customTemplates = t
       })
       .catch(() => undefined)
+    void fetchProviderDescriptors()
+      .then(descriptors => {
+        providerCapabilitiesById = Object.fromEntries(
+          descriptors.map(descriptor => [
+            descriptor.provider_id,
+            descriptor.capabilities,
+          ]),
+        )
+      })
+      .catch(() => undefined)
     void load()
     void restoreSessions(null)
     subscription = subscribeEvents({
@@ -1704,6 +1749,18 @@
       sessions={branchSessions}
       loading={sessionListBusy}
       actionBusy={sessionActionBusy}
+      interruptSupported={branchSession
+        ? providerCapabilitiesById[branchSession.provider_id]?.interrupt ?? null
+        : null}
+      interruptReady={branchSession
+        ? (
+            providerCapabilitiesById[branchSession.provider_id]?.native_resume ===
+              false || branchSession.native_session_id !== null
+          )
+        : false}
+      stopping={branchSessionId
+        ? stoppingSessionIds.has(branchSessionId)
+        : false}
       error={sessionListError}
       cacheLabel={cacheLabelsByTree[treeId] ?? null}
       x={branchPosition[0]}
@@ -1715,6 +1772,7 @@
       onRefreshSessions={() => void restoreSessions()}
       onForkSession={() => void forkActiveSession(treeId)}
       onArchiveSession={() => void archiveActiveSession(treeId)}
+      onStopSession={() => void stopActiveSession(treeId)}
     />
   {/each}
   {#if draftOpen}

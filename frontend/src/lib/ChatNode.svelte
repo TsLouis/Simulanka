@@ -33,6 +33,9 @@
   export let sessions: SessionDTO[] = []
   export let loading = false
   export let actionBusy = false
+  export let interruptSupported: boolean | null = null
+  export let interruptReady = false
+  export let stopping = false
   export let error: string | null = null
   export let cacheLabel: string | null = null
   export let onSelectSession: (sessionId: string) => void = () => {}
@@ -40,6 +43,7 @@
   export let onRefreshSessions: () => void = () => {}
   export let onForkSession: () => void = () => {}
   export let onArchiveSession: () => void = () => {}
+  export let onStopSession: () => void = () => {}
   export let onActivate: () => void = () => {}
   export let onMove: (x: number, y: number) => void = () => {}
   export let onClose: () => void = () => {}
@@ -157,6 +161,22 @@
       {/if}
       {#if cacheLabel}<span class="cache-label">{cacheLabel}</span>{/if}
       <span class="session-spacer"></span>
+      {#if activeSession?.status === 'running'}
+        {#if interruptSupported === true && interruptReady}
+          <button
+            class="pause"
+            on:click={onStopSession}
+            disabled={stopping || actionBusy}
+            title="暂停当前轮；后续消息继续同一原生会话"
+          >{stopping ? '暂停中…' : '暂停'}</button>
+        {:else if interruptSupported === true}
+          <span class="capability-unavailable">等待原生会话标识</span>
+        {:else if interruptSupported === false}
+          <span class="capability-unavailable">Provider 不支持暂停</span>
+        {:else}
+          <span class="capability-unavailable">暂停能力未知</span>
+        {/if}
+      {/if}
       <button on:click={onRefreshSessions} disabled={loading} title="刷新当前层会话树">↻</button>
       <button on:click={onForkSession} disabled={!sessionId || busy || actionBusy} title="在本节点内从当前分支 fork">fork</button>
       <button
@@ -365,6 +385,15 @@
   }
   .cache-label {
     color: var(--gold-dim);
+  }
+  .capability-unavailable {
+    color: var(--muted);
+    font-size: 9px;
+    white-space: nowrap;
+  }
+  .session-strip button.pause {
+    border-color: rgba(232, 176, 88, 0.65);
+    color: var(--gold);
   }
   .session-spacer {
     flex: 1;

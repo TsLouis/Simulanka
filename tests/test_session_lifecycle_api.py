@@ -161,6 +161,33 @@ def test_corrupt_session_state_is_reported_as_conflict(tmp_path: Path) -> None:
     assert fork_conflict.value.status_code == 409
 
 
+def test_app_startup_recovers_running_session_once_as_orphaned(
+    tmp_path: Path,
+) -> None:
+    layout = init_project(tmp_path, with_scaffold=False).layout
+    state = create_session(layout, provider_id="codex")
+    append_session_event(
+        layout,
+        state.session_id,
+        SessionEvent(
+            type="status",
+            status="running",
+            provider_session_id="thread-orphaned",
+        ),
+    )
+
+    app = create_app(layout)
+    history_route = _endpoint(app, "/session/{session_id}/history", "GET")
+    history = history_route(state.session_id)
+    assert history["session"]["status"] == "orphaned"
+    assert history["session"]["native_session_id"] == "thread-orphaned"
+    assert history["events"][-1]["status"] == "orphaned"
+
+    event_count = len(history["events"])
+    create_app(layout)
+    assert len(read_session_events(layout, state.session_id)) == event_count
+
+
 def test_session_tree_scope_is_derived_across_multilevel_forks(
     tmp_path: Path,
 ) -> None:

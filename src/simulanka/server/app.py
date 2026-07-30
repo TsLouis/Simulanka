@@ -8,9 +8,11 @@ import os
 import subprocess
 import tempfile
 import threading
+import uuid
 from collections.abc import AsyncIterator, Iterator
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -31,7 +33,12 @@ from simulanka.agent.harness import (
     OpenCodeTurn,
     run_opencode_turn,
 )
-from simulanka.agent.session import StreamRunner, provider_adapters
+from simulanka.agent.session import (
+    ProviderCapabilities,
+    StreamRunner,
+    TurnHandle,
+    provider_adapters,
+)
 from simulanka.disagreements import disagreement_list, edge_payload
 from simulanka.kernel.apply import apply_patch_now
 from simulanka.kernel.events import Event, iter_events
@@ -61,6 +68,7 @@ from simulanka.server.sessions import (
     list_sessions,
     load_session,
     read_session_events,
+    recover_orphaned_sessions,
     session_record,
     session_tree_bindings,
     stream_session_turn,
@@ -88,6 +96,92 @@ SSE_POLL_INTERVAL = 0.25  # seconds between event_log polls
 FILE_CONTENT_CAP = 1_048_576
 
 
+@dataclass
+class _ActiveTurn:
+    """One app-local turn and its linearized terminal decision."""
+
+    turn_id: str
+    capabilities: ProviderCapabilities
+    handle: TurnHandle | None = None
+    stop_requested: bool = False
+    terminal_result: Literal["provider", "interrupted"] | None = None
+
+
+class _ActiveTurnRegistry:
+    """Serialize send/stop/completion races per platform Session."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._turns: dict[str, _ActiveTurn] = {}
+
+    def reserve(
+        self,
+        session_id: str,
+        capabilities: ProviderCapabilities,
+    ) -> _ActiveTurn | None:
+        with self._lock:
+            if session_id in self._turns:
+                return None
+            turn = _ActiveTurn(
+                turn_id=uuid.uuid4().hex,
+                capabilities=capabilities,
+            )
+            self._turns[session_id] = turn
+            return turn
+
+    def bind(self, session_id: str, turn: _ActiveTurn, handle: TurnHandle) -> None:
+        with self._lock:
+            if self._turns.get(session_id) is not turn:
+                return
+            turn.handle = handle
+            stop_requested = turn.stop_requested
+        if stop_requested:
+            handle.cancel()
+
+    def request_stop(
+        self,
+        session_id: str,
+    ) -> Literal["stopping", "unsupported", "finished", "missing"]:
+        with self._lock:
+            turn = self._turns.get(session_id)
+            if turn is None:
+                return "missing"
+            if not turn.capabilities.interrupt:
+                return "unsupported"
+            if turn.terminal_result is not None:
+                return "finished"
+            if turn.stop_requested:
+                return "stopping"
+            turn.stop_requested = True
+            handle = turn.handle
+        if handle is not None:
+            handle.cancel()
+        return "stopping"
+
+    def claim_terminal(
+        self,
+        session_id: str,
+        turn: _ActiveTurn,
+    ) -> Literal["provider", "interrupted"]:
+        with self._lock:
+            if self._turns.get(session_id) is not turn:
+                return turn.terminal_result or "provider"
+            if turn.terminal_result is None:
+                turn.terminal_result = (
+                    "interrupted" if turn.stop_requested else "provider"
+                )
+            return turn.terminal_result
+
+    def release(self, session_id: str, turn: _ActiveTurn) -> None:
+        with self._lock:
+            if self._turns.get(session_id) is turn:
+                del self._turns[session_id]
+
+    def contains(self, session_id: str) -> bool:
+        with self._lock:
+            return session_id in self._turns
+
+
 
 def create_app(
     layout: ProjectLayout | None = None,
@@ -109,6 +203,7 @@ def create_app(
             "checkpoint repo init failed (no recovery net): %s", exc
         )
 
+    recover_orphaned_sessions(layout)
     app = FastAPI(title="Simulanka Graph API")
     app.add_middleware(
         CORSMiddleware,
@@ -116,8 +211,7 @@ def create_app(
         allow_methods=["GET", "POST", "DELETE"],
         allow_headers=["*"],
     )
-    active_work_sessions: set[str] = set()
-    active_work_sessions_lock = threading.Lock()
+    active_turns = _ActiveTurnRegistry()
 
     @app.get("/graph")
     def get_graph(root: str | None = Query(default=None)) -> dict[str, Any]:
@@ -688,13 +782,19 @@ def create_app(
         include_created: bool,
     ) -> StreamingResponse:
         session_id = state.session_id
-        with active_work_sessions_lock:
-            if session_id in active_work_sessions or state.turn_running:
-                raise HTTPException(
-                    status_code=409,
-                    detail="a turn is already running for this session",
-                )
-            active_work_sessions.add(session_id)
+        adapter = provider_adapters.create(
+            state.provider_id,
+            runner=opencode_stream_runner,
+            workspace=state.workspace,
+        )
+        turn = active_turns.reserve(session_id, adapter.capabilities)
+        if turn is None or state.turn_running:
+            if turn is not None:
+                active_turns.release(session_id, turn)
+            raise HTTPException(
+                status_code=409,
+                detail="a turn is already running for this session",
+            )
 
         def event_stream() -> Iterator[str]:
             try:
@@ -706,11 +806,19 @@ def create_app(
                     state,
                     text,
                     bundles=bundles,
-                    runner=opencode_stream_runner,
+                    adapter=adapter,
+                    on_turn_handle=lambda handle: active_turns.bind(
+                        session_id,
+                        turn,
+                        handle,
+                    ),
+                    claim_terminal=lambda: active_turns.claim_terminal(
+                        session_id,
+                        turn,
+                    ),
                 )
             finally:
-                with active_work_sessions_lock:
-                    active_work_sessions.discard(session_id)
+                active_turns.release(session_id, turn)
 
         return StreamingResponse(
             event_stream(),
@@ -831,6 +939,18 @@ def create_app(
             ]
         return {"sessions": records}
 
+    @app.get("/session/providers")
+    def agent_session_providers() -> dict[str, Any]:
+        return {
+            "providers": [
+                {
+                    "provider_id": provider_id,
+                    "capabilities": asdict(capabilities),
+                }
+                for provider_id, capabilities in provider_adapters.capabilities().items()
+            ]
+        }
+
     @app.get("/session/{session_id}/history")
     def agent_session_history(session_id: str) -> dict[str, Any]:
         try:
@@ -923,12 +1043,11 @@ def create_app(
                 status_code=422,
                 detail=f"unknown archive fields: {sorted(body)}",
             )
-        with active_work_sessions_lock:
-            if session_id in active_work_sessions:
-                raise HTTPException(
-                    status_code=409,
-                    detail="cannot archive a running session",
-                )
+        if active_turns.contains(session_id):
+            raise HTTPException(
+                status_code=409,
+                detail="cannot archive a running session",
+            )
         try:
             state = archive_session(layout, session_id)
         except SessionNotFound as exc:
@@ -936,6 +1055,39 @@ def create_app(
         except SessionStateError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return bound_session_record(state)
+
+    @app.post("/session/{session_id}/stop")
+    def agent_session_stop(
+        session_id: str,
+        body: dict[str, Any] = Body(default_factory=dict),
+    ) -> dict[str, str]:
+        if body:
+            raise HTTPException(
+                status_code=422,
+                detail=f"unknown stop fields: {sorted(body)}",
+            )
+        try:
+            state = load_session(layout, session_id)
+        except SessionNotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        capabilities = provider_adapters.create(state.provider_id).capabilities
+        if capabilities.native_resume and state.native_session_id is None:
+            raise HTTPException(
+                status_code=409,
+                detail="native session id is not available yet; retry shortly",
+            )
+        result = active_turns.request_stop(session_id)
+        if result == "unsupported":
+            raise HTTPException(
+                status_code=409,
+                detail="the active provider does not support interruption",
+            )
+        if result in {"missing", "finished"}:
+            raise HTTPException(
+                status_code=409,
+                detail="no interruptible turn is running for this session",
+            )
+        return {"status": result}
 
     @app.post("/session/context/preview")
     def preview_context(body: dict[str, Any] = Body(...)) -> dict[str, Any]:

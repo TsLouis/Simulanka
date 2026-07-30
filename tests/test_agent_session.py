@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from pathlib import Path
 from typing import Any, cast
@@ -15,6 +16,7 @@ from simulanka.agent.harness import HarnessError
 from simulanka.agent.session import (
     CodexAdapter,
     OpenCodeAdapter,
+    ProcessTurnHandle,
     ProviderCapabilities,
     SessionEvent,
     normalize_opencode_event,
@@ -28,6 +30,7 @@ from simulanka.layout.project import ProjectLayout
 from simulanka.server.app import create_app
 from simulanka.server.sessions import (
     append_session_event,
+    create_session,
     create_work_session,
     load_session,
     load_work_session,
@@ -149,6 +152,19 @@ def test_opencode_adapter_contract_registry_and_native_resume() -> None:
     ]
 
 
+def test_process_turn_handle_honors_prebind_cancel_once() -> None:
+    handle = ProcessTurnHandle()
+    callbacks: list[str] = []
+
+    handle.cancel()
+    handle.cancel()
+    handle.bind(lambda: callbacks.append("cancelled"))
+    handle.cancel()
+
+    assert handle.cancel_requested is True
+    assert callbacks == ["cancelled"]
+
+
 def test_codex_adapter_uses_native_resume_and_preserves_usage() -> None:
     calls: list[list[str]] = []
 
@@ -216,6 +232,151 @@ def test_codex_adapter_uses_native_resume_and_preserves_usage() -> None:
     resumed_events = list(adapter.resume_turn("thread-1", message).events)
     assert calls[1] == ["codex", "exec", "resume", "thread-1", "--json", message]
     assert resumed_events[-1].details == {}
+
+
+def test_stop_api_interrupts_one_codex_turn_and_resumes_native_session(
+    tmp_path: Path,
+) -> None:
+    layout, task_id = _seed_task(tmp_path)
+    state = create_session(layout, provider_id="codex")
+    append_session_event(
+        layout,
+        state.session_id,
+        SessionEvent(
+            type="status",
+            status="done",
+            provider_session_id="thread-keep",
+        ),
+    )
+    calls: list[list[str]] = []
+
+    class BlockingLines:
+        def __init__(self) -> None:
+            self.started = threading.Event()
+            self.released = threading.Event()
+
+        def __iter__(self) -> Iterator[str]:
+            self.started.set()
+            if not self.released.wait(timeout=5):
+                raise AssertionError("stop did not cancel the provider stream")
+            yield from ()
+
+        def cancel(self) -> None:
+            self.released.set()
+
+    blocking = BlockingLines()
+
+    def runner(args: list[str], env: Mapping[str, str]) -> Iterable[str]:
+        del env
+        calls.append(args)
+        if len(calls) == 1:
+            return blocking
+        return (json.dumps({"type": "turn.completed"}),)
+
+    app = create_app(layout, opencode_stream_runner=runner)
+    send_message = _endpoint(app, "/session/{session_id}/message", "POST")
+    stop = _endpoint(app, "/session/{session_id}/stop", "POST")
+    providers = _endpoint(app, "/session/providers", "GET")
+
+    capabilities = {
+        item["provider_id"]: item["capabilities"]
+        for item in providers()["providers"]
+    }
+    assert capabilities["codex"]["interrupt"] is True
+    assert capabilities["opencode"]["interrupt"] is False
+
+    refs = [{"kind": "node", "ref_id": task_id}]
+    response = send_message(
+        state.session_id,
+        {"text": "long turn", "refs": refs},
+    )
+    iterator = _streaming_iterator(response)
+    chunks: list[str] = []
+    errors: list[BaseException] = []
+
+    def consume() -> None:
+        try:
+            chunks.extend(iterator)
+        except BaseException as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(target=consume)
+    worker.start()
+    assert blocking.started.wait(timeout=2)
+    assert stop(state.session_id, {}) == {"status": "stopping"}
+    worker.join(timeout=5)
+    assert not worker.is_alive()
+    assert errors == []
+
+    interrupted_events = [
+        json.loads(line)
+        for chunk in chunks
+        for line in chunk.splitlines()
+        if line.strip()
+    ]
+    terminal = [
+        event.get("status")
+        for event in interrupted_events
+        if event.get("status") in {"done", "failed", "interrupted"}
+    ]
+    assert terminal == ["interrupted"]
+    interrupted = load_session(layout, state.session_id)
+    assert interrupted.status == "interrupted"
+    assert interrupted.native_session_id == "thread-keep"
+
+    resumed = send_message(
+        state.session_id,
+        {"text": "continue", "refs": refs},
+    )
+    assert _streaming_events(resumed)[-1]["status"] == "done"
+    assert [call[:5] for call in calls] == [
+        [
+            "codex",
+            "exec",
+            "resume",
+            "thread-keep",
+            "--json",
+        ],
+        [
+            "codex",
+            "exec",
+            "resume",
+            "thread-keep",
+            "--json",
+        ],
+    ]
+    assert calls[0][-1].startswith(
+        "long turn\n\n" + SUPPLEMENT_BOUNDARY_START
+    )
+    assert calls[1][-1].startswith(
+        "continue\n\n" + SUPPLEMENT_BOUNDARY_START
+    )
+    assert "long turn" not in calls[1][-1]
+
+
+def test_stop_waits_for_native_id_before_exposing_resumable_pause(
+    tmp_path: Path,
+) -> None:
+    layout = init_project(tmp_path, with_scaffold=False).layout
+
+    def runner(args: list[str], env: Mapping[str, str]) -> Iterable[str]:
+        del args, env
+        return (
+            json.dumps({"type": "thread.started", "thread_id": "thread-ready"}),
+            json.dumps({"type": "turn.completed"}),
+        )
+
+    app = create_app(layout, opencode_stream_runner=runner)
+    create_route = _endpoint(app, "/session", "POST")
+    stop = _endpoint(app, "/session/{session_id}/stop", "POST")
+    response = create_route({"text": "hello", "provider_id": "codex"})
+    session_id = response.headers["x-simulanka-session-id"]
+
+    with pytest.raises(HTTPException) as too_early:
+        stop(session_id, {})
+    assert too_early.value.status_code == 409
+    assert "native session id is not available" in str(too_early.value.detail)
+    assert _streaming_events(response)[-1]["status"] == "done"
 
 
 def test_codex_failed_turn_keeps_nested_error_message() -> None:
@@ -389,15 +550,19 @@ def test_server_lazy_session_streams_context_and_resumes_without_replay(
 
 
 def _streaming_events(response: StreamingResponse) -> list[dict[str, Any]]:
-    frame = getattr(response.body_iterator, "ag_frame", None)
-    assert frame is not None
-    iterator = cast(Iterator[str], frame.f_locals["iterator"])
+    iterator = _streaming_iterator(response)
     return [
         json.loads(line)
         for chunk in iterator
         for line in chunk.splitlines()
         if line.strip()
     ]
+
+
+def _streaming_iterator(response: StreamingResponse) -> Iterator[str]:
+    frame = getattr(response.body_iterator, "ag_frame", None)
+    assert frame is not None
+    return cast(Iterator[str], frame.f_locals["iterator"])
 
 
 def test_work_session_failure_and_disconnect_never_record_done(tmp_path: Path) -> None:
