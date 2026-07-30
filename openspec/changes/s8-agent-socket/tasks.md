@@ -62,4 +62,4 @@
 - [ ] 6.2 前端组件/浏览器验收覆盖 U1-U5、两个 scope、同层多树、fork 复用、刷新恢复和零 refs 逐字发送；失败与能力降级不得显示成功
 - [ ] 6.3 GitNexus detect_changes 确认影响范围；ruff、mypy --strict、pytest、svelte-check、vite build 全绿
 - [x] 6.4 `openspec validate s8-agent-socket --strict` 通过并同步 authoritative docs，删除 frontend.md 中锚定、祖先 replay、派工/work mode 的冲突旧口径
-- [ ] 6.5 GitHub Issue 记录规格改道、实现提交、验证证据与用户目验入口
+- [x] 6.5 GitHub Issue 记录规格改道、实现提交、验证证据与用户目验入口
