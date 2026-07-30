@@ -12,7 +12,7 @@ Codex CLI 的现行稳定接口已经提供 `codex exec --json`、`codex exec re
 
 **Goals:**
 
-- 一套领域无关的 Session/Turn/Event 生命周期和一张 ChatNode 前端壳。
+- 一套领域无关的 Session/Turn/Event 生命周期和一种可多实例化的 ChatNode 前端壳。
 - Provider 原生 session/thread 是对话历史、工具状态、压缩和 cache 的主权威。
 - Simulanka 上下文仅作用户显式选择的、确定且可检查的增量补充。
 - 同一 ContextBundle 在同一 Provider 会话中不重复发送；内容变化产生新 digest。
@@ -22,7 +22,7 @@ Codex CLI 的现行稳定接口已经提供 `codex exec --json`、`codex exec re
 **Non-Goals:**
 
 - 不替 Provider 实现历史裁剪、上下文压缩、prompt cache 或工具调度。
-- 不把 Session、Turn 或消息默认建成图节点。
+- 不把 Session、Turn、消息或 ChatNode UI 投影建成物理图节点/Profile。
 - 不定义“讨论、实验、派工、审查”等工作流模式。
 - 不在本 change 内实现 run agent 括号、diff/acceptance 结果面板或 Profile/Capability 注册表。
 - 不保证某一轮一定产生 cache hit；平台只保证不主动破坏稳定前缀并如实呈现 Provider 遥测。
@@ -34,6 +34,13 @@ Codex CLI 的现行稳定接口已经提供 `codex exec --json`、`codex exec re
 平台 Session 保存 Simulanka id、Provider id、native session id、workspace、父会话/fork 点、状态与事件文件。消息和工具事件继续存在 `.simulanka/agent/`，避免高频转录污染 Node/Edge 图。领域程序以后可通过确定性 Projection 把摘要或结果落图。
 
 一个 Session 在生命周期内绑定一个 Provider。更换 Provider 或模型通过 fork 新会话表达；不得在原会话中静默换后端。
+
+conversation tree 是 Session sidecar 的确定性投影，不另建 `session_ids[]`
+索引。根 Session 的 `session_id` 同时是不可变 `tree_id`；其 created
+事件显式记录创建时的 `scope_root_id`（顶层为显式 `null`）。fork 只记录
+`parent_session_id`，通过父链继承 tree 和 scope。旧 created 事件缺少
+scope 时归为 `unassigned/legacy`，只能从独立恢复入口认领，不混入任一正常
+graph view。
 
 ### 2. ProviderAdapter 只做 transport 与事件翻译
 
@@ -100,19 +107,43 @@ compiler 在一个 graph version 上解析引用，并输出：
 Provider、native session id、context digests、usage、interrupt reason 等放入事件字段或 `details`。旧 `.jsonl` 文件仍可读取；缺失新字段按 legacy 会话显示。
 
 会话列表可通过扫描 created 事件建立，首版不另建易失同步的数据库索引。
+server 在扫描结果上解析 parent forest，输出 `tree_id` 和有效
+`scope_root_id`，并可按当前 graph view scope 过滤。父链缺失或成环必须作为
+可见损坏报告，不得把分支静默挂到另一棵树。
 
-### 6. 一张会话壳，首条消息懒创建
+### 6. 一种会话壳，一棵树一个 ChatNode
+
+ChatNode 是 UI-sidecar 投影而非 Node/Edge/Port。其稳定 UI id 为
+`chat:<tree_id>`，位置复用 `.simulanka/ui/positions.json` 现有的
+per-view bucket；活动分支按 tree 记忆。graph view 切换只决定哪些 ChatNode
+挂载，不会创建 Provider Session、发送消息、编译 ContextBundle 或改变
+Provider 上下文。
+
+一个新根 Session 创建一棵树和一个 ChatNode；fork 保留同一 tree id 并在
+节点内部增加分支，MUST NOT 创建第二个 ChatNode。归档是当前分支的非破坏
+状态变化，首版不提供整树归档或跨 scope 搬家。scope 节点后来不存在时，会话
+树进入独立恢复入口而不删除。
 
 前端状态收敛为：
 
 ```text
-sessions[]
-active_session_id
-pending_refs
-session.events[]
+sessions_by_id
+trees_by_scope[scope_root_id][tree_id]
+active_session_by_tree[tree_id]
+pending_refs_by_tree[tree_id]
+events_by_session[session_id]
 ```
 
-ChatDock 的上下文条展示 pending refs；用户可删除、固定和预览。发送首条消息时创建会话，此后使用 active session。UI 不显示 `discussion/work` 类型，也不提供 task 专属“派工”或“开始”动作。
+ChatDock 的上下文条展示当前 ChatNode/草稿树的 pending refs；用户可删除、
+固定和预览。发送首条消息时在当前 graph view scope 创建根 Session，此后使用
+该树的 active branch。流式回调必须捕获 `{tree_id, session_id}`，不得因用户
+在 turn 中途下钻而把事件写入另一层或另一棵树。UI 不显示
+`discussion/work` 类型，也不提供 task 专属“派工”或“开始”动作。
+
+scope 只控制 UI 归属和可见性，永远不等价于 ContextRef。即使 ChatNode 位于
+某个子图内，没有显式 RefSet 时仍逐字发送用户消息；相同 bundle 的 sent
+digest 仍按 native session id 隔离，fork 分支不会因共享 ChatNode 而共享去重
+账本。
 
 停止按钮只在 turn running 时出现。`暂停`在 v1 的精确定义是：请求 Adapter 中断当前 TurnHandle，保留 native session id、转录与工作区；下一条消息继续同一原生会话。
 
@@ -128,13 +159,16 @@ SessionCommand 管理会话；PatchIntent 继续只管理图事务。Agent 在�
 - [ContextBundle 包含 prompt injection] → instruction/reference 分区、来源标识、预览与稳定边界。
 - [server 重启时活动进程句柄丢失] → 历史 `running` 会话恢复为 `orphaned/interrupted`，不得显示仍在执行。
 - [legacy discussion 暂时并存] → 只保留兼容端点；前端迁壳后不再把它当会话类型。
+- [会话树与 ChatNode 重复或漂移] → tree id 取根 Session id，分支通过 parent forest 推导；不维护第二份 session id 列表。
+- [跨层切换污染流式事件] → turn 回调捕获 tree/session id，导航只切挂载集合。
+- [旧会话无 scope 或 scope 节点已删除] → 放入独立 unassigned/recovery 入口，不混入当前层也不删除历史。
 
 ## Migration Plan
 
 1. 先加入 ProviderAdapter、ContextBundle 与通用 Session 模型，不移除旧端点。
 2. 用 OpenCode adapter 包装现有实现，确保旧 U1 流式行为不回退。
 3. 加入 Codex adapter，并验证首轮 `thread.started`、原生 resume 与 usage 映射。
-4. 前端迁移为 sessions + pending refs；完成历史恢复与中断。
+4. 前端迁移为按 scope/tree/session 分层的状态；完成历史恢复与中断。
 5. 删除 task 派工入口和 discussion/work 状态分支；legacy discussion 端点保留兼容。
 6. 独立提案后再处理 run-agent-bracket 与 Profile/Capability 注册表。
 

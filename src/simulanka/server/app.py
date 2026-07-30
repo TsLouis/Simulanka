@@ -62,6 +62,7 @@ from simulanka.server.sessions import (
     load_session,
     read_session_events,
     session_record,
+    session_tree_bindings,
     stream_session_turn,
 )
 from simulanka.storage.checkpoint import ensure_repo, repo_exists, tag_checkpoint
@@ -71,6 +72,7 @@ from simulanka.storage.entity_store import (
     iter_ports,
     load_edge,
     load_node,
+    node_exists,
 )
 from simulanka.trust import node_trust, provenance_chain
 
@@ -720,6 +722,13 @@ def create_app(
             },
         )
 
+    def bound_session_record(state: Session) -> dict[str, Any]:
+        states = list_sessions(layout)
+        if all(candidate.session_id != state.session_id for candidate in states):
+            states.append(state)
+        binding = session_tree_bindings(layout, states)[state.session_id]
+        return session_record(state, binding)
+
     @app.post("/session")
     def create_agent_session(
         body: dict[str, Any] = Body(default_factory=dict),
@@ -728,6 +737,7 @@ def create_app(
             "text",
             "provider_id",
             "model",
+            "scope_root_id",
             "refs",
             "expected_graph_version",
             "missing",
@@ -751,6 +761,21 @@ def create_app(
         model = body.get("model")
         if model is not None and (not isinstance(model, str) or not model.strip()):
             raise HTTPException(status_code=422, detail="model must be a string")
+        scope_root_id = body.get("scope_root_id")
+        if scope_root_id is not None and (
+            not isinstance(scope_root_id, str) or not scope_root_id.strip()
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="scope_root_id must be a node id or null",
+            )
+        if isinstance(scope_root_id, str):
+            scope_root_id = scope_root_id.strip()
+            if not node_exists(layout, scope_root_id):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"scope_root_id {scope_root_id!r} does not exist",
+                )
         bundles = message_context_bundles(body)
         try:
             provider_adapters.create(
@@ -765,6 +790,9 @@ def create_app(
             provider_id=provider_id,
             model=model.strip() if isinstance(model, str) else None,
             workspace=layout.root,
+            scope_root_id=(
+                scope_root_id if isinstance(scope_root_id, str) else None
+            ),
         )
         return session_stream_response(
             state,
@@ -774,10 +802,34 @@ def create_app(
         )
 
     @app.get("/session")
-    def agent_session_list() -> dict[str, Any]:
-        return {
-            "sessions": [session_record(state) for state in list_sessions(layout)]
-        }
+    def agent_session_list(scope: str | None = None) -> dict[str, Any]:
+        states = list_sessions(layout)
+        bindings = session_tree_bindings(layout, states)
+        records = [
+            session_record(state, bindings[state.session_id])
+            for state in states
+        ]
+        if scope == "top":
+            records = [
+                record
+                for record in records
+                if record["scope_status"] == "bound"
+                and record["scope_root_id"] is None
+            ]
+        elif scope == "unassigned":
+            records = [
+                record
+                for record in records
+                if record["scope_status"] in {"unassigned", "missing", "broken"}
+            ]
+        elif scope is not None:
+            records = [
+                record
+                for record in records
+                if record["scope_status"] == "bound"
+                and record["scope_root_id"] == scope
+            ]
+        return {"sessions": records}
 
     @app.get("/session/{session_id}/history")
     def agent_session_history(session_id: str) -> dict[str, Any]:
@@ -790,7 +842,7 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {
             "session_id": session_id,
-            "session": session_record(state),
+            "session": bound_session_record(state),
             "events": events,
         }
 
@@ -859,7 +911,7 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except HarnessError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return session_record(child)
+        return bound_session_record(child)
 
     @app.post("/session/{session_id}/archive")
     def agent_session_archive(
@@ -883,7 +935,7 @@ def create_app(
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except SessionStateError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return session_record(state)
+        return bound_session_record(state)
 
     @app.post("/session/context/preview")
     def preview_context(body: dict[str, Any] = Body(...)) -> dict[str, Any]:

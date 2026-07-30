@@ -5,11 +5,12 @@ S8 已经证明浏览器能够显示流式 agent 文本与工具事件，但当�
 ## What Changes
 
 - 把 `WorkSession` 收敛为领域无关 Session：任意会话均可创建、恢复、分叉、中断和归档，不再要求 task/run。
-- **BREAKING（前端交互）**：删除 task 专属「派工」入口与 `discussion/work` 模式选择；用户在统一 ChatNode 中直接发送消息，首条消息懒创建会话。
+- **BREAKING（前端交互）**：删除 task 专属「派工」入口与 `discussion/work` 模式选择；用户在统一 ChatNode 组件中直接发送消息，首条消息懒创建会话。
+- 每棵 conversation tree 恰好投影为一个持久化 ChatNode UI sidecar，并绑定创建时所在的 graph view root/layer；下钻或返回时只挂载当前层的 ChatNode。fork 仍属于同一棵树和同一个 ChatNode，真正的新会话树才创建新 ChatNode。
 - 新增结构化 `RefSet` 与不可变 `ContextBundle`。上下文只来自用户或上层程序显式附加的节点、边、端口，并且只是本轮增量补充，不替代 Provider 原生上下文。
 - 新增 Provider Adapter 合同。适配器 MUST 优先使用原生 session/thread resume，不得把完整 Simulanka transcript 重新拼回 prompt；Codex 首个适配器走 `codex exec --json` / `codex exec resume <SESSION_ID>`，OpenCode 适配器承接现有实现。
 - 增量上下文序列化保持确定、可寻址、可预览；相同 bundle 不重复注入。Provider 报告 cache usage 时，前端与转录显示 `cached_input_tokens` 等原生遥测，但平台不伪造 cache 命中。
-- 保留现有归一事件流、JSONL 转录、actor 贯通、工具调用卡片和统一 ChatNode 外壳；补齐会话索引、历史恢复、停止和 Provider 能力降级展示。
+- 保留现有归一事件流、JSONL 转录、actor 贯通、工具调用卡片和统一 ChatNode 组件；补齐按会话树与 graph view scope 投影的历史恢复、停止和 Provider 能力降级展示。
 - `run agent` 骑 run 括号及 run/diff/acceptance 工作流退出本 change，后续作为上层执行程序独立提案。
 
 ## Capabilities
@@ -28,6 +29,6 @@ S8 已经证明浏览器能够显示流式 agent 文本与工具事件，但当�
 ## Impact
 
 - 后端：`agent/session.py`、`server/sessions.py`、`server/app.py`，新增 Provider/Context 边界与会话索引。
-- 前端：`App.svelte`、`ChatNode`、`ChatDock`、API DTO；删除 type/mode 专属分支，增加会话管理与上下文预览。
+- 前端：`App.svelte`、`ChatNode`、`ChatDock`、API DTO；删除 type/mode 专属分支，增加按 graph view scope 隔离的会话树管理与上下文预览。
 - 兼容：现有 session JSONL 可读；旧 `discussion` 端点在迁移期保留为兼容入口，但不再定义平台会话类型。
-- 不动：Node/Edge/Port schema、PatchIntent 原子性、写权矩阵、run 测量和领域工作流。
+- 不动：Node/Edge/Port schema、Profile registry、PatchIntent 原子性、写权矩阵、run 测量和领域工作流。ChatNode 是 UI-sidecar 投影，不是物理图节点或 Profile。

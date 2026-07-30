@@ -18,6 +18,10 @@ Provider 原生 session/thread SHALL 是对话历史、工具状态、压缩和 
 - **WHEN** 用户没有新增上下文引用而发送消息
 - **THEN** Adapter 收到原始用户消息，不追加 Simulanka 上下文块
 
+#### Scenario: scoped ChatNode 不等于上下文
+- **WHEN** ChatNode 可见于某个子图 scope，但用户未显式附加 RefSet
+- **THEN** 当前 root、其孩子和该 scope 的其他实体均不进入 ContextBundle，Adapter 收到逐字不变的用户消息
+
 #### Scenario: 显式附加选择集
 - **WHEN** 用户选择若干 node/edge/port 并确认附加
 - **THEN** 只有该 RefSet 被编译并显示为本轮 supplemental context

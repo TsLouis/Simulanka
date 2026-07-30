@@ -19,7 +19,7 @@ export default defineConfig({
       '/discussion': apiTarget,
       // S8 embedded work sessions. Regex avoids swallowing frontend module
       // paths while covering create/message/history under one rule.
-      '^/session(/|$)': apiTarget,
+      '^/session(?:/|\\?|$)': apiTarget,
       // S4 file viewer: GET /file/content?node=|path= reads registered file
       // nodes (markdown drawer, deep-link 出处, run logs).
       '/file': apiTarget,

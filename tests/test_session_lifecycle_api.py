@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
@@ -8,16 +9,21 @@ import pytest
 from fastapi import FastAPI, HTTPException
 
 from simulanka.agent.session import SessionEvent
+from simulanka.kernel.apply import apply_patch_now
+from simulanka.kernel.intent import CreateNodeOp
 from simulanka.layout import init_project
+from simulanka.layout.project import ProjectLayout
 from simulanka.server.app import create_app
 from simulanka.server.sessions import (
     append_session_event,
     archive_session,
     create_session,
+    create_work_session,
     fork_session,
     list_sessions,
     load_session,
     read_session_events,
+    session_tree_bindings,
 )
 
 
@@ -153,6 +159,152 @@ def test_corrupt_session_state_is_reported_as_conflict(tmp_path: Path) -> None:
     with pytest.raises(HTTPException) as fork_conflict:
         fork_route(parent.session_id, {})
     assert fork_conflict.value.status_code == 409
+
+
+def test_session_tree_scope_is_derived_across_multilevel_forks(
+    tmp_path: Path,
+) -> None:
+    layout = init_project(tmp_path, with_scaffold=False).layout
+    scope_root_id = apply_patch_now(
+        layout,
+        ops=[CreateNodeOp(type="directory", name="scope")],
+        actor="test",
+    ).nodes[0]
+    root = create_session(
+        layout,
+        provider_id="codex",
+        scope_root_id=scope_root_id,
+    )
+    child = fork_session(layout, root.session_id)
+    grandchild = fork_session(layout, child.session_id)
+
+    states = list_sessions(layout)
+    bindings = session_tree_bindings(layout, states)
+    assert {
+        (
+            bindings[state.session_id].tree_id,
+            bindings[state.session_id].scope_root_id,
+            bindings[state.session_id].scope_status,
+        )
+        for state in states
+    } == {(root.session_id, scope_root_id, "bound")}
+    child_created = read_session_events(layout, child.session_id)[0]["details"]
+    assert "scope_root_id" not in child_created
+
+    list_route = _endpoint(create_app(layout), "/session", "GET")
+    scoped = list_route(scope_root_id)
+    assert {record["session_id"] for record in scoped["sessions"]} == {
+        root.session_id,
+        child.session_id,
+        grandchild.session_id,
+    }
+    assert {record["tree_id"] for record in scoped["sessions"]} == {
+        root.session_id
+    }
+    assert list_route("top") == {"sessions": []}
+    assert list_route("unassigned") == {"sessions": []}
+
+
+def test_scope_projection_separates_top_legacy_missing_and_broken_trees(
+    tmp_path: Path,
+) -> None:
+    layout = init_project(tmp_path, with_scaffold=False).layout
+    top = create_session(layout, provider_id="codex")
+    legacy = create_work_session(layout, anchor=None, model=None)
+    missing = create_session(
+        layout,
+        provider_id="codex",
+        scope_root_id="nod_missing",
+    )
+    missing_parent = "ses_01J00000000000000000000000"
+    broken_root = create_session(
+        layout,
+        provider_id="codex",
+        parent_session_id=missing_parent,
+    )
+    broken_child = fork_session(layout, broken_root.session_id)
+    cycle_a = create_session(layout, provider_id="codex")
+    cycle_b = create_session(layout, provider_id="codex")
+    _rewrite_created_details(
+        layout,
+        cycle_a.session_id,
+        parent_session_id=cycle_b.session_id,
+    )
+    _rewrite_created_details(
+        layout,
+        cycle_b.session_id,
+        parent_session_id=cycle_a.session_id,
+    )
+    cycle_descendant = create_session(
+        layout,
+        provider_id="codex",
+        parent_session_id=cycle_a.session_id,
+    )
+
+    bindings = session_tree_bindings(layout)
+    assert bindings[top.session_id].scope_status == "bound"
+    assert bindings[top.session_id].scope_root_id is None
+    assert bindings[legacy.session_id].scope_status == "unassigned"
+    assert bindings[missing.session_id].scope_status == "missing"
+    assert bindings[missing.session_id].scope_root_id == "nod_missing"
+    assert bindings[broken_root.session_id].scope_status == "broken"
+    assert bindings[broken_child.session_id].tree_id == broken_root.session_id
+    assert bindings[cycle_a.session_id].scope_status == "broken"
+    assert bindings[cycle_a.session_id].tree_id == bindings[cycle_b.session_id].tree_id
+    assert (
+        bindings[cycle_descendant.session_id].tree_id
+        == bindings[cycle_a.session_id].tree_id
+    )
+
+    list_route = _endpoint(create_app(layout), "/session", "GET")
+    assert {
+        record["session_id"] for record in list_route("top")["sessions"]
+    } == {top.session_id}
+    assert {
+        record["session_id"]
+        for record in list_route("unassigned")["sessions"]
+    } == {
+        legacy.session_id,
+        missing.session_id,
+        broken_root.session_id,
+        broken_child.session_id,
+        cycle_a.session_id,
+        cycle_b.session_id,
+        cycle_descendant.session_id,
+    }
+
+
+def test_create_session_route_rejects_unknown_scope_before_provider_start(
+    tmp_path: Path,
+) -> None:
+    layout = init_project(tmp_path, with_scaffold=False).layout
+    create_route = _endpoint(create_app(layout), "/session", "POST")
+
+    with pytest.raises(HTTPException) as missing_scope:
+        create_route(
+            {
+                "text": "hello",
+                "provider_id": "codex",
+                "scope_root_id": "nod_missing",
+            }
+        )
+
+    assert missing_scope.value.status_code == 422
+    assert "does not exist" in str(missing_scope.value.detail)
+    assert list_sessions(layout) == []
+
+
+def _rewrite_created_details(
+    layout: ProjectLayout,
+    session_id: str,
+    **updates: Any,
+) -> None:
+    path = layout.dot_dir / "agent" / "sessions" / f"{session_id}.jsonl"
+    lines = path.read_text(encoding="utf-8").splitlines()
+    created = json.loads(lines[0])
+    created["details"].update(updates)
+    lines[0] = json.dumps(created, ensure_ascii=False, sort_keys=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _endpoint(app: FastAPI, path: str, method: str) -> Callable[..., Any]:

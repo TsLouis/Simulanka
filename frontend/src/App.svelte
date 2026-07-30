@@ -46,6 +46,7 @@
   import EdgeMenu from './lib/EdgeMenu.svelte'
   import FileViewer from './lib/FileViewer.svelte'
   import NodeInspector from './lib/NodeInspector.svelte'
+  import SessionRecovery from './lib/SessionRecovery.svelte'
   import type { EdgeDTO, NodeDTO, PortDTO } from './lib/types'
 
   let canvasEl: HTMLCanvasElement
@@ -99,9 +100,9 @@
   let currentRootType: string | null = null
   $: templateGroups = buildGroups(customTemplates, currentRootType)
 
-  // Message surface state: chatPanelOpen = the floating 会话节点 is visible;
-  // the dock toggles it and an incoming turn opens it.
-  let chatPanelOpen = false
+  // Persisted conversation trees are always projected as ChatNodes in their
+  // creation scope. draftOpen controls only the not-yet-persisted new-tree shell.
+  let draftOpen = false
 
   // Set of node ids currently rendered; used to decide whether an SSE commit
   // is relevant to the active view.
@@ -296,50 +297,107 @@
     }
   }
 
-  // S8 generic session shell. Provider-native history remains authoritative;
-  // this event list is the normalized transcript used only for UI/audit.
-  let sessions: SessionDTO[] = []
-  let activeSessionId: string | null = null
-  const ACTIVE_SESSION_KEY = 'simulanka.active_session_id'
-  let historyRequest = 0
-  let sessionListBusy = false
-  let sessionActionBusy = false
-  let sessionListError: string | null = null
+  // S8 generic session shell. The durable session forest is projected into
+  // scope -> tree -> branch UI state. Provider-native history remains the
+  // authority; normalized events are only the visible/auditable transcript.
   type PendingContextRef = ContextRefDTO & {
     label: string
     pinned: boolean
   }
-  let pendingRefs: PendingContextRef[] = []
-  let contextPreview: ContextPreviewDTO | null = null
-  let previewBusy = false
-  let previewError: string | null = null
-  let previewRequest = 0
-  let sessionEvents: SessionEventDTO[] = []
-  let chatBusy = false
-  $: activeSession = sessions.find(session => session.session_id === activeSessionId) ?? null
-  $: chatMessages = sessionEvents.map(sessionEventMessage)
-  $: latestUsage = latestSessionUsage(sessionEvents)
-  $: cacheLabel =
-    activeSessionId === null
+  type TurnTarget = {
+    scopeKey: string
+    scopeRootId: string | null
+    chatKey: string
+    treeId: string | null
+    sessionId: string | null
+  }
+  const ACTIVE_BRANCH_KEY = 'simulanka.active_session_by_tree'
+  const SELECTED_TREE_KEY = 'simulanka.selected_tree_by_scope'
+  let sessionsById: Record<string, SessionDTO> = {}
+  let sessionIdsByScope: Record<string, string[]> = {}
+  let activeSessionByTree: Record<string, string> = {}
+  let selectedTreeByScope: Record<string, string> = {}
+  let selectedTreeId: string | null = null
+  let eventsBySession: Record<string, SessionEventDTO[]> = {}
+  let draftEventsByScope: Record<string, SessionEventDTO[]> = {}
+  let pendingRefsByChat: Record<string, PendingContextRef[]> = {}
+  let previewByChat: Record<string, ContextPreviewDTO | null> = {}
+  let previewErrorByChat: Record<string, string | null> = {}
+  let previewRequestByChat: Record<string, number> = {}
+  let previewBusyChatKeys = new Set<string>()
+  let busyChatKeys = new Set<string>()
+  let historyRequestBySession: Record<string, number> = {}
+  let sessionListRequest = 0
+  let sessionListBusy = false
+  let sessionActionBusy = false
+  let sessionListError: string | null = null
+  let recoveryOpen = false
+  let recoverySessions: SessionDTO[] = []
+  let recoverySessionId: string | null = null
+  let recoveryEvents: SessionEventDTO[] = []
+  let recoveryBusy = false
+  let recoveryError: string | null = null
+
+  $: visibleSessionIds = sessionIdsByScope[rootKey] ?? []
+  $: visibleSessions = visibleSessionIds
+    .map(sessionId => sessionsById[sessionId])
+    .filter((session): session is SessionDTO => session !== undefined)
+  $: visibleTreeIds = [...new Set(visibleSessions.map(session => session.tree_id))]
+  $: visibleSessionsByTree = groupSessionsByTree(visibleSessions)
+  $: activeSessionIdsByTree = Object.fromEntries(
+    visibleTreeIds.map(treeId => [
+      treeId,
+      chooseActiveSessionId(
+        visibleSessionsByTree[treeId] ?? [],
+        activeSessionByTree[treeId],
+        treeId,
+      ),
+    ]),
+  ) as Record<string, string | null>
+  $: messagesByTree = Object.fromEntries(
+    visibleTreeIds.map(treeId => {
+      const sessionId = activeSessionIdsByTree[treeId]
+      return [
+        treeId,
+        sessionId
+          ? (eventsBySession[sessionId] ?? []).map(sessionEventMessage)
+          : [],
+      ]
+    }),
+  ) as Record<string, ChatMsg[]>
+  $: cacheLabelsByTree = Object.fromEntries(
+    visibleTreeIds.map(treeId => {
+      const sessionId = activeSessionIdsByTree[treeId]
+      return [
+        treeId,
+        cacheLabelForEvents(
+          sessionId ? eventsBySession[sessionId] ?? [] : [],
+        ),
+      ]
+    }),
+  ) as Record<string, string | null>
+  $: draftChatKey = `draft:${rootKey}`
+  $: selectedChatKey = selectedTreeId ?? draftChatKey
+  $: activeSessionId =
+    selectedTreeId === null
       ? null
-      : latestUsage
-        ? `cache ${typeof latestUsage.cached_input_tokens === 'number' ? latestUsage.cached_input_tokens : '未报告'}`
-        : sessionEvents.some(
-              event => event.type === 'status' && event.status === 'done',
-            )
-          ? 'cache 未报告'
-          : null
-  $: chatReadOnly =
-    activeSession?.status === 'archived' ||
-    activeSession?.status === 'orphaned' ||
-    activeSession?.status === 'native_missing' ||
-    activeSession?.status === 'stateless'
-  $: chatTitle = '会话'
-  $: chatSubtitle = activeSession
-    ? `${activeSession.provider_id} · ${activeSession.status}`
-    : `${DEFAULT_PROVIDER_ID} · 新会话`
+      : activeSessionIdsByTree[selectedTreeId] ?? null
+  $: activeSession =
+    activeSessionId === null ? null : sessionsById[activeSessionId] ?? null
+  $: sessionEvents =
+    activeSessionId === null
+      ? draftEventsByScope[rootKey] ?? []
+      : eventsBySession[activeSessionId] ?? []
+  $: pendingRefs = pendingRefsByChat[selectedChatKey] ?? []
+  $: contextPreview = previewByChat[selectedChatKey] ?? null
+  $: previewError = previewErrorByChat[selectedChatKey] ?? null
+  $: previewBusy = previewBusyChatKeys.has(selectedChatKey)
+  $: chatBusy = busyChatKeys.has(selectedChatKey)
+  $: chatReadOnly = isReadOnly(activeSession)
   $: contextLabel =
-    pendingRefs.length > 0 ? `已附加 ${pendingRefs.length} 项` : '未附加上下文'
+    pendingRefs.length > 0
+      ? `${selectedTreeId ? '当前会话树' : '新树'} · 已附加 ${pendingRefs.length} 项`
+      : `${selectedTreeId ? '当前会话树' : '新树'} · 未附加上下文`
 
   function latestSessionUsage(
     events: SessionEventDTO[],
@@ -353,87 +411,275 @@
     return null
   }
 
-  function rememberActiveSession(sessionId: string | null) {
-    if (sessionId === null) {
-      window.localStorage.removeItem(ACTIVE_SESSION_KEY)
-    } else {
-      window.localStorage.setItem(ACTIVE_SESSION_KEY, sessionId)
+  function isReadOnly(session: SessionDTO | null): boolean {
+    return (
+      session?.status === 'archived' ||
+      session?.status === 'orphaned' ||
+      session?.status === 'native_missing' ||
+      session?.status === 'stateless'
+    )
+  }
+
+  function readStoredMap(key: string): Record<string, string> {
+    try {
+      const value = JSON.parse(window.localStorage.getItem(key) ?? '{}')
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+      return Object.fromEntries(
+        Object.entries(value).filter(
+          (entry): entry is [string, string] => typeof entry[1] === 'string',
+        ),
+      )
+    } catch {
+      return {}
     }
   }
 
-  async function openSession(sessionId: string, clearDraft = true) {
-    const request = ++historyRequest
-    sessionListBusy = true
-    sessionListError = null
-    activeSessionId = sessionId
-    sessionEvents = []
-    rememberActiveSession(sessionId)
-    if (clearDraft) {
-      pendingRefs = []
-      contextPreview = null
-      previewError = null
+  function persistSessionSelection() {
+    window.localStorage.setItem(
+      ACTIVE_BRANCH_KEY,
+      JSON.stringify(activeSessionByTree),
+    )
+    window.localStorage.setItem(
+      SELECTED_TREE_KEY,
+      JSON.stringify(selectedTreeByScope),
+    )
+  }
+
+  function invalidateSessionListSnapshot() {
+    // A list response represents an older server snapshot. Once a local
+    // mutation starts, that response must never overwrite the new tree,
+    // branch, or lifecycle state when it eventually resolves.
+    sessionListRequest += 1
+    sessionListBusy = false
+  }
+
+  function sessionsForTree(treeId: string): SessionDTO[] {
+    return visibleSessions.filter(session => session.tree_id === treeId)
+  }
+
+  function groupSessionsByTree(
+    sessions: SessionDTO[],
+  ): Record<string, SessionDTO[]> {
+    const grouped: Record<string, SessionDTO[]> = {}
+    for (const session of sessions) {
+      grouped[session.tree_id] = [...(grouped[session.tree_id] ?? []), session]
+    }
+    return grouped
+  }
+
+  function chooseActiveSessionId(
+    branches: SessionDTO[],
+    remembered: string | undefined,
+    treeId: string,
+  ): string | null {
+    return (
+      branches.find(session => session.session_id === remembered)?.session_id ??
+      branches.find(session => session.status !== 'archived')?.session_id ??
+      branches.find(session => session.session_id === treeId)?.session_id ??
+      branches[0]?.session_id ??
+      null
+    )
+  }
+
+  function activeSessionIdForTree(treeId: string): string | null {
+    return chooseActiveSessionId(
+      sessionsForTree(treeId),
+      activeSessionByTree[treeId],
+      treeId,
+    )
+  }
+
+  function selectTree(treeId: string) {
+    selectedTreeId = treeId
+    selectedTreeByScope = { ...selectedTreeByScope, [rootKey]: treeId }
+    draftOpen = false
+    const sessionId = activeSessionIdForTree(treeId)
+    if (sessionId) {
+      activeSessionByTree = { ...activeSessionByTree, [treeId]: sessionId }
+      if (!eventsBySession[sessionId]) void loadSessionHistory(sessionId)
+    }
+    persistSessionSelection()
+  }
+
+  async function loadSessionHistory(sessionId: string) {
+    const request = (historyRequestBySession[sessionId] ?? 0) + 1
+    historyRequestBySession = {
+      ...historyRequestBySession,
+      [sessionId]: request,
     }
     try {
       const history = await fetchSessionHistory(sessionId)
-      if (request !== historyRequest) return
-      sessions = sessions.some(item => item.session_id === sessionId)
-        ? sessions.map(item =>
-            item.session_id === sessionId ? history.session : item,
-          )
-        : [history.session, ...sessions]
-      sessionEvents = history.events
-      chatPanelOpen = true
+      if (historyRequestBySession[sessionId] !== request) return
+      sessionsById = {
+        ...sessionsById,
+        [history.session.session_id]: history.session,
+      }
+      eventsBySession = {
+        ...eventsBySession,
+        [history.session.session_id]: history.events,
+      }
     } catch (err) {
-      if (request !== historyRequest) return
-      sessionListError = (err as Error).message
-    } finally {
-      if (request === historyRequest) sessionListBusy = false
+      if (historyRequestBySession[sessionId] === request) {
+        sessionListError = (err as Error).message
+      }
     }
   }
 
-  async function restoreSessions() {
+  async function openSession(
+    sessionId: string,
+    sessionScopeKey: string = rootKey,
+  ) {
+    const session = sessionsById[sessionId]
+    if (!session) return
+    // Context delivery state belongs to the native branch, not merely the
+    // visible tree. A preview compiled for the previous branch is stale.
+    invalidatePreview(session.tree_id)
+    selectedTreeByScope = {
+      ...selectedTreeByScope,
+      [sessionScopeKey]: session.tree_id,
+    }
+    activeSessionByTree = {
+      ...activeSessionByTree,
+      [session.tree_id]: sessionId,
+    }
+    if (rootKey === sessionScopeKey) {
+      selectedTreeId = session.tree_id
+      draftOpen = false
+    }
+    persistSessionSelection()
+    await loadSessionHistory(sessionId)
+  }
+
+  async function restoreSessions(scopeRootId: string | null = currentRootId) {
+    const request = ++sessionListRequest
+    const requestedScopeKey = scopeRootId ?? 'top'
     sessionListBusy = true
     sessionListError = null
     try {
-      sessions = await fetchSessions()
-      const remembered = window.localStorage.getItem(ACTIVE_SESSION_KEY)
+      const scopedSessions = await fetchSessions(scopeRootId)
+      if (request !== sessionListRequest) return
+      const nextSessions = { ...sessionsById }
+      for (const session of scopedSessions) {
+        nextSessions[session.session_id] = session
+      }
+      sessionsById = nextSessions
+      sessionIdsByScope = {
+        ...sessionIdsByScope,
+        [requestedScopeKey]: scopedSessions.map(session => session.session_id),
+      }
+      const treeIds = [...new Set(scopedSessions.map(session => session.tree_id))]
+      for (const treeId of treeIds) {
+        const branches = scopedSessions.filter(session => session.tree_id === treeId)
+        const remembered = activeSessionByTree[treeId]
+        const active =
+          branches.find(session => session.session_id === remembered) ??
+          branches.find(session => session.status !== 'archived') ??
+          branches.find(session => session.session_id === treeId) ??
+          branches[0]
+        if (active) {
+          activeSessionByTree = {
+            ...activeSessionByTree,
+            [treeId]: active.session_id,
+          }
+          if (!eventsBySession[active.session_id]) {
+            void loadSessionHistory(active.session_id)
+          }
+        }
+      }
+      if (request === sessionListRequest && rootKey === requestedScopeKey) {
+        const rememberedTree = selectedTreeByScope[requestedScopeKey]
+        const candidate =
+          treeIds.find(treeId => treeId === rememberedTree) ?? treeIds[0] ?? null
+        selectedTreeId = candidate
+        draftOpen = candidate === null
+      }
+      persistSessionSelection()
+    } catch (err) {
+      if (request === sessionListRequest) {
+        sessionListError = (err as Error).message
+      }
+    } finally {
+      if (request === sessionListRequest) sessionListBusy = false
+    }
+  }
+
+  async function openRecovery() {
+    recoveryOpen = true
+    recoveryBusy = true
+    recoveryError = null
+    try {
+      recoverySessions = await fetchSessions('unassigned')
       const candidate =
-        sessions.find(session => session.session_id === remembered) ??
-        sessions.find(session => session.status !== 'archived') ??
-        sessions[0]
-      if (candidate) {
-        await openSession(candidate.session_id, false)
-      } else {
-        activeSessionId = null
-        sessionEvents = []
-        rememberActiveSession(null)
+        recoverySessions.find(
+          session => session.session_id === recoverySessionId,
+        ) ?? recoverySessions[0]
+      if (candidate) await openRecoverySession(candidate.session_id)
+      else {
+        recoverySessionId = null
+        recoveryEvents = []
       }
     } catch (err) {
-      sessionListError = (err as Error).message
+      recoveryError = (err as Error).message
     } finally {
-      sessionListBusy = false
+      recoveryBusy = false
+    }
+  }
+
+  async function openRecoverySession(sessionId: string) {
+    recoverySessionId = sessionId
+    recoveryBusy = true
+    recoveryError = null
+    try {
+      const history = await fetchSessionHistory(sessionId)
+      if (recoverySessionId === sessionId) recoveryEvents = history.events
+    } catch (err) {
+      if (recoverySessionId === sessionId) {
+        recoveryError = (err as Error).message
+      }
+    } finally {
+      if (recoverySessionId === sessionId) recoveryBusy = false
     }
   }
 
   function startNewSession() {
-    historyRequest += 1
-    activeSessionId = null
-    sessionEvents = []
-    pendingRefs = []
-    contextPreview = null
-    previewError = null
-    rememberActiveSession(null)
-    chatPanelOpen = true
+    selectedTreeId = null
+    draftOpen = true
+    draftEventsByScope = { ...draftEventsByScope, [rootKey]: [] }
+    pendingRefsByChat = { ...pendingRefsByChat, [draftChatKey]: [] }
+    previewByChat = { ...previewByChat, [draftChatKey]: null }
+    previewErrorByChat = { ...previewErrorByChat, [draftChatKey]: null }
   }
 
-  async function forkActiveSession() {
-    if (!activeSessionId || sessionActionBusy) return
+  function closeDraft() {
+    draftOpen = false
+    const candidate = visibleTreeIds[0]
+    if (candidate) selectTree(candidate)
+  }
+
+  async function forkActiveSession(treeId: string) {
+    const sessionId = activeSessionIdForTree(treeId)
+    if (!sessionId || sessionActionBusy) return
+    const sessionScopeKey = rootKey
+    invalidateSessionListSnapshot()
     sessionActionBusy = true
     sessionListError = null
     try {
-      const child = await forkSession(activeSessionId)
-      sessions = [child, ...sessions]
-      await openSession(child.session_id)
+      const child = await forkSession(sessionId)
+      sessionsById = { ...sessionsById, [child.session_id]: child }
+      sessionIdsByScope = {
+        ...sessionIdsByScope,
+        [sessionScopeKey]: [
+          child.session_id,
+          ...(sessionIdsByScope[sessionScopeKey] ?? []).filter(
+            candidate => candidate !== child.session_id,
+          ),
+        ],
+      }
+      activeSessionByTree = {
+        ...activeSessionByTree,
+        [treeId]: child.session_id,
+      }
+      await openSession(child.session_id, sessionScopeKey)
     } catch (err) {
       sessionListError = (err as Error).message
     } finally {
@@ -441,15 +687,15 @@
     }
   }
 
-  async function archiveActiveSession() {
-    if (!activeSessionId || sessionActionBusy) return
+  async function archiveActiveSession(treeId: string) {
+    const sessionId = activeSessionIdForTree(treeId)
+    if (!sessionId || sessionActionBusy) return
+    invalidateSessionListSnapshot()
     sessionActionBusy = true
     sessionListError = null
     try {
-      const archived = await archiveSession(activeSessionId)
-      sessions = sessions.map(session =>
-        session.session_id === archived.session_id ? archived : session,
-      )
+      const archived = await archiveSession(sessionId)
+      sessionsById = { ...sessionsById, [archived.session_id]: archived }
     } catch (err) {
       sessionListError = (err as Error).message
     } finally {
@@ -458,53 +704,85 @@
   }
 
   function addPendingRef(ref: ContextRefDTO, label: string) {
-    const exists = pendingRefs.some(
+    const chatKey = selectedChatKey
+    const refs = pendingRefsByChat[chatKey] ?? []
+    const exists = refs.some(
       item => item.kind === ref.kind && item.ref_id === ref.ref_id,
     )
     if (!exists) {
-      pendingRefs = [...pendingRefs, { ...ref, label, pinned: false }]
+      pendingRefsByChat = {
+        ...pendingRefsByChat,
+        [chatKey]: [...refs, { ...ref, label, pinned: false }],
+      }
     }
-    previewRequest += 1
-    previewBusy = false
-    contextPreview = null
-    previewError = null
-    chatPanelOpen = true
+    invalidatePreview(chatKey)
+    if (selectedTreeId === null) draftOpen = true
   }
 
   function removePendingRef(ref: ContextRefDTO) {
-    pendingRefs = pendingRefs.filter(
-      item => item.kind !== ref.kind || item.ref_id !== ref.ref_id,
-    )
-    previewRequest += 1
-    previewBusy = false
-    contextPreview = null
-    previewError = null
+    const chatKey = selectedChatKey
+    pendingRefsByChat = {
+      ...pendingRefsByChat,
+      [chatKey]: (pendingRefsByChat[chatKey] ?? []).filter(
+        item => item.kind !== ref.kind || item.ref_id !== ref.ref_id,
+      ),
+    }
+    invalidatePreview(chatKey)
   }
 
   function togglePendingPin(ref: ContextRefDTO) {
-    pendingRefs = pendingRefs.map(item =>
-      item.kind === ref.kind && item.ref_id === ref.ref_id
-        ? { ...item, pinned: !item.pinned }
-        : item,
-    )
+    const chatKey = selectedChatKey
+    pendingRefsByChat = {
+      ...pendingRefsByChat,
+      [chatKey]: (pendingRefsByChat[chatKey] ?? []).map(item =>
+        item.kind === ref.kind && item.ref_id === ref.ref_id
+          ? { ...item, pinned: !item.pinned }
+          : item,
+      ),
+    }
+  }
+
+  function invalidatePreview(chatKey: string) {
+    previewRequestByChat = {
+      ...previewRequestByChat,
+      [chatKey]: (previewRequestByChat[chatKey] ?? 0) + 1,
+    }
+    const nextBusy = new Set(previewBusyChatKeys)
+    nextBusy.delete(chatKey)
+    previewBusyChatKeys = nextBusy
+    previewByChat = { ...previewByChat, [chatKey]: null }
+    previewErrorByChat = { ...previewErrorByChat, [chatKey]: null }
   }
 
   async function previewPendingRefs() {
-    const request = ++previewRequest
-    previewBusy = true
-    previewError = null
+    const chatKey = selectedChatKey
+    const request = (previewRequestByChat[chatKey] ?? 0) + 1
+    previewRequestByChat = { ...previewRequestByChat, [chatKey]: request }
+    previewBusyChatKeys = new Set([...previewBusyChatKeys, chatKey])
+    previewErrorByChat = { ...previewErrorByChat, [chatKey]: null }
+    const refs = (pendingRefsByChat[chatKey] ?? []).map(
+      ({ kind, ref_id }) => ({ kind, ref_id }),
+    )
+    const sessionId =
+      selectedTreeId === null ? null : activeSessionIdForTree(selectedTreeId)
     try {
-      const result = await previewSessionContext(
-        pendingRefs.map(({ kind, ref_id }) => ({ kind, ref_id })),
-        activeSessionId,
-      )
-      if (request === previewRequest) contextPreview = result
+      const result = await previewSessionContext(refs, sessionId)
+      if (request === previewRequestByChat[chatKey]) {
+        previewByChat = { ...previewByChat, [chatKey]: result }
+      }
     } catch (err) {
-      if (request !== previewRequest) return
-      contextPreview = null
-      previewError = (err as Error).message
+      if (request !== previewRequestByChat[chatKey]) return
+      previewByChat = { ...previewByChat, [chatKey]: null }
+      previewErrorByChat = {
+        ...previewErrorByChat,
+        [chatKey]: (err as Error).message,
+      }
     } finally {
-      if (request === previewRequest) previewBusy = false
+      if (request === previewRequestByChat[chatKey]) {
+        const nextBusy = new Set(previewBusyChatKeys)
+        nextBusy.delete(chatKey)
+        previewBusyChatKeys = nextBusy
+      }
     }
   }
 
@@ -545,8 +823,7 @@
     }
   }
 
-  function sessionEvent(event: SessionEventDTO) {
-    sessionEvents = [...sessionEvents, event]
+  function sessionEvent(event: SessionEventDTO, target: TurnTarget) {
     if (event.type === 'status' && event.status === 'created') {
       const details = event.details
       const sessionId = details?.session_id
@@ -557,8 +834,15 @@
         typeof providerId === 'string' &&
         typeof workspace === 'string'
       ) {
+        const previousChatKey = target.chatKey
+        target.sessionId = sessionId
+        target.treeId = sessionId
+        target.chatKey = sessionId
         const session: SessionDTO = {
           session_id: sessionId,
+          tree_id: sessionId,
+          scope_root_id: target.scopeRootId,
+          scope_status: 'bound',
           provider_id: providerId,
           model: typeof details?.model === 'string' ? details.model : null,
           native_session_id: null,
@@ -574,11 +858,66 @@
           status: 'idle',
           legacy: false,
         }
-        sessions = [...sessions.filter(item => item.session_id !== sessionId), session]
-        activeSessionId = sessionId
-        rememberActiveSession(sessionId)
+        sessionsById = { ...sessionsById, [sessionId]: session }
+        sessionIdsByScope = {
+          ...sessionIdsByScope,
+          [target.scopeKey]: [
+            sessionId,
+            ...(sessionIdsByScope[target.scopeKey] ?? []).filter(
+              candidate => candidate !== sessionId,
+            ),
+          ],
+        }
+        activeSessionByTree = { ...activeSessionByTree, [sessionId]: sessionId }
+        const draftRefs = pendingRefsByChat[previousChatKey] ?? []
+        const nextPendingRefs = { ...pendingRefsByChat }
+        delete nextPendingRefs[previousChatKey]
+        nextPendingRefs[sessionId] = draftRefs
+        pendingRefsByChat = nextPendingRefs
+        const nextPreview = { ...previewByChat }
+        delete nextPreview[previousChatKey]
+        nextPreview[sessionId] = null
+        previewByChat = nextPreview
+        const nextPreviewError = { ...previewErrorByChat }
+        delete nextPreviewError[previousChatKey]
+        nextPreviewError[sessionId] = null
+        previewErrorByChat = nextPreviewError
+        const draftPosition = positions[target.scopeKey]?.['chat:draft']
+        if (draftPosition) {
+          positions = {
+            ...positions,
+            [target.scopeKey]: {
+              ...(positions[target.scopeKey] ?? {}),
+              [`chat:${sessionId}`]: draftPosition,
+            },
+          }
+          void savePositions(target.scopeKey, {
+            [`chat:${sessionId}`]: draftPosition,
+          })
+        }
+        if (rootKey === target.scopeKey && selectedTreeId === null) {
+          selectedTreeId = sessionId
+          selectedTreeByScope = {
+            ...selectedTreeByScope,
+            [target.scopeKey]: sessionId,
+          }
+          draftOpen = false
+        }
+        const nextBusy = new Set(busyChatKeys)
+        nextBusy.delete(previousChatKey)
+        nextBusy.add(sessionId)
+        busyChatKeys = nextBusy
+        persistSessionSelection()
       }
-    } else if (activeSessionId) {
+    }
+    if (target.sessionId) {
+      eventsBySession = {
+        ...eventsBySession,
+        [target.sessionId]: [
+          ...(eventsBySession[target.sessionId] ?? []),
+          event,
+        ],
+      }
       const lifecycle = event.status
       const lifecycleStatuses: SessionDTO['status'][] = [
         'idle',
@@ -591,35 +930,55 @@
         'stateless',
         'archived',
       ]
-      sessions = sessions.map(session => {
-        if (session.session_id !== activeSessionId) return session
-        return {
-          ...session,
-          native_session_id:
-            event.provider_session_id ?? session.native_session_id,
-          status:
-            lifecycle && lifecycleStatuses.includes(lifecycle as SessionDTO['status'])
-              ? (lifecycle as SessionDTO['status'])
-              : session.status,
+      const session = sessionsById[target.sessionId]
+      if (session) {
+        sessionsById = {
+          ...sessionsById,
+          [target.sessionId]: {
+            ...session,
+            native_session_id:
+              event.provider_session_id ?? session.native_session_id,
+            status:
+              lifecycle &&
+              lifecycleStatuses.includes(lifecycle as SessionDTO['status'])
+                ? (lifecycle as SessionDTO['status'])
+                : session.status,
+          },
         }
-      })
+      }
     }
-    chatPanelOpen = true
   }
 
   async function chatSend(text: string) {
-    chatPanelOpen = true
-    chatBusy = true
-    previewRequest += 1
-    previewBusy = false
-    contextPreview = null
-    previewError = null
+    const originChatKey = selectedChatKey
+    const originTreeId = selectedTreeId
+    const target: TurnTarget = {
+      scopeKey: rootKey,
+      scopeRootId: currentRootId,
+      chatKey: originChatKey,
+      treeId: originTreeId,
+      sessionId:
+        originTreeId === null ? null : activeSessionIdForTree(originTreeId),
+    }
+    invalidateSessionListSnapshot()
+    if (target.sessionId) {
+      historyRequestBySession = {
+        ...historyRequestBySession,
+        [target.sessionId]:
+          (historyRequestBySession[target.sessionId] ?? 0) + 1,
+      }
+    }
+    busyChatKeys = new Set([...busyChatKeys, originChatKey])
+    invalidatePreview(originChatKey)
     let turnDone = false
-    const sentRefs = pendingRefs.map(ref => ({ ...ref }))
+    const sentRefs = (pendingRefsByChat[originChatKey] ?? []).map(ref => ({
+      ...ref,
+    }))
     try {
-      activeSessionId = await streamSessionMessage(
+      const resolvedSessionId = await streamSessionMessage(
         {
-          sessionId: activeSessionId,
+          sessionId: target.sessionId,
+          scopeRootId: target.scopeRootId,
           text,
           providerId: DEFAULT_PROVIDER_ID,
           refs: sentRefs.map(({ kind, ref_id }) => ({ kind, ref_id })),
@@ -628,32 +987,91 @@
           if (event.type === 'status' && event.status === 'done') {
             turnDone = true
           }
-          sessionEvent(event)
+          sessionEvent(event, target)
         },
       )
-      rememberActiveSession(activeSessionId)
+      target.sessionId = resolvedSessionId
       if (turnDone) {
         const sentKeys = new Set(
           sentRefs.map(ref => `${ref.kind}:${ref.ref_id}`),
         )
-        pendingRefs = pendingRefs.filter(
-          ref => ref.pinned || !sentKeys.has(`${ref.kind}:${ref.ref_id}`),
-        )
-        contextPreview = null
-        previewError = null
+        pendingRefsByChat = {
+          ...pendingRefsByChat,
+          [target.chatKey]: (pendingRefsByChat[target.chatKey] ?? []).filter(
+            ref => ref.pinned || !sentKeys.has(`${ref.kind}:${ref.ref_id}`),
+          ),
+        }
+        invalidatePreview(target.chatKey)
       }
     } catch (err) {
-      sessionEvents = [
-        ...sessionEvents,
-        {
-          type: 'error',
-          status: 'failed',
-          text: `⚠ 会话失败: ${(err as Error).message}`,
-        },
-      ]
+      const failure: SessionEventDTO = {
+        type: 'error',
+        status: 'failed',
+        text: `⚠ 会话失败: ${(err as Error).message}`,
+      }
+      if (target.sessionId) {
+        eventsBySession = {
+          ...eventsBySession,
+          [target.sessionId]: [
+            ...(eventsBySession[target.sessionId] ?? []),
+            failure,
+          ],
+        }
+      } else {
+        draftEventsByScope = {
+          ...draftEventsByScope,
+          [target.scopeKey]: [
+            ...(draftEventsByScope[target.scopeKey] ?? []),
+            failure,
+          ],
+        }
+      }
     } finally {
-      chatBusy = false
+      const nextBusy = new Set(busyChatKeys)
+      nextBusy.delete(originChatKey)
+      nextBusy.delete(target.chatKey)
+      busyChatKeys = nextBusy
     }
+  }
+
+  function cacheLabelForEvents(events: SessionEventDTO[]): string | null {
+    const usage = latestSessionUsage(events)
+    if (usage) {
+      return `cache ${typeof usage.cached_input_tokens === 'number' ? usage.cached_input_tokens : '未报告'}`
+    }
+    return events.some(event => event.type === 'status' && event.status === 'done')
+      ? 'cache 未报告'
+      : null
+  }
+
+  function chatPosition(
+    chatId: string,
+    index: number,
+  ): [number, number] {
+    const nodeWidth = 360
+    const horizontalGap = 16
+    const verticalGap = 18
+    const availableWidth = Math.max(nodeWidth, window.innerWidth - 36)
+    const columns = Math.max(
+      1,
+      Math.floor(
+        (availableWidth + horizontalGap) / (nodeWidth + horizontalGap),
+      ),
+    )
+    const column = index % columns
+    const row = Math.floor(index / columns)
+    return (
+      viewPositions[chatId] ?? [
+        Math.max(
+          18,
+          window.innerWidth -
+            18 -
+            nodeWidth -
+            column * (nodeWidth + horizontalGap),
+        ),
+        64 + row * (Math.min(window.innerHeight * 0.6, 420) + verticalGap),
+      ]
+    )
   }
 
   // §13.5.3: render ghost links (agent proposals, status="proposed") dashed.
@@ -998,8 +1416,11 @@
     navBack = [...navBack, currentRootId]
     navFwd = []
     currentRootId = root
+    selectedTreeId = null
+    draftOpen = false
     selectedId = null
     void load()
+    void restoreSessions(root)
   }
 
   function goBack() {
@@ -1007,8 +1428,11 @@
     navFwd = [...navFwd, currentRootId]
     currentRootId = navBack[navBack.length - 1]
     navBack = navBack.slice(0, -1)
+    selectedTreeId = null
+    draftOpen = false
     selectedId = null
     void load()
+    void restoreSessions(currentRootId)
   }
 
   function goForward() {
@@ -1016,8 +1440,11 @@
     navBack = [...navBack, currentRootId]
     currentRootId = navFwd[navFwd.length - 1]
     navFwd = navFwd.slice(0, -1)
+    selectedTreeId = null
+    draftOpen = false
     selectedId = null
     void load()
+    void restoreSessions(currentRootId)
   }
 
   // Mouse side buttons (3=back, 4=forward) and Alt+←/→.
@@ -1049,6 +1476,8 @@
   let subscription: EventSubscription | null = null
 
   onMount(async () => {
+    activeSessionByTree = readStoredMap(ACTIVE_BRANCH_KEY)
+    selectedTreeByScope = readStoredMap(SELECTED_TREE_KEY)
     try {
       positions = await fetchPositions()
     } catch (err) {
@@ -1060,7 +1489,7 @@
       })
       .catch(() => undefined)
     void load()
-    void restoreSessions()
+    void restoreSessions(null)
     subscription = subscribeEvents({
       onReady: gv => {
         liveOk = true
@@ -1165,6 +1594,9 @@
     {/each}
   </nav>
   <button on:click={load}>Reload</button>
+  <button on:click={() => void openRecovery()} title="查看未分配或损坏的会话树">
+    会话恢复区
+  </button>
   <span class="status">
     <span class="live" class:on={liveOk} title={liveOk ? `live · v${liveVersion}` : 'disconnected'}></span>
     {status} · {nodeCount}n / {edgeCount}e
@@ -1242,36 +1674,82 @@
     {contextLabel}
     busy={chatBusy}
     readOnly={chatReadOnly}
-    panelOpen={chatPanelOpen}
+    panelOpen={draftOpen}
     refs={pendingRefs}
     preview={contextPreview}
     {previewBusy}
     {previewError}
     onSend={t => void chatSend(t)}
-    onTogglePanel={() => (chatPanelOpen = !chatPanelOpen)}
+    onTogglePanel={startNewSession}
     onRemoveRef={removePendingRef}
     onTogglePin={togglePendingPin}
     onPreview={() => void previewPendingRefs()}
   />
-  {#if chatPanelOpen}
+  {#each visibleTreeIds as treeId, treeIndex (treeId)}
+    {@const branchSessions = visibleSessionsByTree[treeId] ?? []}
+    {@const branchSessionId = activeSessionIdsByTree[treeId] ?? null}
+    {@const branchSession = branchSessionId ? sessionsById[branchSessionId] : null}
+    {@const branchPosition = chatPosition(`chat:${treeId}`, treeIndex)}
     <ChatNode
-      messages={chatMessages}
-      active={activeSessionId !== null}
-      busy={chatBusy}
-      title={chatTitle}
-      subtitle={chatSubtitle}
-      sessionId={activeSessionId}
-      {sessions}
+      nodeId={`chat:${treeId}`}
+      messages={messagesByTree[treeId] ?? []}
+      active={branchSessionId !== null}
+      selected={selectedTreeId === treeId}
+      busy={busyChatKeys.has(treeId)}
+      title={`会话树 ${treeIndex + 1}`}
+      subtitle={branchSession
+        ? `${branchSession.provider_id} · ${branchSession.status}`
+        : '无可用分支'}
+      sessionId={branchSessionId}
+      sessions={branchSessions}
       loading={sessionListBusy}
       actionBusy={sessionActionBusy}
       error={sessionListError}
-      {cacheLabel}
+      cacheLabel={cacheLabelsByTree[treeId] ?? null}
+      x={branchPosition[0]}
+      y={branchPosition[1]}
+      onActivate={() => selectTree(treeId)}
+      onMove={(x, y) => recordMove(`chat:${treeId}`, x, y)}
       onSelectSession={(sessionId) => void openSession(sessionId)}
       onNewSession={startNewSession}
       onRefreshSessions={() => void restoreSessions()}
-      onForkSession={() => void forkActiveSession()}
-      onArchiveSession={() => void archiveActiveSession()}
-      onClose={() => (chatPanelOpen = false)}
+      onForkSession={() => void forkActiveSession(treeId)}
+      onArchiveSession={() => void archiveActiveSession(treeId)}
+    />
+  {/each}
+  {#if draftOpen}
+    {@const draftPosition = chatPosition('chat:draft', visibleTreeIds.length)}
+    <ChatNode
+      nodeId="chat:draft"
+      draft
+      messages={(draftEventsByScope[rootKey] ?? []).map(sessionEventMessage)}
+      selected={selectedTreeId === null}
+      busy={busyChatKeys.has(draftChatKey)}
+      title="新会话树"
+      subtitle={`${DEFAULT_PROVIDER_ID} · 首条消息后持久化`}
+      sessions={[]}
+      loading={sessionListBusy}
+      actionBusy={sessionActionBusy}
+      error={sessionListError}
+      x={draftPosition[0]}
+      y={draftPosition[1]}
+      onActivate={() => (selectedTreeId = null)}
+      onMove={(x, y) => recordMove('chat:draft', x, y)}
+      onNewSession={startNewSession}
+      onRefreshSessions={() => void restoreSessions()}
+      onClose={closeDraft}
+    />
+  {/if}
+  {#if recoveryOpen}
+    <SessionRecovery
+      sessions={recoverySessions}
+      selectedSessionId={recoverySessionId}
+      events={recoveryEvents}
+      loading={recoveryBusy}
+      error={recoveryError}
+      onSelect={(sessionId) => void openRecoverySession(sessionId)}
+      onRefresh={() => void openRecovery()}
+      onClose={() => (recoveryOpen = false)}
     />
   {/if}
 </main>

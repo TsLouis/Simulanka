@@ -40,6 +40,7 @@ SessionStatus = Literal[
     "stateless",
     "archived",
 ]
+ScopeStatus = Literal["bound", "unassigned", "missing", "broken"]
 
 _LIFECYCLE_STATUSES: dict[str, SessionStatus] = {
     "idle": "idle",
@@ -75,6 +76,8 @@ class Session:
     parent_session_id: str | None
     forked_from_event_id: str | None
     status: SessionStatus
+    scope_root_id: str | None = None
+    scope_defined: bool = False
     legacy_anchor: dict[str, Any] | None = None
 
     @property
@@ -99,6 +102,15 @@ class WorkSession:
     turn_running: bool
 
 
+@dataclass(frozen=True)
+class SessionTreeBinding:
+    """UI-sidecar placement projected from a Session parent forest."""
+
+    tree_id: str
+    scope_root_id: str | None
+    scope_status: ScopeStatus
+
+
 def create_session(
     layout: ProjectLayout,
     *,
@@ -107,8 +119,9 @@ def create_session(
     workspace: str | Path | None = None,
     parent_session_id: str | None = None,
     forked_from_event_id: str | None = None,
+    scope_root_id: str | None = None,
 ) -> Session:
-    """Create a generic session without imposing a domain anchor."""
+    """Create a generic root Session in an explicit graph-view scope."""
     return _create_session(
         layout,
         provider_id=provider_id,
@@ -116,6 +129,8 @@ def create_session(
         workspace=workspace,
         parent_session_id=parent_session_id,
         forked_from_event_id=forked_from_event_id,
+        scope_root_id=scope_root_id,
+        scope_defined=parent_session_id is None,
         legacy_anchor=None,
     )
 
@@ -128,6 +143,8 @@ def _create_session(
     workspace: str | Path | None,
     parent_session_id: str | None,
     forked_from_event_id: str | None,
+    scope_root_id: str | None,
+    scope_defined: bool,
     legacy_anchor: dict[str, Any] | None,
 ) -> Session:
     provider_id = provider_id.strip()
@@ -141,6 +158,10 @@ def _create_session(
         raise ValueError("parent_session_id must be a valid session id")
     if forked_from_event_id is not None and not forked_from_event_id.strip():
         raise ValueError("forked_from_event_id must be non-empty when provided")
+    if scope_root_id is not None:
+        scope_root_id = scope_root_id.strip()
+        if not scope_root_id:
+            raise ValueError("scope_root_id must be non-empty when provided")
 
     session_id = f"ses_{ULID()}"
     workspace_value = _workspace_value(layout, workspace)
@@ -154,6 +175,10 @@ def _create_session(
         "forked_from_event_id": forked_from_event_id,
         "status": "idle",
     }
+    if scope_defined:
+        # Explicit null means the project top-level view. Missing means a
+        # pre-scope legacy Session or a fork that inherits from its parent.
+        details["scope_root_id"] = scope_root_id
     if legacy_anchor is not None:
         # ``anchor`` keeps pre-S8 readers working; generic callers never write it.
         details["anchor"] = legacy_anchor
@@ -172,6 +197,8 @@ def _create_session(
         parent_session_id=parent_session_id,
         forked_from_event_id=forked_from_event_id,
         status="idle",
+        scope_root_id=scope_root_id if scope_defined else None,
+        scope_defined=scope_defined,
         legacy_anchor=legacy_anchor,
     )
 
@@ -189,6 +216,8 @@ def create_work_session(
         workspace=layout.root,
         parent_session_id=None,
         forked_from_event_id=None,
+        scope_root_id=None,
+        scope_defined=False,
         legacy_anchor=anchor,
     )
     return WorkSession(
@@ -253,6 +282,12 @@ def load_session(layout: ProjectLayout, session_id: str) -> Session:
     forked_from_event_id = details.get("forked_from_event_id")
     if not isinstance(forked_from_event_id, str):
         forked_from_event_id = None
+    scope_defined = "scope_root_id" in details
+    scope_root_id = details.get("scope_root_id")
+    if scope_root_id is not None and not isinstance(scope_root_id, str):
+        raise SessionStateError(
+            f"session {session_id!r} has invalid scope_root_id"
+        )
     legacy_anchor = details.get("legacy_anchor", details.get("anchor"))
     native_session_id = details.get("native_session_id")
     if not isinstance(native_session_id, str) or not native_session_id:
@@ -283,6 +318,8 @@ def load_session(layout: ProjectLayout, session_id: str) -> Session:
         parent_session_id=parent_session_id,
         forked_from_event_id=forked_from_event_id,
         status=status,
+        scope_root_id=scope_root_id,
+        scope_defined=scope_defined,
         legacy_anchor=dict(legacy_anchor) if isinstance(legacy_anchor, dict) else None,
     )
 
@@ -303,6 +340,78 @@ def list_sessions(layout: ProjectLayout) -> list[Session]:
     return sessions
 
 
+def session_tree_bindings(
+    layout: ProjectLayout,
+    sessions: Sequence[Session] | None = None,
+) -> dict[str, SessionTreeBinding]:
+    """Resolve tree identity and effective view scope without a second index."""
+    states = list_sessions(layout) if sessions is None else list(sessions)
+    by_id = {state.session_id: state for state in states}
+    out: dict[str, SessionTreeBinding] = {}
+
+    for state in states:
+        cursor = state
+        path: list[str] = []
+        path_index: dict[str, int] = {}
+        broken = False
+        cycle_members: list[str] = []
+        while cursor.parent_session_id is not None:
+            cycle_start = path_index.get(cursor.session_id)
+            if cycle_start is not None:
+                broken = True
+                cycle_members = path[cycle_start:]
+                break
+            path_index[cursor.session_id] = len(path)
+            path.append(cursor.session_id)
+            parent = by_id.get(cursor.parent_session_id)
+            if parent is None:
+                broken = True
+                break
+            cursor = parent
+
+        if broken:
+            # A missing-parent chain is grouped by its highest surviving
+            # ancestor. A cycle has no root, so use the smallest member as a
+            # deterministic recovery key shared by members and descendants.
+            tree_id = (
+                min(cycle_members)
+                if cycle_members
+                else cursor.session_id
+            )
+            out[state.session_id] = SessionTreeBinding(
+                tree_id=tree_id,
+                scope_root_id=None,
+                scope_status="broken",
+            )
+            continue
+
+        if not cursor.scope_defined:
+            binding = SessionTreeBinding(
+                tree_id=cursor.session_id,
+                scope_root_id=None,
+                scope_status="unassigned",
+            )
+        elif cursor.scope_root_id is None:
+            binding = SessionTreeBinding(
+                tree_id=cursor.session_id,
+                scope_root_id=None,
+                scope_status="bound",
+            )
+        else:
+            binding = SessionTreeBinding(
+                tree_id=cursor.session_id,
+                scope_root_id=cursor.scope_root_id,
+                scope_status=(
+                    "bound"
+                    if (layout.nodes_dir / f"{cursor.scope_root_id}.json").is_file()
+                    else "missing"
+                ),
+            )
+        out[state.session_id] = binding
+
+    return out
+
+
 def fork_session(
     layout: ProjectLayout,
     parent_session_id: str,
@@ -314,13 +423,16 @@ def fork_session(
 ) -> Session:
     """Create a blank child session; Provider history is never replayed."""
     parent = load_session(layout, parent_session_id)
-    return create_session(
+    return _create_session(
         layout,
         provider_id=parent.provider_id if provider_id is None else provider_id,
         model=parent.model if inherit_model else model,
         workspace=parent.workspace,
         parent_session_id=parent.session_id,
         forked_from_event_id=forked_from_event_id,
+        scope_root_id=None,
+        scope_defined=False,
+        legacy_anchor=None,
     )
 
 
@@ -339,10 +451,21 @@ def archive_session(layout: ProjectLayout, session_id: str) -> Session:
     return load_session(layout, session_id)
 
 
-def session_record(state: Session) -> dict[str, Any]:
+def session_record(
+    state: Session,
+    binding: SessionTreeBinding | None = None,
+) -> dict[str, Any]:
     """Return the stable provider-neutral API representation."""
+    resolved = binding or SessionTreeBinding(
+        tree_id=state.session_id,
+        scope_root_id=state.scope_root_id,
+        scope_status="bound" if state.scope_defined else "unassigned",
+    )
     return {
         "session_id": state.session_id,
+        "tree_id": resolved.tree_id,
+        "scope_root_id": resolved.scope_root_id,
+        "scope_status": resolved.scope_status,
         "provider_id": state.provider_id,
         "model": state.model,
         "native_session_id": state.native_session_id,
@@ -350,7 +473,10 @@ def session_record(state: Session) -> dict[str, Any]:
         "parent_session_id": state.parent_session_id,
         "forked_from_event_id": state.forked_from_event_id,
         "status": state.status,
-        "legacy": state.legacy_anchor is not None,
+        "legacy": (
+            state.legacy_anchor is not None
+            or resolved.scope_status in {"unassigned", "broken"}
+        ),
     }
 
 

@@ -22,7 +22,10 @@
   // 这个面里，不另立面板（feedback: no-single-purpose-buttons）。消息本体
   // 在会话文件里（图皮文件芯），这里只是皮。
   export let messages: ChatMsg[] = []
+  export let nodeId = 'chat:draft'
   export let active = false
+  export let selected = false
+  export let draft = false
   export let busy = false
   export let title = '会话'
   export let subtitle: string | null = null
@@ -37,19 +40,23 @@
   export let onRefreshSessions: () => void = () => {}
   export let onForkSession: () => void = () => {}
   export let onArchiveSession: () => void = () => {}
+  export let onActivate: () => void = () => {}
+  export let onMove: (x: number, y: number) => void = () => {}
   export let onClose: () => void = () => {}
   let fullscreen = false
+  let collapsed = false
   let sessionsOpen = false
   $: activeSession =
     sessions.find(session => session.session_id === sessionId) ?? null
 
-  // Drag by header. position is component-local; default parks at the right
-  // edge above the dock.
-  let x = window.innerWidth - 400
-  let y = 64
+  // Position belongs to the graph-view UI sidecar bucket, keyed by
+  // ``chat:<tree_id>``. The parent persists a completed drag.
+  export let x = window.innerWidth - 400
+  export let y = 64
   let dragging: { dx: number; dy: number } | null = null
   function dragStart(e: MouseEvent) {
     if (fullscreen) return
+    onActivate()
     dragging = { dx: e.clientX - x, dy: e.clientY - y }
   }
   function dragMove(e: MouseEvent) {
@@ -58,6 +65,7 @@
     y = Math.max(44, Math.min(e.clientY - dragging.dy, window.innerHeight - 80))
   }
   function dragEnd() {
+    if (dragging) onMove(Math.round(x), Math.round(y))
     dragging = null
   }
 
@@ -104,7 +112,14 @@
 
 <svelte:window on:mousemove={dragMove} on:mouseup={dragEnd} />
 
-<section class="chat-node" class:fullscreen style="left: {x}px; top: {y}px;">
+<section
+  class="chat-node"
+  class:fullscreen
+  class:collapsed
+  class:selected
+  data-chat-node={nodeId}
+  style="left: {x}px; top: {y}px;"
+>
   <header role="toolbar" tabindex="-1" on:mousedown|preventDefault={dragStart}>
     <span class="dot" class:on={active} title={active ? '已绑定持久化会话' : '新会话草稿'}></span>
     <span class="heading">
@@ -120,102 +135,107 @@
     <button
       class="icon-btn close"
       on:mousedown|stopPropagation
-      on:click={onClose}
-      title="收起"
-    >✕</button>
+      on:click={() => {
+        if (draft) onClose()
+        else collapsed = !collapsed
+      }}
+      title={draft ? '关闭新会话草稿' : collapsed ? '展开会话节点' : '折叠会话节点'}
+    >{draft ? '✕' : collapsed ? '□' : '—'}</button>
   </header>
 
-  <div class="session-strip">
-    <button
-      class:open={sessionsOpen}
-      on:click={() => (sessionsOpen = !sessionsOpen)}
-      title="查看和切换持久化会话"
-    >☷ {sessions.length}</button>
-    {#if sessionId}
-      <code class="session-id" title={sessionId}>{shortSessionId(sessionId)}</code>
-    {:else}
-      <span class="new-label">新会话草稿</span>
-    {/if}
-    {#if cacheLabel}<span class="cache-label">{cacheLabel}</span>{/if}
-    <span class="session-spacer"></span>
-    <button on:click={onRefreshSessions} disabled={loading} title="刷新会话与当前历史">↻</button>
-    <button on:click={onForkSession} disabled={!sessionId || busy || actionBusy} title="从当前会话分叉">分叉</button>
-    <button
-      on:click={onArchiveSession}
-      disabled={!sessionId || busy || actionBusy || activeSession?.status === 'archived' || activeSession?.status === 'running'}
-      title="非破坏归档当前会话"
-    >归档</button>
-    <button on:click={onNewSession} disabled={busy || actionBusy} title="新建空白会话草稿">＋</button>
-  </div>
-
-  {#if sessionsOpen}
-    <div class="session-list" aria-label="持久化会话列表">
-      {#if sessions.length === 0}
-        <span class="session-empty">{loading ? '正在加载…' : '还没有持久化会话'}</span>
+  {#if !collapsed}
+    <div class="session-strip">
+      <button
+        class:open={sessionsOpen}
+        on:click={() => (sessionsOpen = !sessionsOpen)}
+        title="查看和切换本节点内的会话分支"
+      >⑂ {sessions.length}</button>
+      {#if sessionId}
+        <code class="session-id" title={sessionId}>{shortSessionId(sessionId)}</code>
       {:else}
-        {#each sessions as session (session.session_id)}
-          <button
-            class:selected={session.session_id === sessionId}
-            class:archived={session.status === 'archived'}
-            disabled={busy || actionBusy}
-            title={session.session_id}
-            on:click={() => {
-              onSelectSession(session.session_id)
-              sessionsOpen = false
-            }}
-          >
-            <code>{shortSessionId(session.session_id)}</code>
-            <span>{session.provider_id}</span>
-            <i>{session.status}</i>
-          </button>
-        {/each}
+        <span class="new-label">新会话树草稿</span>
+      {/if}
+      {#if cacheLabel}<span class="cache-label">{cacheLabel}</span>{/if}
+      <span class="session-spacer"></span>
+      <button on:click={onRefreshSessions} disabled={loading} title="刷新当前层会话树">↻</button>
+      <button on:click={onForkSession} disabled={!sessionId || busy || actionBusy} title="在本节点内从当前分支 fork">fork</button>
+      <button
+        on:click={onArchiveSession}
+        disabled={!sessionId || busy || actionBusy || activeSession?.status === 'archived' || activeSession?.status === 'running'}
+        title="非破坏归档当前分支"
+      >归档</button>
+      <button on:click={onNewSession} disabled={busy || actionBusy} title="在当前层创建另一棵会话树">＋树</button>
+    </div>
+
+    {#if sessionsOpen}
+      <div class="session-list" aria-label="当前 ChatNode 的会话分支">
+        {#if sessions.length === 0}
+          <span class="session-empty">{loading ? '正在加载…' : '还没有持久化分支'}</span>
+        {:else}
+          {#each sessions as session (session.session_id)}
+            <button
+              class:selected={session.session_id === sessionId}
+              class:archived={session.status === 'archived'}
+              disabled={busy || actionBusy}
+              title={session.session_id}
+              on:click={() => {
+                onSelectSession(session.session_id)
+                sessionsOpen = false
+              }}
+            >
+              <code>{shortSessionId(session.session_id)}</code>
+              <span>{session.parent_session_id ? 'fork' : 'root'}</span>
+              <i>{session.status}</i>
+            </button>
+          {/each}
+        {/if}
+      </div>
+    {/if}
+
+    {#if error}
+      <div class="session-error" role="alert">{error}</div>
+    {/if}
+
+    <div class="scroll" bind:this={scrollEl}>
+      {#each messages as m, i (i)}
+        <div class="msg {m.role}">
+          {#if m.kind === 'tool_call' || m.kind === 'tool_result'}
+            <details class="tool-card">
+              <summary>
+                <span class="tool-icon">{m.kind === 'tool_call' ? '⚙' : '✓'}</span>
+                <strong>{m.toolName ?? 'tool'}</strong>
+                <span class="tool-status">{m.status ?? (m.kind === 'tool_call' ? 'running' : 'done')}</span>
+              </summary>
+              {#if m.callId}<code class="call-id">{m.callId}</code>{/if}
+              {#if m.kind === 'tool_call'}
+                <span class="detail-label">输入</span>
+                <pre>{formatDetail(m.input)}</pre>
+              {:else}
+                <span class="detail-label">结果</span>
+                <pre>{formatDetail(m.output)}</pre>
+              {/if}
+            </details>
+          {:else if m.kind === 'status'}
+            <div class="status-line status-{m.status ?? 'event'}">{m.text}</div>
+          {:else}
+            <div class="bubble" class:error={m.kind === 'error'}>{m.text}</div>
+          {/if}
+          {#if m.details && Object.keys(m.details).length > 0}
+            <details class="event-details">
+              <summary>{detailSummary(m.details)}</summary>
+              <pre>{formatDetail(m.details)}</pre>
+            </details>
+          {/if}
+        </div>
+      {/each}
+      {#if busy}
+        <div class="msg agent"><div class="bubble thinking">正在思考…</div></div>
+      {/if}
+      {#if messages.length === 0 && !busy}
+        <div class="empty">还没有消息。直接在底部输入；所在层级不会自动加入上下文。</div>
       {/if}
     </div>
   {/if}
-
-  {#if error}
-    <div class="session-error" role="alert">{error}</div>
-  {/if}
-
-  <div class="scroll" bind:this={scrollEl}>
-    {#each messages as m, i (i)}
-      <div class="msg {m.role}">
-        {#if m.kind === 'tool_call' || m.kind === 'tool_result'}
-          <details class="tool-card">
-            <summary>
-              <span class="tool-icon">{m.kind === 'tool_call' ? '⚙' : '✓'}</span>
-              <strong>{m.toolName ?? 'tool'}</strong>
-              <span class="tool-status">{m.status ?? (m.kind === 'tool_call' ? 'running' : 'done')}</span>
-            </summary>
-            {#if m.callId}<code class="call-id">{m.callId}</code>{/if}
-            {#if m.kind === 'tool_call'}
-              <span class="detail-label">输入</span>
-              <pre>{formatDetail(m.input)}</pre>
-            {:else}
-              <span class="detail-label">结果</span>
-              <pre>{formatDetail(m.output)}</pre>
-            {/if}
-          </details>
-        {:else if m.kind === 'status'}
-          <div class="status-line status-{m.status ?? 'event'}">{m.text}</div>
-        {:else}
-          <div class="bubble" class:error={m.kind === 'error'}>{m.text}</div>
-        {/if}
-        {#if m.details && Object.keys(m.details).length > 0}
-          <details class="event-details">
-            <summary>{detailSummary(m.details)}</summary>
-            <pre>{formatDetail(m.details)}</pre>
-          </details>
-        {/if}
-      </div>
-    {/each}
-    {#if busy}
-      <div class="msg agent"><div class="bubble thinking">正在思考…</div></div>
-    {/if}
-    {#if messages.length === 0 && !busy}
-      <div class="empty">还没有消息。直接在底部输入；画布选择不会自动加入上下文。</div>
-    {/if}
-  </div>
 </section>
 
 <style>
@@ -239,6 +259,16 @@
     width: auto;
     max-height: none;
     z-index: 60;
+  }
+  .chat-node.selected {
+    z-index: 35;
+    border-color: var(--gold);
+    box-shadow:
+      0 10px 34px rgba(0, 0, 0, 0.62),
+      0 0 0 2px rgba(217, 186, 125, 0.16);
+  }
+  .chat-node.collapsed {
+    width: 250px;
   }
   header {
     display: flex;

@@ -187,3 +187,42 @@ def test_opencode_uses_the_same_generic_runtime_and_event_store(tmp_path: Path) 
     assert events[2]["text"] == "world"
     assert events[-1]["status"] == "done"
     assert load_session(layout, state.session_id).native_session_id == "open-1"
+
+
+def test_chat_scope_never_becomes_implicit_supplement(tmp_path: Path) -> None:
+    layout = init_project(tmp_path, with_scaffold=False).layout
+    scope_root_id = apply_patch_now(
+        layout,
+        ops=[CreateNodeOp(type="directory", name="scope")],
+        actor="test",
+    ).nodes[0]
+    state = create_session(
+        layout,
+        provider_id="codex",
+        scope_root_id=scope_root_id,
+    )
+    calls: list[list[str]] = []
+
+    def runner(args: list[str], env: Mapping[str, str]) -> Iterable[str]:
+        del env
+        calls.append(args)
+        return (
+            json.dumps({"type": "thread.started", "thread_id": "thread-scope"}),
+            json.dumps({"type": "turn.completed"}),
+        )
+
+    message = "  keep this byte-for-byte\n"
+    events = _events(
+        stream_session_turn(
+            layout,
+            state,
+            message,
+            bundles=(),
+            runner=runner,
+        )
+    )
+
+    assert calls == [["codex", "exec", "--json", message]]
+    assert events[0]["text"] == message
+    assert events[0].get("details", {}) == {}
+    assert events[-1]["status"] == "done"

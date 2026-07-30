@@ -29,7 +29,7 @@
 | `GET /node/{id}` | slim locator `{id,type,name,parent_id}`——「跳转并选中」原语的服务端半边：选中一个实体先得打开它父容器的视图（S6 血缘链逐跳 / S7 卡片点击共用） |
 | `GET /node/{id}/provenance` | S6 血缘链：固定边集回溯（claim/hypothesis ← supports/contradicts ← evidence ←(produces/parent)← run →fulfills→ task →parent→ experiment →plan_file→ 计划文件节点），每跳 `{id,type,name,trust,via_edge,via_edge_trust}`，节点与边分别定级；查询时算不落盘；visited 防环、按 id 排序 |
 | `POST /node/{id}/resolve` | S7 escalate 就地「已处理」：`status→resolved`、`actor=user`、可附 `resolve_note`（包 `plan.resolve_escalate`，与 CLI `note resolve` 同芯）；非 escalate note 422；重复 resolve 422——停止信号恰好解除一次 |
-| `POST /discussion/start|message` · `GET /discussion` | **会话=语言原语（2026-07-14 解耦）**：start 无分歧也可开（空批次=通用图助手开场）；有分歧则批次开场（一批一场保留）。均打 `discussion-start` 恢复 tag + 开 opencode session；每轮 ops 块过写权闸。消息可带锚定戳（锚定：…）。**空批次会话固定走仓库级无工具 agent `graph-chat`**（`.opencode/agent/graph-chat.md`；agent 选择存进会话状态随轮次沿用）——opencode 默认 build agent 带全套工具，会对着代码库跑几分钟（慢的真凶）；批次核对线保留默认 agent（引证需要读码）。实测默认模型 ~7-9s/轮。「整页卡死」的真凶另在前端：Svelte 5 下 `$:` 里调 `tick()`（=微任务+flushSync）会无限重入刷新循环，ChatNode 挂载即冻死主线程——已改 `afterUpdate`/`queueMicrotask`，**禁止在响应式语句里调 tick()**（无头浏览器复现+调试器中断实证 2026-07-14） |
+| `POST /session` · `GET /session?scope` · `GET /session/{id}/history` · `POST /session/{id}/message|fork|archive` | Provider-neutral 会话生命周期。根 Session 显式记录创建时的 graph-view scope（`null`=top），根 id 同时是 tree id；fork 只记父 Session 并继承 tree/scope。列表按当前 scope 投影，`scope=unassigned` 单独恢复旧会话、缺失 scope 与损坏父链。旧 `/discussion` 端点仅作迁移兼容，不再定义产品会话类型。 |
 
 ## 渲染器（litegraph-adapter）
 
@@ -44,7 +44,7 @@
 ## 面板
 
 - **NodeInspector**：属性侧栏，选中实体的全部 attrs。
-- **消息面（2026-07-12 用户定向、07-14 落地并框架化）**：设计原则=**不出现单一用途按钮，agent→人的一切都是消息**。**框架先行（用户 07-14 再定向）**：现阶段只建语言，不实现子功能——分歧/待裁卡片已从面上剥离（server 端点 `/edge/{id}/verdict|accept|discuss`、`/disagreements` 保留，前端绑定随「消息类型」功能回归）。落地两件：**底部常驻输入条 ChatDock**（只做输入；锚定 chip=选中集优先、否则当前容器，锚定戳随消息发给 agent）+ **会话节点 ChatNode**（画布浮动 node 观感消息面、可拖；纯消息流，错误也进流——状态栏低语被彩排证实读作卡死）。首条消息自动开 opencode 会话；消息本体在会话文件，不进图（图皮文件芯）。
+- **消息面（S8 通用会话壳）**：设计原则=**不出现领域工作流按钮，agent→人的一切都是消息**。底部常驻 ChatDock 只负责给当前选中的 ChatNode/新树草稿发送消息和管理用户显式附加的 node/edge/port refs；所在层级、当前选择与祖先都不会自动注入。每棵 conversation tree 投影为一个可拖动 ChatNode UI sidecar，fork 只在节点内部增加分支；真正的新根 Session 才增加 ChatNode。ChatNode 不是 Node/Edge/Port/Profile，不进入语义图。首条消息懒创建 Provider Session；消息与工具事件持久化在 JSONL sidecar，刷新从历史恢复。
 - **VerifyPanel / DiscussPanel——已删除（2026-07-14）**：顶栏「核对」按钮一并退役。就地裁决/跳转选中已随 S7 余项落地（2026-07-15，见下）。
 
 ## 写权矩阵（执行点在此层）
@@ -68,21 +68,14 @@
 - **agent 无阻塞 + 真实必经转换器（2026-07-17 加固）**：agent 工作流＝改代码→自己跑 `import`→图自动更新+幽灵转正，全程无审批弹窗。**死端勿再试**：「agent 手填图真实 + 定期 reviewer 巡检一致性」——用户提出后被说服放弃：VSCode 类比的正确读法恰好反对它（编辑器显示＝系统从磁盘渲染出的真文件，不是 agent 往窗口里打字；同一份真相有两个写者才需要巡检员，写权收回给转换器则巡检岗位整个裁掉）；且撞「中模型翻译落图」死端，令投影层可信度降级为聊天记录水平。转换器不够强的事故形态＝图暂时不满（幽灵多挂一会儿/structure-only 降级），永远不是图说谎——唯一安全的失败方向；importer 补强＝彩排后回炉（原暂缓项恢复）。
 - **节点锁（07-16 保留；07-17 细化＝连文件一起锁）**：人/agent 皆可上锁，锁节点＝锁整棵子树；人可解锁，agent 走 escalate 请求——类比 Claude Code 的操作审批门。执行点两处：图侧＝kernel apply_patch 查祖先链；文件侧＝锁住子树内登记过的文件路径**自动从 agent 任务契约 allowed_outputs 扣除**（契约 glob 检查现成）。「只锁图」已否＝装饰品（用户锁 baseline 真正要保护的是文件）；契约外裸跑 shell 不归锁管（越狱问题，同 CC 权限门管不住人自己开终端）。
 
-## 交互定案：锚定式对话（§13.6，2026-07-08 定）
+## 交互定案：scoped conversation tree + 显式补充上下文
 
-不做全局自由聊天窗。**对话必锚定画布选择集**（一至多个节点/边；无自然实体则锚到容器——experiment、计划目录、根）。消息**不进图**：留在会话树/sidecar 文件，图侧至多一个指向锚点的 note。
-2026-07-10 更新：「DiscussPanel＝已落地特例」的过渡态结束——核对/讨论全面并入锚定原语，就地裁决部分进静态波次（S7），会话 UI 部分随 S8；「通用锚定对话优先级在静态缺口之后」对就地裁决不再成立。
-
-### 引用原语（2026-07-16 grill 定稿 🔲 未施工）
-
-彩排反馈「裁决=工作流不是地基，真地基=引用」的落地设计。心智模型＝Claude Code 的「@」——但 @ 展开成上下文由**系统**做（不是用户手拼），且引用的是图实体不是文件。
-
-- **引用=值，不进图**：一个引用就是 `{nodes: [id…], edges: [id…]}`；id 是稳定 ULID 身份（非内容哈希）⇒ 引用天然耐图演化、天然跨下钻层级。「引用集=可命名图实体」已辩论否决——重蹈「消息进图」的过滤税老路，勿再走；真出现「复用命名集合」用例再议。
-- **锚定戳＝server 端渲染**：前端只上行结构化 anchor，server 从图状态渲染 **card 级上下文块**（S5 卡片字段口径：id+type+name+关键 attrs；边=两端名+verdict+source）随消息喂 agent。必要性：graph-chat agent 无工具，戳里的信息就是它的全部锚点上下文。本质=brief 块的选择集切片，语言现成。现状前端手拼 `（锚定：type:name）` 人读字符串（App.svelte）退役。
-- **收集篮＝通用交互暂存件**（用户定，类比手机「中转站/魔法胶囊」）：快捷键/右键把当前选中集入篮，跨层攒集，拖进 ChatDock 或一键「作为锚定」消费。不算单一用途面板——已在案的第二、三消费者：圈选打包子图（v1 照片域，2026-07-18 定，见「S9 配套」）、未来裁决工作流的输入集。护栏：篮里只装实体引用 id（不装文件/文本，真用例撞上再扩）；消费路径不只拖拽（留点击路径）；被删实体显失效态、消费时剔除并提示；localStorage 持久化（刷新不清篮）；入口挂现有右键菜单，不立新按钮。
-- **会话持久化（彩排硬伤修复）**：现状只存指针（`discussion.json`＝session_id/model/agent/batch），转录只活在 opencode 内部存储、前端纯内存一刷即失。定案：**Simulanka 自持转录文件**（每场一文件，逐条 `{role, text, anchor, applied/rejected, ts}`）+ GET 历史端点 + 前端挂载即恢复。理由：消息记录需要我们的结构（锚定引用、ops 落账），agent CLI 是可换件、历史不能陪葬。树结构＝文件级 fork 元数据（`parent_session`+fork 点），对齐既定「分枝 v1=新 session+祖先重放」，消息级不需要 parent 指针。
-- **配套**：`GET /edge/{id}` locator（「跳转并选中」的边半边，现只有节点半边）；消息文本里的 `nod_`/`edg_` id 自动链接化→跳转并选中（ops 块已用 id 作 agent 侧通货，人侧补齐对称）。
-- **裁决通道切法**：**落章=地基、流程=工作流**——人侧 verdict 端点 + kernel verdict op + 写权矩阵是「人亲手落章」的可信通道（外包给 agent 工作流=出处变代笔，撞「中模型翻译落图」死端），保留；EdgeMenu 裁决按钮=可拆薄皮，裁决工作流成熟后退役不心疼。
+- **一树一节点**：一个根 Session 开始一棵 conversation tree，其 id 是不可变 tree id；该树在创建层投影恰好一个 `chat:<tree_id>`。fork 是同一 ChatNode 内的分支，不创建第二个节点。
+- **层级只管可见性**：top 与每个子图 root 各自只挂载本层 ChatNode；下钻/返回不创建 Session、Turn 或 ContextBundle。ChatNode 位置复用 `.simulanka/ui/positions.json` 的 per-view bucket，每树活动分支用 localStorage 恢复。
+- **上下文必须显式**：node/edge/port 只有经右键或 Inspector 附加后才进入 `RefSet`；用户可在 ChatDock 查看标签、固定、删除并预览 canonical payload。零 refs 时用户消息逐字发送，当前 root、祖先、选择集都不自动进入 prompt。
+- **Provider 原生状态优先**：继续会话走 Provider 原生 session/thread resume，不把 Simulanka transcript 或祖先消息 replay 回 prompt。JSONL 转录用于恢复 UI 与审计，不取代 Provider 历史；相同 supplemental bundle 的 sent digest 按 native session id 记账。
+- **中断与导航隔离**：流式 turn 捕获发送时的 scope/tree/session；生成途中下钻不会把事件写入新层或别树。暂停只中断当前 TurnHandle 并保留原生 session id、转录和工作区，下一轮仍从原生会话续接。
+- **恢复区**：旧 created 事件没有 scope、scope 节点已删除、父链缺失或成环的树不混入正常 graph view，统一从 `unassigned` 恢复入口查看。
 
 ## 彩排二轮收官（2026-07-17，用户拍板通过＝静态验收关过）
 
@@ -134,12 +127,11 @@
 - **escalate 就地「已处理」**：NodeInspector 在未解决 escalate note 上出按钮 → `POST /node/{id}/resolve`（可附说明）；卡片 RESOLVED 徽记与 S3 brief「只列 open」由此闭环。
 - 人肉彩排的「人终裁」步骤走本件。
 
-**S8 内嵌 agent 会话（插座子任务，静态末位）** 🔲（2026-07-09 grill 定）：前端起一个自由 agent 会话——agent 像在自己的 harness 里一样做任何事，界面是前端。技术路线＝**结构化事件流 + 原生会话面板**：用 harness 无头流式接口（opencode JSON / `claude -p --output-format stream-json`），渲染为对话气泡 + 工具调用卡片 + 流式输出；每 harness 一个薄展示适配器（只薄在展示层，调用与写权仍 harness 无关），先只接 opencode（免费模型现成）。写图仍只经 CLI/写权闸；会话干 task 时自己调 `run begin/end` 打卡（打卡即会话的图身份）。
-**验收**：免费模型跑一个玩具 task，会话/diff/验收/落图全程前端可见，输出好坏不作数。
-**与 §13.6 的边界**：不冲突——§13.6 禁的是「谈论图的无锚聊天」；这是**干活的会话**，锚天然是 task/run。
-**同波配套**：锚定会话 UI（核对/讨论会话的就地化壳，替代 DiscussPanel；一批一场、写权闸机制不变——S8 清单第 4 件，见 assembly.md）。
-**死端勿再试**：PTY 终端透传（xterm.js 嵌 TUI）作主路线——原型实测体验差，TUI 重绘/尺寸同步/输入法驯服成本无底；降级为逃生舱，sidecar 录制思想保留。
-**2026-07-18 grill 增补（S8 场收口）**：①**统一壳**——图聊/核对讨论/干活会话全是 ChatNode 一张脸，只是卡片不同：干活会话多「工具调用卡片」（默认折叠）＋一键放大全屏抽屉（同组件展示态，不是第二套壳）；②**派工入口**＝task 节点右键「派工」（预填锚定戳＝task 卡片上下文），ChatDock 也可自由起干活会话，不立新按钮；③**交互＝一问一答制**（无头轨道：轮内 agent 听不见人话）＋打字排队（轮末自动发出）＋**停止按钮**（杀当轮、如实标中断）＋轮末徽记提醒（打磨项）；④**叫停收口＝括号留人**——ChatNode 提示开着的 run，人选 `run end`（半成品也如实测量）或放着走 doctor stale 检查，零新机械；⑤**escalate 在干活会话里＝对话本身**（agent 有疑问就在会话里问，图级 escalate note 保留给计划级旗子）；⑥多会话并发允许、不做调度；⑦**护栏 v1＝测量不拦**——项目工作区内全放行，护栏是 diff 全可见＋契约越界落章＋事件日志＋停止按钮＋免费模型零花销；批准流挂动态线，真研究首撞再议。
+**S8 内嵌 agent 会话（通用插座）** 🔲：前端提供领域无关的 Session/Turn/Event 与 ChatNode 壳；讨论、实验、审查等以后都是在这套语言上加载的程序，不是核心模式。当前实现已覆盖 scoped conversation tree、节点内 fork、JSONL 历史恢复、显式 supplemental context、Provider adapter 与流式工具事件；停止/恢复完整验收仍按 S8 OpenSpec tasks 收口。
+
+**验收重点**：同层可有多棵树且一树一个 ChatNode；进入另一子图只看该层的树，返回后位置与活动分支恢复；fork 后节点数不变；刷新不丢会话 id/历史；零 refs 的消息逐字发送；生成途中切层不串流；归档只影响当前分支。界面没有“派工、讨论/干活、开始实验”等领域动作。
+
+**死端勿再试**：PTY 终端透传（xterm.js 嵌 TUI）作主路线；把 transcript/祖先历史 replay 到每轮 prompt；把 scope 或当前选择静默当上下文；为不同业务复制 ChatNode 类型。
 
 **S9 配套（前端侧）** 🔲（2026-07-18 Reparent 场 grill 定；规格主篇见 assembly.md「手稿层改造」）：①**删除预览确认框**——清单列明 N 手稿文件、M 原子、K 档案、断链提示，确认后盘＋图一笔事务清除；②**失效态渲染**——手稿被系统外删的原子灰显＋删除线、关联边保留标疑，doctor 如实报、不静默清；③**圈选打包 v1（照片域）**——模型零件等圈选 → 新建纯图组容器（directory 类型、无盘身份）＋kernel `ReparentOp` 迁入，跨层边界端口投影是现成机制；研究原子不走画布拖拽（位置由手稿派生）；文件/轮次文件夹进分组（07-17 已定原则「不动真文件」）v1 不施工，首撞再开。
 

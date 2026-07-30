@@ -262,8 +262,17 @@ export type SessionStatusDTO =
   | 'stateless'
   | 'archived'
 
+export type SessionScopeStatusDTO =
+  | 'bound'
+  | 'unassigned'
+  | 'missing'
+  | 'broken'
+
 export interface SessionDTO {
   session_id: string
+  tree_id: string
+  scope_root_id: string | null
+  scope_status: SessionScopeStatusDTO
   provider_id: string
   model: string | null
   native_session_id: string | null
@@ -310,6 +319,7 @@ export interface ContextPreviewDTO {
 
 export interface StreamSessionOptions {
   sessionId: string | null
+  scopeRootId: string | null
   text: string
   providerId?: string
   model?: string | null
@@ -318,10 +328,16 @@ export interface StreamSessionOptions {
 
 export const DEFAULT_PROVIDER_ID = 'codex'
 
-export async function fetchSessions(): Promise<SessionDTO[]> {
-  const resp = await fetch('/session')
+export async function fetchSessions(
+  scope?: string | null,
+): Promise<SessionDTO[]> {
+  const params = new URLSearchParams()
+  if (scope === null) params.set('scope', 'top')
+  else if (scope !== undefined) params.set('scope', scope)
+  const endpoint = `/session${params.size > 0 ? `?${params}` : ''}`
+  const resp = await fetch(endpoint)
   if (!resp.ok) {
-    throw new Error(`GET /session failed: ${resp.status} ${await resp.text()}`)
+    throw new Error(`GET ${endpoint} failed: ${resp.status} ${await resp.text()}`)
   }
   const payload = (await resp.json()) as { sessions: SessionDTO[] }
   return payload.sessions
@@ -398,6 +414,7 @@ export async function streamSessionMessage(
   const body: Record<string, unknown> = { text: options.text }
   if (initial) {
     body.provider_id = options.providerId ?? DEFAULT_PROVIDER_ID
+    body.scope_root_id = options.scopeRootId
     if (options.model) body.model = options.model
   }
   if (options.refs && options.refs.length > 0) body.refs = options.refs

@@ -107,7 +107,12 @@
     <button class="send" on:click={send} disabled={busy || readOnly || !text.trim()}>
       {busy ? '…' : '发送'}
     </button>
-    <button class="toggle" class:on={panelOpen} on:click={onTogglePanel}>消息</button>
+    <button
+      class="toggle"
+      class:on={panelOpen}
+      on:click={onTogglePanel}
+      title="在当前图层创建另一棵会话树草稿"
+    >＋ 会话树</button>
   </div>
 </div>
 
