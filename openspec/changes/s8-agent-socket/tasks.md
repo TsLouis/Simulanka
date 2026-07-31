@@ -40,7 +40,7 @@
 - [x] 4.3 增加会话 list、history、fork、archive API；Provider/模型变更只能新建或 fork
 - [x] 4.4 增加 stop API 与活动 handle 追踪；中断保留 native id、transcript、bundle 和工作区副作用
 - [x] 4.5 server 重启后将无 handle 的遗留 running 会话显示为 orphaned/interrupted
-- [ ] 4.6 legacy discussion 端点迁到通用 Session 兼容层，不再拥有独立 transcript 或前端 mode
+- [x] 4.6 legacy discussion 端点迁到通用 Session 兼容层，不再拥有独立 transcript 或前端 mode
 - [x] 4.7 根 Session 持久化显式 scope；通过 parent forest 派生 tree id/scope，list 支持 current scope 与 unassigned 恢复过滤
 - [x] 4.8 测试多级 fork 继承、每树唯一 ChatNode、缺父/成环、顶层 null、scope missing 与 legacy unassigned
 

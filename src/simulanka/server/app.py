@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 import threading
 import uuid
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Iterable, Iterator, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -28,13 +28,15 @@ from simulanka.agent.context import (
     decide_context_delivery,
 )
 from simulanka.agent.harness import (
+    DEFAULT_TIMEOUT,
     CommandRunner,
     HarnessError,
-    OpenCodeTurn,
-    run_opencode_turn,
+    parse_op_blocks,
 )
 from simulanka.agent.session import (
+    ProviderAdapter,
     ProviderCapabilities,
+    ProviderTurn,
     StreamRunner,
     TurnHandle,
     provider_adapters,
@@ -180,6 +182,45 @@ class _ActiveTurnRegistry:
     def contains(self, session_id: str) -> bool:
         with self._lock:
             return session_id in self._turns
+
+
+class _BoundAgentAdapter:
+    """Pin a legacy route's Provider preset without adding a Session mode."""
+
+    def __init__(self, delegate: ProviderAdapter, agent: str | None) -> None:
+        self.delegate = delegate
+        self.agent = agent
+        self.provider_id = delegate.provider_id
+        self.capabilities = delegate.capabilities
+        self.completion_on_clean_eof = delegate.completion_on_clean_eof
+
+    def start_turn(
+        self,
+        message: str,
+        *,
+        model: str | None = None,
+        agent: str | None = None,
+    ) -> ProviderTurn:
+        return self.delegate.start_turn(
+            message,
+            model=model,
+            agent=self.agent,
+        )
+
+    def resume_turn(
+        self,
+        native_session_id: str,
+        message: str,
+        *,
+        model: str | None = None,
+        agent: str | None = None,
+    ) -> ProviderTurn:
+        return self.delegate.resume_turn(
+            native_session_id,
+            message,
+            model=model,
+            agent=self.agent,
+        )
 
 
 
@@ -1204,30 +1245,89 @@ def create_app(
             include_created=False,
         )
 
-    # --- §13.6 discussion session: the agent op channel --------------------
-    # One batch, one session (一批一场): /start snapshots the disagreement
-    # set, tags a recovery point, and opens an opencode session; /message
-    # continues it. Each turn's simulanka-ops blocks (parsed by the Codex
-    # harness) pass through the agent_ops write-matrix gate — the agent
-    # itself holds no write tools. Canvas updates ride the existing SSE.
+    # --- §13.6 legacy discussion compatibility -----------------------------
+    # These routes retain their old response and write-matrix contract, but
+    # Session JSONL is now their sole transcript and lifecycle store.
 
-    def _run_turn(
+    legacy_stream_runner = opencode_stream_runner
+    if opencode_runner is not None:
+
+        def command_runner_stream(
+            args: list[str],
+            _env: Mapping[str, str],
+        ) -> Iterable[str]:
+            return opencode_runner(args, DEFAULT_TIMEOUT).splitlines()
+
+        legacy_stream_runner = command_runner_stream
+
+    def _run_discussion_turn(
+        state: Session,
         message: str,
         *,
-        session_id: str | None,
-        model: str | None,
         agent: str | None = None,
-    ) -> OpenCodeTurn:
-        try:
-            return run_opencode_turn(
-                message,
-                session_id=session_id,
-                model=model,
-                agent=agent,
-                runner=opencode_runner,
+    ) -> tuple[Session, str, list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+        adapter = _BoundAgentAdapter(
+            provider_adapters.create(
+                state.provider_id,
+                runner=legacy_stream_runner,
+                workspace=state.workspace,
+            ),
+            agent,
+        )
+        active = active_turns.reserve(state.session_id, adapter.capabilities)
+        if active is None or state.turn_running:
+            if active is not None:
+                active_turns.release(state.session_id, active)
+            raise HTTPException(
+                status_code=409,
+                detail="a turn is already running for this session",
             )
-        except HarnessError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+        events: list[dict[str, Any]] = []
+        try:
+            for line in stream_session_turn(
+                layout,
+                state,
+                message,
+                adapter=adapter,
+                on_turn_handle=lambda handle: active_turns.bind(
+                    state.session_id,
+                    active,
+                    handle,
+                ),
+                claim_terminal=lambda: active_turns.claim_terminal(
+                    state.session_id,
+                    active,
+                ),
+            ):
+                event = json.loads(line)
+                if isinstance(event, dict):
+                    events.append(event)
+        finally:
+            active_turns.release(state.session_id, active)
+
+        current = load_session(layout, state.session_id)
+        if current.status != "done":
+            error_text = next(
+                (
+                    event["text"]
+                    for event in reversed(events)
+                    if event.get("type") == "error"
+                    and isinstance(event.get("text"), str)
+                ),
+                f"discussion compatibility turn ended as {current.status}",
+            )
+            raise HTTPException(status_code=502, detail=error_text)
+
+        reply = "\n".join(
+            event["text"]
+            for event in events
+            if event.get("type") == "agent_text"
+            and isinstance(event.get("text"), str)
+        ).strip()
+        parsed = parse_op_blocks(reply)
+        applied, rejected = apply_agent_ops(layout, parsed.ops)
+        return current, reply, applied, rejected, parsed.errors
 
     @app.post("/discussion/start")
     def discussion_start(
@@ -1259,25 +1359,33 @@ def create_app(
         opening = (
             _opening_message(disagreements) if disagreements else GENERAL_OPENING
         )
-        turn = _run_turn(opening, session_id=None, model=model, agent=agent)
-        if not turn.session_id:
-            raise HTTPException(
-                status_code=502, detail="opencode returned no session id"
-            )
-        state = {
-            "session_id": turn.session_id,
+        state = create_session(
+            layout,
+            provider_id="opencode",
+            model=model.strip() if isinstance(model, str) else None,
+            workspace=layout.root,
+            scope_root_id=None,
+        )
+        current, reply, applied, rejected, op_errors = _run_discussion_turn(
+            state,
+            opening,
+            agent=agent,
+        )
+        assert current.native_session_id is not None
+        pointer = {
+            "platform_session_id": current.session_id,
             "model": model,
             "agent": agent,
             "batch": [d["id"] for d in disagreements],
         }
-        _save_discussion(layout, state)
-        applied, rejected = apply_agent_ops(layout, turn.ops)
+        _save_discussion(layout, pointer)
         return {
-            **state,
-            "reply": turn.text,
+            "session_id": current.native_session_id,
+            **pointer,
+            "reply": reply,
             "applied": applied,
             "rejected": rejected,
-            "op_errors": turn.op_errors,
+            "op_errors": op_errors,
         }
 
     @app.post("/discussion/message")
@@ -1288,33 +1396,63 @@ def create_app(
         text = body.get("text")
         if not isinstance(text, str) or not text.strip():
             raise HTTPException(status_code=422, detail="text is required")
-        state = _load_discussion(layout)
-        if state is None:
+        pointer = _load_discussion(layout)
+        if pointer is None:
             raise HTTPException(
                 status_code=422,
                 detail="no active discussion — POST /discussion/start first",
             )
-        turn = _run_turn(
+        platform_session_id = pointer.get("platform_session_id")
+        if not isinstance(platform_session_id, str):
+            raise HTTPException(
+                status_code=422,
+                detail="legacy discussion pointer cannot be resumed; start a new session",
+            )
+        try:
+            state = load_session(layout, platform_session_id)
+        except (SessionNotFound, SessionStateError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if state.status == "archived":
+            raise HTTPException(
+                status_code=409,
+                detail="archived sessions are read-only; fork or create a new session",
+            )
+        current, reply, applied, rejected, op_errors = _run_discussion_turn(
+            state,
             text,
-            session_id=state["session_id"],
-            model=state.get("model"),
-            agent=state.get("agent"),
+            agent=pointer.get("agent") if isinstance(pointer.get("agent"), str) else None,
         )
-        applied, rejected = apply_agent_ops(layout, turn.ops)
+        assert current.native_session_id is not None
         return {
-            "session_id": state["session_id"],
-            "reply": turn.text,
+            "session_id": current.native_session_id,
+            "platform_session_id": current.session_id,
+            "reply": reply,
             "applied": applied,
             "rejected": rejected,
-            "op_errors": turn.op_errors,
+            "op_errors": op_errors,
         }
 
     @app.get("/discussion")
     def discussion_state() -> dict[str, Any]:
-        state = _load_discussion(layout)
-        if state is None:
+        pointer = _load_discussion(layout)
+        if pointer is None:
             return {"active": False}
-        return {"active": True, **state}
+        platform_session_id = pointer.get("platform_session_id")
+        if not isinstance(platform_session_id, str):
+            return {"active": False}
+        try:
+            state = load_session(layout, platform_session_id)
+        except (SessionNotFound, SessionStateError):
+            return {"active": False}
+        return {
+            "active": state.status != "archived",
+            "session_id": state.native_session_id,
+            "platform_session_id": state.session_id,
+            "model": state.model,
+            "agent": pointer.get("agent"),
+            "batch": pointer.get("batch", []),
+            "status": state.status,
+        }
 
     return app
 
@@ -1563,7 +1701,14 @@ def _load_discussion(layout: ProjectLayout) -> dict[str, Any] | None:
         data = json.loads(path.read_text("utf-8"))
     except json.JSONDecodeError:
         return None
-    if not isinstance(data, dict) or not isinstance(data.get("session_id"), str):
+    if not isinstance(data, dict):
+        return None
+    platform_session_id = data.get("platform_session_id")
+    legacy_session_id = data.get("session_id")
+    if not isinstance(platform_session_id, str) and not isinstance(
+        legacy_session_id,
+        str,
+    ):
         return None
     return data
 

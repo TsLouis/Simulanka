@@ -153,6 +153,68 @@ def test_start_without_disagreements_opens_general_session(tmp_path: Path) -> No
     assert "--agent graph-chat" in " ".join(calls[1])
 
 
+def test_legacy_routes_share_generic_session_transcript(tmp_path: Path) -> None:
+    layout, _ = _seed(tmp_path)
+    runner, calls = _fake_runner(["first reply", "second reply"])
+    client = TestClient(create_app(layout, opencode_runner=runner))
+
+    started = client.post("/discussion/start", json={})
+    assert started.status_code == 200, started.text
+    payload = started.json()
+    platform_session_id = payload["platform_session_id"]
+    assert platform_session_id.startswith("ses_")
+    assert platform_session_id != payload["session_id"]
+
+    pointer = json.loads(
+        (layout.dot_dir / "agent" / "discussion.json").read_text("utf-8")
+    )
+    assert pointer["platform_session_id"] == platform_session_id
+    assert "reply" not in pointer
+    assert "transcript" not in pointer
+
+    followed = client.post("/discussion/message", json={"text": "follow up"})
+    assert followed.status_code == 200, followed.text
+    assert followed.json()["platform_session_id"] == platform_session_id
+    assert "-s" in calls[1] and "ses_test" in calls[1]
+
+    history = client.get(f"/session/{platform_session_id}/history")
+    assert history.status_code == 200, history.text
+    events = history.json()["events"]
+    assert [event["text"] for event in events if event["type"] == "agent_text"] == [
+        "first reply",
+        "second reply",
+    ]
+    assert [event["text"] for event in events if event["type"] == "user_msg"][-1] == (
+        "follow up"
+    )
+
+    listed = client.get("/session", params={"scope": "top"})
+    assert listed.status_code == 200, listed.text
+    assert platform_session_id in {
+        session["session_id"] for session in listed.json()["sessions"]
+    }
+
+
+def test_legacy_message_cannot_revive_archived_session(tmp_path: Path) -> None:
+    layout, _ = _seed(tmp_path)
+    runner, calls = _fake_runner(["first reply", "must not run"])
+    client = TestClient(create_app(layout, opencode_runner=runner))
+
+    started = client.post("/discussion/start", json={})
+    assert started.status_code == 200, started.text
+    platform_session_id = started.json()["platform_session_id"]
+    archived = client.post(f"/session/{platform_session_id}/archive", json={})
+    assert archived.status_code == 200, archived.text
+
+    rejected = client.post("/discussion/message", json={"text": "revive"})
+    assert rejected.status_code == 409, rejected.text
+    assert len(calls) == 1
+
+    history = client.get(f"/session/{platform_session_id}/history").json()
+    assert history["session"]["status"] == "archived"
+    assert all(event.get("text") != "revive" for event in history["events"])
+
+
 def test_start_sends_context_and_enforces_matrix(tmp_path: Path) -> None:
     layout, ids = _seed(tmp_path)
     runner, calls = _fake_runner(
