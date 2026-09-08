@@ -87,6 +87,38 @@
     return value.length > 12 ? `…${value.slice(-10)}` : value
   }
 
+  interface ContextReferenceView {
+    key: string
+    label: string
+    title: string
+  }
+
+  function contextReferences(details: Record<string, unknown>): ContextReferenceView[] {
+    const bundles = details.context_bundles
+    if (!Array.isArray(bundles)) return []
+    const result: ContextReferenceView[] = []
+    const seen = new Set<string>()
+    for (const bundle of bundles) {
+      if (!bundle || typeof bundle !== 'object' || Array.isArray(bundle)) continue
+      const refs = (bundle as Record<string, unknown>).refs
+      if (!Array.isArray(refs)) continue
+      for (const ref of refs) {
+        if (!ref || typeof ref !== 'object' || Array.isArray(ref)) continue
+        const value = ref as Record<string, unknown>
+        if (typeof value.kind !== 'string' || typeof value.ref_id !== 'string') continue
+        const key = `${value.kind}:${value.ref_id}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        result.push({
+          key,
+          label: `${value.kind}:${shortSessionId(value.ref_id)}`,
+          title: key,
+        })
+      }
+    }
+    return result
+  }
+
   function detailSummary(details: Record<string, unknown>): string {
     const usage = details.usage
     if (usage && typeof usage === 'object' && !Array.isArray(usage)) {
@@ -94,7 +126,12 @@
       return `usage · cache ${typeof cached === 'number' ? cached : '未报告'}`
     }
     const bundles = details.context_bundles
-    if (Array.isArray(bundles)) return `context · ${bundles.length} bundle`
+    if (Array.isArray(bundles)) {
+      const refs = contextReferences(details)
+      return refs.length > 0
+        ? `context · ${refs.length} refs`
+        : `context · ${bundles.length} bundle`
+    }
     return '事件详情'
   }
 
@@ -241,6 +278,14 @@
             <div class="bubble" class:error={m.kind === 'error'}>{m.text}</div>
           {/if}
           {#if m.details && Object.keys(m.details).length > 0}
+            {@const refs = contextReferences(m.details)}
+            {#if refs.length > 0}
+              <div class="context-refs" aria-label="本轮上下文引用">
+                {#each refs as ref (ref.key)}
+                  <code title={ref.title}>{ref.label}</code>
+                {/each}
+              </div>
+            {/if}
             <details class="event-details">
               <summary>{detailSummary(m.details)}</summary>
               <pre>{formatDetail(m.details)}</pre>

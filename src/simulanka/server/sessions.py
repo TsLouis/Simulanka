@@ -732,9 +732,9 @@ def _context_delivery_plan(
     layout: ProjectLayout,
     state: Session,
     bundles: Sequence[ContextBundle],
-) -> tuple[tuple[ContextBundle, ...], list[dict[str, str]]]:
+) -> tuple[tuple[ContextBundle, ...], list[dict[str, Any]]]:
     send: list[ContextBundle] = []
-    details: list[dict[str, str]] = []
+    details: list[dict[str, Any]] = []
     seen: set[str] = set()
     for bundle in bundles:
         if bundle.digest in seen:
@@ -757,6 +757,7 @@ def _context_delivery_plan(
                 "digest": bundle.digest,
                 "decision": decision,
                 "reason": reason,
+                "refs": bundle.refs.as_list(),
             }
         )
     return tuple(send), details

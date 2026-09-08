@@ -618,7 +618,9 @@ def test_work_session_failure_and_disconnect_never_record_done(tmp_path: Path) -
         runner=lambda args, env: iter(["not-json"]),
     )
     assert json.loads(next(stream))["type"] == "user_msg"
-    stream.close()
+    close = getattr(stream, "close", None)
+    assert callable(close)
+    close()
     stored = read_session_events(layout, interrupted.session_id)
     assert stored[-1]["status"] == "failed"
     assert "连接中断" in stored[-1]["text"]

@@ -22,6 +22,7 @@ from simulanka.server.sessions import (
     append_session_event,
     create_session,
     load_session,
+    read_session_events,
     stream_session_turn,
 )
 
@@ -84,8 +85,17 @@ def test_codex_turn_marks_new_context_then_native_resume_skips_it(tmp_path: Path
             "digest": bundle.digest,
             "decision": "send",
             "reason": "native_session_pending",
+            "refs": bundle.refs.as_list(),
         }
     ]
+    persisted_user_event = next(
+        event
+        for event in read_session_events(layout, state.session_id)
+        if event.get("type") == "user_msg"
+    )
+    assert persisted_user_event["details"]["context_bundles"][0][
+        "refs"
+    ] == bundle.refs.as_list()
     assert calls[0][:3] == ["codex", "exec", "--json"]
     assert calls[0][-1].startswith(first_message + "\n\n" + SUPPLEMENT_BOUNDARY_START)
     assert first[-1]["status"] == "done"
@@ -115,6 +125,7 @@ def test_codex_turn_marks_new_context_then_native_resume_skips_it(tmp_path: Path
     assert SUPPLEMENT_BOUNDARY_START not in calls[1][-1]
     assert first_message not in calls[1][-1]
     assert second[0]["details"]["context_bundles"][0]["decision"] == "skip"
+    assert second[0]["details"]["context_bundles"][0]["refs"] == bundle.refs.as_list()
     assert second[-1]["status"] == "done"
 
 
