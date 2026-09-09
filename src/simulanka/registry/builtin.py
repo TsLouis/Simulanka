@@ -9,6 +9,8 @@ from simulanka.registry.profiles import (
     NodeProfileSpec,
     Registry,
     RegistryPackage,
+    TemplatePortSpec,
+    TemplateSpec,
 )
 from simulanka.registry.types import ANY, EdgeTypeSpec, NodeTypeSpec
 
@@ -186,6 +188,94 @@ def _edge_profile(key: str) -> EdgeProfileSpec:
     )
 
 
+def _tensor_ports(*input_names: str) -> tuple[TemplatePortSpec, ...]:
+    return (
+        *(TemplatePortSpec(name=name, direction="in", port_type="tensor") for name in input_names),
+        TemplatePortSpec(name="output", direction="out", port_type="tensor"),
+    )
+
+
+def _torch_nn_template(
+    category: str,
+    class_name: str,
+    input_names: tuple[str, ...] = ("input",),
+) -> TemplateSpec:
+    return TemplateSpec(
+        key=f"torch.nn.{class_name}",
+        profile="module",
+        name=class_name.lower(),
+        category=category,
+        default_attrs={"class_name": class_name, "class_module": "torch.nn"},
+        default_ports=_tensor_ports(*input_names),
+    )
+
+
+def _torch_op_template(class_name: str, *input_names: str) -> TemplateSpec:
+    return TemplateSpec(
+        key=f"torch.{class_name}",
+        profile="module",
+        name=class_name.lower(),
+        category="张量运算",
+        default_attrs={"class_name": class_name, "class_module": "torch"},
+        default_ports=_tensor_ports(*input_names),
+    )
+
+
+_TORCH_NN_TEMPLATES = (
+    _torch_nn_template("卷积", "Conv1d"),
+    _torch_nn_template("卷积", "Conv2d"),
+    _torch_nn_template("卷积", "Conv3d"),
+    _torch_nn_template("卷积", "ConvTranspose2d"),
+    _torch_nn_template("线性", "Linear"),
+    _torch_nn_template("线性", "Bilinear", ("input1", "input2")),
+    _torch_nn_template("线性", "Embedding", ("indices",)),
+    _torch_nn_template("归一化", "BatchNorm1d"),
+    _torch_nn_template("归一化", "BatchNorm2d"),
+    _torch_nn_template("归一化", "LayerNorm"),
+    _torch_nn_template("归一化", "GroupNorm"),
+    _torch_nn_template("归一化", "RMSNorm"),
+    _torch_nn_template("激活", "ReLU"),
+    _torch_nn_template("激活", "GELU"),
+    _torch_nn_template("激活", "SiLU"),
+    _torch_nn_template("激活", "LeakyReLU"),
+    _torch_nn_template("激活", "Sigmoid"),
+    _torch_nn_template("激活", "Tanh"),
+    _torch_nn_template("激活", "Softmax"),
+    _torch_nn_template("池化", "MaxPool2d"),
+    _torch_nn_template("池化", "AvgPool2d"),
+    _torch_nn_template("池化", "AdaptiveAvgPool2d"),
+    _torch_nn_template("正则", "Dropout"),
+    _torch_nn_template("正则", "Dropout2d"),
+    _torch_nn_template("注意力", "MultiheadAttention", ("query", "key", "value")),
+    _torch_nn_template("注意力", "TransformerEncoderLayer"),
+    _torch_nn_template("注意力", "TransformerDecoderLayer", ("tgt", "memory")),
+    _torch_nn_template("循环", "RNN"),
+    _torch_nn_template("循环", "LSTM"),
+    _torch_nn_template("循环", "GRU"),
+    _torch_nn_template("损失", "CrossEntropyLoss", ("input", "target")),
+    _torch_nn_template("损失", "MSELoss", ("input", "target")),
+    _torch_nn_template("损失", "BCEWithLogitsLoss", ("input", "target")),
+    _torch_nn_template("损失", "L1Loss", ("input", "target")),
+    _torch_nn_template("形状", "Flatten"),
+    _torch_nn_template("形状", "Unflatten"),
+)
+
+_TORCH_OP_TEMPLATES = tuple(
+    _torch_op_template(name, *inputs)
+    for name, inputs in (
+        ("reshape", ("input",)),
+        ("permute", ("input",)),
+        ("cat", ("a", "b")),
+        ("stack", ("a", "b")),
+        ("add", ("a", "b")),
+        ("mul", ("a", "b")),
+        ("matmul", ("a", "b")),
+        ("mean", ("input",)),
+        ("sum", ("input",)),
+    )
+)
+
+
 CORE_PACKAGE = RegistryPackage(
     name="core",
     capabilities=(
@@ -225,12 +315,43 @@ CORE_PACKAGE = RegistryPackage(
 FILESYSTEM_PACKAGE = RegistryPackage(
     name="filesystem",
     node_profiles=tuple(_node_profile(key) for key in ("directory", "file")),
+    templates=(
+        TemplateSpec(
+            key="filesystem.directory",
+            profile="directory",
+            name="dir",
+            category="通用",
+        ),
+    ),
 )
 
 ML_TORCH_PACKAGE = RegistryPackage(
     name="ml-torch",
     node_profiles=tuple(_node_profile(key) for key in ("model", "module")),
     port_types=frozenset({"tensor", "scalar"}),
+    templates=(
+        *_TORCH_NN_TEMPLATES,
+        *_TORCH_OP_TEMPLATES,
+        TemplateSpec(
+            key="module.blank",
+            profile="module",
+            name="node",
+            category="通用",
+            default_ports=_tensor_ports("input"),
+        ),
+        TemplateSpec(
+            key="module.container",
+            profile="module",
+            name="container",
+            category="通用",
+        ),
+        TemplateSpec(
+            key="model.container",
+            profile="model",
+            name="model",
+            category="通用",
+        ),
+    ),
 )
 
 RESEARCH_PACKAGE = RegistryPackage(

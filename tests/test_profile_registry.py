@@ -291,6 +291,40 @@ def test_default_registry_composes_explicit_builtin_domain_packages() -> None:
     assert contains.source_capabilities == frozenset({"container"})
 
 
+def test_torch_catalog_is_templates_not_profiles() -> None:
+    profile_keys = set(DEFAULT_REGISTRY.node_profiles)
+    template_keys = set(DEFAULT_REGISTRY.templates)
+
+    assert {"Conv2d", "Linear", "cat"}.isdisjoint(profile_keys)
+    assert {
+        "torch.nn.Conv2d",
+        "torch.nn.Linear",
+        "torch.cat",
+        "module.blank",
+        "module.container",
+        "model.container",
+        "filesystem.directory",
+    } <= template_keys
+    assert len(template_keys) == 49
+
+    conv = DEFAULT_REGISTRY.templates["torch.nn.Conv2d"]
+    assert conv.profile == "module"
+    assert conv.name == "conv2d"
+    assert conv.default_attrs == {
+        "class_name": "Conv2d",
+        "class_module": "torch.nn",
+    }
+    assert [(port.name, port.direction, port.port_type) for port in conv.default_ports] == [
+        ("input", "in", "tensor"),
+        ("output", "out", "tensor"),
+    ]
+
+    cat = DEFAULT_REGISTRY.templates["torch.cat"]
+    assert cat.profile == "module"
+    assert cat.default_attrs["class_module"] == "torch"
+    assert [port.name for port in cat.default_ports] == ["a", "b", "output"]
+
+
 def test_runtime_consumers_do_not_depend_on_legacy_global_type_maps() -> None:
     source_root = Path(__file__).parents[1] / "src" / "simulanka"
     legacy_names = ("NODE_TYPES", "EDGE_TYPES", "PORT_TYPES")
