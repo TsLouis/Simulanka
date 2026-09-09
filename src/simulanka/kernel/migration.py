@@ -30,9 +30,19 @@ class Migration:
     apply: Callable[[ProjectLayout], None]
 
 
-# Real migrations are appended here as schema/registry evolve.
-# Empty in Alpha: there is no released prior version to migrate from.
-MIGRATIONS: list[Migration] = []
+def _registry_v1_to_v2(_layout: ProjectLayout) -> None:
+    """Adopt Profile Registry v2 without rewriting persisted entities."""
+
+
+MIGRATIONS: list[Migration] = [
+    Migration(
+        name="registry_v1_to_v2",
+        kind="registry",
+        from_version=1,
+        to_version=2,
+        apply=_registry_v1_to_v2,
+    ),
+]
 
 
 class MigrationError(RuntimeError):

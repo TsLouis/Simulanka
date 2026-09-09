@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from simulanka.layout.project import ProjectLayout
 
 SCHEMA_VERSION = 1
-REGISTRY_VERSION = 1
+REGISTRY_VERSION = 2
 EMPTY_CONTENT_HASH = "sha256:" + hashlib.sha256(b"").hexdigest()
 
 

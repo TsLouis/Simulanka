@@ -12,7 +12,7 @@ from simulanka.kernel.apply import apply_patch
 from simulanka.kernel.bundle import export_bundle
 from simulanka.kernel.doctor import run_doctor
 from simulanka.kernel.events import iter_events
-from simulanka.kernel.intent import CreateNodeOp, PatchIntent
+from simulanka.kernel.intent import CreateEdgeOp, CreateNodeOp, CreatePortOp, PatchIntent
 from simulanka.kernel.migration import (
     Migration,
     SchemaMismatch,
@@ -26,6 +26,16 @@ def _bump_manifest_schema_to(layout: ProjectLayout, version: int) -> None:
     """Rewrite manifest.schema_version to *version* (simulating an old project)."""
     payload = json.loads(layout.manifest_path.read_text("utf-8"))
     payload["schema_version"] = version
+    layout.manifest_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _bump_manifest_registry_to(layout: ProjectLayout, version: int) -> None:
+    """Rewrite manifest.registry_version to *version* (simulating an old project)."""
+    payload = json.loads(layout.manifest_path.read_text("utf-8"))
+    payload["registry_version"] = version
     layout.manifest_path.write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -113,6 +123,79 @@ def test_run_migrations_with_injected_step(
     migrate_events = [e for e in events if e.kind == "migrate"]
     assert len(migrate_events) == 1
     assert migrate_events[0].ops[0]["name"] == "schema_v0_to_v1"
+
+
+def test_registry_v1_to_v2_only_updates_manifest_and_event(tmp_path: Path) -> None:
+    layout = init_project(tmp_path, with_scaffold=False).layout
+    for op in (
+        CreateNodeOp(type="directory", name="models"),
+        CreateNodeOp(type="model", name="TinyNet", parent="/models"),
+        CreateNodeOp(type="module", name="source", parent="/models/TinyNet"),
+        CreateNodeOp(type="module", name="target", parent="/models/TinyNet"),
+        CreatePortOp(
+            node="/models/TinyNet/source",
+            name="out",
+            direction="out",
+            port_type="tensor",
+        ),
+        CreatePortOp(
+            node="/models/TinyNet/target",
+            name="in",
+            direction="in",
+            port_type="tensor",
+        ),
+        CreateEdgeOp(
+            type="data_flow",
+            source="/models/TinyNet/source.out",
+            target="/models/TinyNet/target.in",
+        ),
+    ):
+        apply_patch(
+            layout,
+            PatchIntent(
+                ops=[op],
+                actor="test",
+                base_graph_version=layout.load_manifest().graph_version,
+            ),
+        )
+
+    _bump_manifest_registry_to(layout, 1)
+    before_manifest = layout.load_manifest()
+    before_entities = {
+        path.relative_to(layout.graph_dir): path.read_bytes()
+        for directory in (layout.nodes_dir, layout.edges_dir, layout.ports_dir)
+        for path in sorted(directory.glob("*.json"))
+    }
+
+    plan = plan_migrations(layout)
+    assert [(step.kind, step.from_version, step.to_version) for step in plan.steps] == [
+        ("registry", 1, 2)
+    ]
+    run_migrations(layout)
+
+    after_manifest = layout.load_manifest()
+    after_entities = {
+        path.relative_to(layout.graph_dir): path.read_bytes()
+        for directory in (layout.nodes_dir, layout.edges_dir, layout.ports_dir)
+        for path in sorted(directory.glob("*.json"))
+    }
+    assert after_entities == before_entities
+    assert after_manifest.schema_version == before_manifest.schema_version == 1
+    assert after_manifest.registry_version == 2
+    assert after_manifest.graph_version == before_manifest.graph_version + 1
+    assert after_manifest.content_hash == before_manifest.content_hash
+
+    migration_event = list(iter_events(layout))[-1]
+    assert migration_event.kind == "migrate"
+    assert migration_event.ops == [
+        {
+            "kind": "migrate",
+            "name": "registry_v1_to_v2",
+            "migration_kind": "registry",
+            "from": 1,
+            "to": 2,
+        }
+    ]
 
 
 def test_missing_migration_chain_errors_clearly(
