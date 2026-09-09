@@ -48,12 +48,12 @@
 - [ ] 5.5 连接候选按 Edge Profile descriptor 预过滤，server 422/reason 保持硬闸
 - [ ] 5.6 浏览器演示 software service Profile 的创建、连接、选择、Inspector 和通用动作
 
-## 6. 验证、文档与交叉审查
+## 6. 验证、文档与复核
 
 - [ ] 6.1 Registry/validator/doctor/migration/action resolver 定向测试全绿
 - [ ] 6.2 前端组件、svelte-check、TypeScript 和 vite build 全绿；未知 Profile 不白屏
 - [ ] 6.3 GitNexus impact/detect_changes 核对 frozen contract 与实际 affected flows
 - [ ] 6.4 ruff、mypy --strict、pytest 全绿并记录精确命令/计数
 - [ ] 6.5 更新 overview.md、kernel.md、frontend.md；同一时段由本 change 独占这些文档
-- [ ] 6.6 `openspec validate generalize-graph-profile-registry --strict` 通过并完成另一方交叉审查
+- [ ] 6.6 `openspec validate generalize-graph-profile-registry --strict` 通过，完成 Codex 最终 diff 复核并记录证据
 - [ ] 6.7 用户按 U1-U5 目验后再同步/归档

@@ -1,29 +1,34 @@
-# Agent Collaboration (Codex ⇄ Claude)
+# Agent Ownership (Codex)
 
-- **Worktrees**: Codex works in `/home/ts/worktrees/simulanka-codex`, Claude in
-  the primary checkout `/home/ts/Simulanka`. Whoever implements a task cuts a
-  topic branch from `main` — `codex/<topic>` or `claude/<topic>` — and returns
-  its tree to `main` once the work lands. Never leave uncommitted work in the
-  other side's tree; worktrees never live in `/tmp`.
+- **Responsibility**: Codex owns the full Simulanka lifecycle across the entire
+  repository: exploration, proposal, implementation, verification, commits,
+  pushes, GitHub Issue updates, merges, spec sync, and archive. Work never waits
+  for Claude availability, authentication, review, or handoff.
+- **Worktrees**: implement in `/home/ts/worktrees/simulanka-codex` on a
+  `codex/<topic>` branch cut from `main`. Keep `/home/ts/Simulanka` as the
+  controlled `main` merge tree and the only checkout with `.venv`. Worktrees
+  never live in `/tmp`; do not leave task edits in the primary checkout.
 - **Communication = GitHub issues** on the private repo (`gh issue list/view/
   comment`), one issue per topic, close when resolved. The old
   `docs/to-codex.md` / `docs/to-claude*.md` direction files are legacy.
-- **Merges to `main`**: the implementer commits on their own topic branch, the
-  other side cross-reviews, and the merge runs in `/home/ts/Simulanka` (the only
-  tree with `.venv`). Carry tests: state ruff / mypy --strict / pytest status.
+- **Merges to `main`**: Codex commits on the topic branch, performs an
+  evidence-backed final diff review, and merges in `/home/ts/Simulanka`. Carry
+  GitNexus impact plus ruff / mypy --strict / pytest status and any relevant
+  frontend or OpenSpec checks.
 - Python: `/home/ts/Simulanka/.venv/bin/python` (absolute path; venv is not
   duplicated into worktrees).
-- **Ownership is task-scoped, not directory-scoped.** Claude and Codex may work
-  anywhere in the repository. One GitHub Issue maps to one OpenSpec change or
-  explicitly named task; its implementer owns that vertical slice in their own
-  worktree/branch, and the other side cross-reviews it.
+- **Ownership is task-scoped, not directory-scoped.** Codex may work anywhere
+  in the repository. One GitHub Issue maps to one OpenSpec change or explicitly
+  named task; its implementer owns that vertical slice in the topic branch.
 - **One writer per task.** Parallel agents may investigate or verify, but only
   the assigned implementer edits the task's files. The lead agent owns commits,
   pushes, Issue updates, and OpenSpec task checkboxes unless it explicitly
   delegates one of those actions.
 - Frozen contracts: §13.6 attrs/write-matrix + server edge endpoints; schema/
   kernel changes require OpenSpec exploration, explicit design/spec coverage,
-  and cross-review before implementation. Authoritative product docs are
+  GitNexus impact analysis, and explicit Codex review before implementation.
+  Product-direction or frozen-contract decisions escalate to the user.
+  Authoritative product docs are
   `docs/overview.md` + `kernel.md` / `assembly.md` / `frontend.md`;
   `docs/archive/design.md` is the frozen decision archive. Historical ownership
   labels in the archive are not current assignments.
@@ -41,7 +46,8 @@
 3. **Apply approved tasks** in a personal worktree/branch. Keep each edit inside
    the selected task and update artifacts first if scope or requirements change.
 4. **Review and verify** against specs, targeted tests, GitNexus impact, and the
-   repository quality gates. Sync/archive only after acceptance.
+   repository quality gates. Codex self-reviews the final diff; sync/archive
+   only after acceptance.
 
 **Grill is not an initial phase or a universal gate** (confirmed by the user
 2026-07-24: on demand, called when they want it). Use a short grill only
@@ -57,13 +63,11 @@ OpenSpec is the implementation and acceptance source of truth. GitHub Issues
 record claims, branches, progress, commits, and review; they do not replace or
 add requirements. Do not create a parallel assignment ledger.
 
-## Subagent Routing
+## Codex Subagent Routing
 
 Subagents are task templates, not permanent module owners. Spawn them with a
 minimal context rather than the full conversation. Multiple read-only agents
 may run in parallel; never run two writers against the same worktree/task.
-
-### Codex models
 
 - `gpt-5.6-terra` (default for children): bounded repository inspection,
   test/log triage, routine implementation of one approved task, and ordinary
@@ -84,30 +88,21 @@ Escalate from Terra to Sol when any of these is true:
 - accepted OpenSpec artifacts conflict;
 - two materially different implementation/diagnosis attempts fail with
   evidence; or
-- builder and reviewer reach incompatible correctness conclusions.
-
-### Claude models
-
-Project definitions live in `.claude/agents/`:
-
-- Haiku: read-only context scouting;
-- Sonnet: bounded implementation, verification, and normal review;
-- Opus: contract guardian and high-risk architecture decisions.
+- an isolated builder/reviewer pass reaches incompatible correctness
+  conclusions.
 
 Delegate only where parallelism or isolation actually pays. A child starts
-cold — it re-reads `AGENTS.md` and the relevant docs before it can do anything —
-so for a bounded lookup the main session reading the file itself is usually
-cheaper than a scout. When you do delegate, pick the tier from the task's risk;
-never default to the strongest model. Restart Claude Code after agent files
-change so it reloads the definitions.
+cold and must receive a complete task capsule, so for a bounded lookup the main
+session reading the file itself is usually cheaper. Delegation is optional, not
+a lifecycle gate; never default to the strongest model.
 
 ### The top of the ladder is the user
 
-Escalating to Sol or Opus buys a stronger reading, not authority. Stop and put
-the question to the user — with the evidence and the options — when the
-strongest model still cannot resolve it, when builder and reviewer stay
-incompatible, or when the decision changes product direction, a frozen contract,
-or accepted scope. No model tier is the final arbiter.
+Escalating reasoning effort or using `gpt-5.6-sol` buys a stronger reading, not
+authority. Stop and put the question to the user — with the evidence and the
+options — when strong review still cannot resolve it, two substantive attempts
+fail, or the decision changes product direction, a frozen contract, or accepted
+scope. No model tier is the final arbiter.
 
 ### Task capsule and return contract
 
@@ -165,11 +160,11 @@ This project is indexed by GitNexus as **Simulanka** (3715 symbols, 5753 relatio
 
 | Task | Read this skill file |
 |------|---------------------|
-| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
-| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
-| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
-| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
-| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
-| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
+| Understand architecture / "How does X work?" | `gitnexus-exploring` |
+| Blast radius / "What breaks if I change X?" | `gitnexus-impact-analysis` |
+| Trace bugs / "Why is X failing?" | `gitnexus-debugging` |
+| Rename / extract / split / refactor | `gitnexus-refactoring` |
+| Tools, resources, schema reference | `gitnexus-guide` |
+| Index, status, clean, wiki CLI commands | `gitnexus-cli` |
 
 <!-- gitnexus:end -->

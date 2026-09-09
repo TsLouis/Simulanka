@@ -9,7 +9,7 @@ Simulanka 的磁盘实体已经只有 Node/Edge/Port 三种，Node 的 `type` �
 
 早期设计档案已经为 `attrs_model` 和可选只读 validator 留过接口，manifest 也分别维护 `schema_version` 与 `registry_version`。因此本 change 可以不改 Node/Edge/Port 物理 schema，只完成 registry v2 和消费者迁移。
 
-该改造触及 frozen registry contract，并横跨 kernel、server、frontend；实现前必须以本设计、delta specs、GitNexus impact 和交叉审查为边界。
+该改造触及 frozen registry contract，并横跨 kernel、server、frontend；实现前必须以本设计、delta specs、GitNexus impact 和 Codex 证据化最终复核为边界。
 
 ## Goals / Non-Goals
 
