@@ -1,9 +1,15 @@
 from simulanka.registry.builtin import (
     BUILTIN_PACKAGE,
+    BUILTIN_PACKAGES,
+    CORE_PACKAGE,
     DEFAULT_REGISTRY,
     EDGE_TYPES,
+    FILESYSTEM_PACKAGE,
+    ML_TORCH_PACKAGE,
     NODE_TYPES,
     PORT_TYPES,
+    RESEARCH_PACKAGE,
+    RUNTIME_PACKAGE,
 )
 from simulanka.registry.file_kinds import FILE_KINDS, FileBinding, FileKindSpec
 from simulanka.registry.profiles import (
@@ -26,12 +32,18 @@ from simulanka.registry.software import SOFTWARE_SERVICE_PACKAGE
 from simulanka.registry.types import EdgeTypeSpec, NodeTypeSpec, PortDirection
 
 __all__ = [
+    "BUILTIN_PACKAGES",
     "BUILTIN_PACKAGE",
+    "CORE_PACKAGE",
     "DEFAULT_REGISTRY",
     "EDGE_TYPES",
     "FILE_KINDS",
+    "FILESYSTEM_PACKAGE",
+    "ML_TORCH_PACKAGE",
     "NODE_TYPES",
     "PORT_TYPES",
+    "RESEARCH_PACKAGE",
+    "RUNTIME_PACKAGE",
     "SOFTWARE_SERVICE_PACKAGE",
     "AliasSpec",
     "CapabilitySpec",

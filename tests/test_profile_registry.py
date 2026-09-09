@@ -8,7 +8,7 @@ from typing import Any, cast
 import pytest
 
 from simulanka.registry import (
-    BUILTIN_PACKAGE,
+    BUILTIN_PACKAGES,
     DEFAULT_REGISTRY,
     EDGE_TYPES,
     NODE_TYPES,
@@ -243,6 +243,54 @@ def test_builtin_compatibility_facade_preserves_v1_contract() -> None:
         cast(dict[str, Any], NODE_TYPES)["service"] = NODE_TYPES["module"]
 
 
+def test_default_registry_composes_explicit_builtin_domain_packages() -> None:
+    assert DEFAULT_REGISTRY.packages == (
+        "core",
+        "filesystem",
+        "ml-torch",
+        "research",
+        "runtime",
+    )
+    assert DEFAULT_REGISTRY.descriptor_digest == Registry.build(
+        version=2,
+        packages=BUILTIN_PACKAGES,
+    ).descriptor_digest
+
+    package_nodes = {
+        package.name: {profile.key for profile in package.node_profiles}
+        for package in BUILTIN_PACKAGES
+    }
+    package_edges = {
+        package.name: {profile.key for profile in package.edge_profiles}
+        for package in BUILTIN_PACKAGES
+    }
+    assert package_nodes == {
+        "core": set(),
+        "filesystem": {"directory", "file"},
+        "ml-torch": {"model", "module"},
+        "research": {
+            "question",
+            "hypothesis",
+            "claim",
+            "evidence",
+            "experiment",
+            "note",
+            "task",
+        },
+        "runtime": {"run"},
+    }
+    assert package_edges == {
+        "core": {"contains", "data_flow"},
+        "filesystem": set(),
+        "ml-torch": set(),
+        "research": {"addresses", "tests", "supports", "contradicts"},
+        "runtime": {"produces", "part_of", "uses", "fulfills"},
+    }
+    contains = DEFAULT_REGISTRY.edge_profiles["contains"]
+    assert contains.source_profiles == frozenset({"*"})
+    assert contains.source_capabilities == frozenset({"container"})
+
+
 def test_runtime_consumers_do_not_depend_on_legacy_global_type_maps() -> None:
     source_root = Path(__file__).parents[1] / "src" / "simulanka"
     legacy_names = ("NODE_TYPES", "EDGE_TYPES", "PORT_TYPES")
@@ -258,7 +306,7 @@ def test_runtime_consumers_do_not_depend_on_legacy_global_type_maps() -> None:
 def test_software_service_package_extends_registry_without_core_branches() -> None:
     registry = Registry.build(
         version=2,
-        packages=(BUILTIN_PACKAGE, SOFTWARE_SERVICE_PACKAGE),
+        packages=(*BUILTIN_PACKAGES, SOFTWARE_SERVICE_PACKAGE),
     )
 
     service = registry.node("software.service")

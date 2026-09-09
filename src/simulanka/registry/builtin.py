@@ -156,8 +156,38 @@ _TRUST_SUBJECT_TYPES = frozenset(
     {"hypothesis", "claim", "experiment", "task", "run", "evidence", "note"}
 )
 
-BUILTIN_PACKAGE = RegistryPackage(
-    name="builtin",
+
+def _node_profile(key: str) -> NodeProfileSpec:
+    legacy = _LEGACY_NODE_TYPES[key]
+    return NodeProfileSpec(
+        key=key,
+        capabilities=frozenset(
+            {
+                "contextualizable",
+                "renamable",
+                "deletable",
+                *(("container",) if key in _CONTAINER_TYPES else ()),
+                *(("trust_subject",) if key in _TRUST_SUBJECT_TYPES else ()),
+            }
+        ),
+        allow_parents=legacy.allow_parents,
+    )
+
+
+def _edge_profile(key: str) -> EdgeProfileSpec:
+    legacy = _LEGACY_EDGE_TYPES[key]
+    return EdgeProfileSpec(
+        key=key,
+        needs_ports=legacy.needs_ports,
+        source_profiles=legacy.source_node_types,
+        target_profiles=legacy.target_node_types,
+        source_port_direction=legacy.source_port_direction,
+        target_port_direction=legacy.target_port_direction,
+    )
+
+
+CORE_PACKAGE = RegistryPackage(
+    name="core",
     capabilities=(
         CapabilitySpec(
             key="container",
@@ -179,6 +209,33 @@ BUILTIN_PACKAGE = RegistryPackage(
             consumers=frozenset({"action"}),
             description="May be a delete candidate before actor and state policy.",
         ),
+    ),
+    edge_profiles=(
+        EdgeProfileSpec(
+            key="contains",
+            needs_ports=False,
+            source_capabilities=frozenset({"container"}),
+            target_profiles=frozenset({ANY}),
+        ),
+        _edge_profile("data_flow"),
+    ),
+    port_types=frozenset({"any"}),
+)
+
+FILESYSTEM_PACKAGE = RegistryPackage(
+    name="filesystem",
+    node_profiles=tuple(_node_profile(key) for key in ("directory", "file")),
+)
+
+ML_TORCH_PACKAGE = RegistryPackage(
+    name="ml-torch",
+    node_profiles=tuple(_node_profile(key) for key in ("model", "module")),
+    port_types=frozenset({"tensor", "scalar"}),
+)
+
+RESEARCH_PACKAGE = RegistryPackage(
+    name="research",
+    capabilities=(
         CapabilitySpec(
             key="trust_subject",
             consumers=frozenset({"context", "presentation"}),
@@ -186,56 +243,78 @@ BUILTIN_PACKAGE = RegistryPackage(
         ),
     ),
     node_profiles=tuple(
-        NodeProfileSpec(
-            key=key,
-            capabilities=frozenset(
-                {
-                    "contextualizable",
-                    "renamable",
-                    "deletable",
-                    *(("container",) if key in _CONTAINER_TYPES else ()),
-                    *(("trust_subject",) if key in _TRUST_SUBJECT_TYPES else ()),
-                }
-            ),
-            allow_parents=legacy.allow_parents,
+        _node_profile(key)
+        for key in (
+            "question",
+            "hypothesis",
+            "claim",
+            "evidence",
+            "experiment",
+            "note",
+            "task",
         )
-        for key, legacy in _LEGACY_NODE_TYPES.items()
     ),
     edge_profiles=tuple(
-        EdgeProfileSpec(
-            key=key,
-            needs_ports=legacy.needs_ports,
-            source_profiles=legacy.source_node_types,
-            target_profiles=legacy.target_node_types,
-            source_port_direction=legacy.source_port_direction,
-            target_port_direction=legacy.target_port_direction,
+        _edge_profile(key)
+        for key in (
+            "addresses",
+            "tests",
+            "supports",
+            "contradicts",
         )
-        for key, legacy in _LEGACY_EDGE_TYPES.items()
     ),
-    port_types=_LEGACY_PORT_TYPES,
 )
 
-DEFAULT_REGISTRY = Registry.build(version=2, packages=(BUILTIN_PACKAGE,))
+
+RUNTIME_PACKAGE = RegistryPackage(
+    name="runtime",
+    node_profiles=(_node_profile("run"),),
+    edge_profiles=tuple(
+        _edge_profile(key) for key in ("produces", "part_of", "uses", "fulfills")
+    ),
+)
+
+BUILTIN_PACKAGES = (
+    CORE_PACKAGE,
+    FILESYSTEM_PACKAGE,
+    ML_TORCH_PACKAGE,
+    RESEARCH_PACKAGE,
+    RUNTIME_PACKAGE,
+)
+
+
+def _aggregate_packages(
+    name: str,
+    packages: tuple[RegistryPackage, ...],
+) -> RegistryPackage:
+    return RegistryPackage(
+        name=name,
+        capabilities=tuple(item for package in packages for item in package.capabilities),
+        node_profiles=tuple(item for package in packages for item in package.node_profiles),
+        edge_profiles=tuple(item for package in packages for item in package.edge_profiles),
+        port_types=frozenset(
+            item for package in packages for item in package.port_types
+        ),
+        presentations=tuple(
+            item for package in packages for item in package.presentations
+        ),
+        templates=tuple(item for package in packages for item in package.templates),
+        aliases=tuple(item for package in packages for item in package.aliases),
+        validators={
+            key: validator
+            for package in packages
+            for key, validator in package.validators.items()
+        },
+    )
+
+
+# Transitional aggregate for extension code written before built-ins were split.
+BUILTIN_PACKAGE = _aggregate_packages("builtin", BUILTIN_PACKAGES)
+
+DEFAULT_REGISTRY = Registry.build(version=2, packages=BUILTIN_PACKAGES)
 
 # Compatibility facade for existing consumers. Registry v2 is authoritative;
-# tasks 2.x migrate kernel and doctor injection before these names are retired.
-NODE_TYPES: Mapping[str, NodeTypeSpec] = MappingProxyType(
-    {
-        key: NodeTypeSpec(name=key, allow_parents=profile.allow_parents)
-        for key, profile in DEFAULT_REGISTRY.node_profiles.items()
-    }
-)
-EDGE_TYPES: Mapping[str, EdgeTypeSpec] = MappingProxyType(
-    {
-        key: EdgeTypeSpec(
-            name=key,
-            needs_ports=profile.needs_ports,
-            source_node_types=profile.source_profiles,
-            target_node_types=profile.target_profiles,
-            source_port_direction=profile.source_port_direction,
-            target_port_direction=profile.target_port_direction,
-        )
-        for key, profile in DEFAULT_REGISTRY.edge_profiles.items()
-    }
-)
-PORT_TYPES = DEFAULT_REGISTRY.port_types
+# old maps preserve their exact v1 shape while runtime consumers use Registry.
+NODE_TYPES: Mapping[str, NodeTypeSpec] = MappingProxyType(dict(_LEGACY_NODE_TYPES))
+EDGE_TYPES: Mapping[str, EdgeTypeSpec] = MappingProxyType(dict(_LEGACY_EDGE_TYPES))
+PORT_TYPES = _LEGACY_PORT_TYPES
