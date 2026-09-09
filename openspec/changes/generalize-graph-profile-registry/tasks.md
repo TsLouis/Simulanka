@@ -27,7 +27,7 @@
 - [x] 3.1 将 core containment/data_flow 与通用 capabilities 注册为 core package
 - [x] 3.2 将 filesystem、ml/torch、research、runtime 类型和 edge rules 分入可信内置包
 - [x] 3.3 将 Conv/Linear/运算等实例目录迁为 TemplateSpec，不扩大 Profile 数量
-- [ ] 3.4 trust badge 适用面改读 capability；research provenance 算法保持领域扩展且回归不变
+- [x] 3.4 trust badge 适用面改读 capability；research provenance 算法保持领域扩展且回归不变
 - [ ] 3.5 server rename/delete/source policy 改读 capability + state policy，不再维护 type allowlist
 
 ## 4. Action 与 descriptor 服务

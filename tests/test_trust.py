@@ -15,6 +15,7 @@ from simulanka.kernel.intent import CreateEdgeOp, CreateNodeOp
 from simulanka.layout import init_project
 from simulanka.layout.project import ProjectLayout
 from simulanka.plan import ingest_plan
+from simulanka.registry import BUILTIN_PACKAGES, NodeProfileSpec, Registry, RegistryPackage
 from simulanka.schema.entities import Node
 from simulanka.storage.entity_store import iter_nodes
 from simulanka.trust import node_trust, provenance_chain, trust_level
@@ -51,6 +52,35 @@ def test_node_trust_excludes_questions_and_structure() -> None:
     assert node_trust(node("module", {})) is None
     assert node_trust(node("evidence", {"source": "machine"})) == "constructed"
     assert node_trust(node("claim", {"reviewed_in": "research/p.md"})) == "reviewed"
+
+
+def test_node_trust_eligibility_comes_from_profile_capability() -> None:
+    package = RegistryPackage(
+        name="trust-extension",
+        node_profiles=(
+            NodeProfileSpec(
+                key="audit.record",
+                capabilities=frozenset({"trust_subject"}),
+                allow_parents=frozenset({None}),
+            ),
+        ),
+    )
+    registry = Registry.build(
+        version=2,
+        packages=(*BUILTIN_PACKAGES, package),
+    )
+    node = Node(
+        id="nod_audit",
+        type="audit.record",
+        name="audit",
+        parent_id=None,
+        attrs={"source": "machine"},
+        created_at=datetime.now(tz=UTC),
+        created_by="test",
+    )
+
+    assert node_trust(node) is None
+    assert node_trust(node, registry=registry) == "constructed"
 
 
 # ---------------------------------------------------------------------------

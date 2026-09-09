@@ -15,16 +15,12 @@ from collections.abc import Mapping
 from typing import Any, Literal
 
 from simulanka.layout.project import ProjectLayout
+from simulanka.registry.builtin import DEFAULT_REGISTRY
+from simulanka.registry.profiles import Registry
 from simulanka.schema.entities import Node
 from simulanka.storage.entity_store import iter_edges, iter_nodes
 
 TrustLevel = Literal["human", "constructed", "reviewed", "checked", "unreviewed"]
-
-# Research-domain node types that carry a trust badge. `question` is excluded
-# by design: a question is not an assertion (v1 不做).
-TRUSTED_NODE_TYPES = frozenset(
-    {"hypothesis", "claim", "experiment", "task", "run", "evidence", "note"}
-)
 
 _SUPPORT_EDGES = ("supports", "contradicts")
 
@@ -50,12 +46,24 @@ def trust_level(attrs: Mapping[str, Any]) -> TrustLevel:
     return "unreviewed"
 
 
-def node_trust(node: Node) -> TrustLevel | None:
-    """Trust badge for a node, or None outside the research domain."""
-    return trust_level(node.attrs) if node.type in TRUSTED_NODE_TYPES else None
+def node_trust(
+    node: Node,
+    *,
+    registry: Registry = DEFAULT_REGISTRY,
+) -> TrustLevel | None:
+    """Trust badge for a node whose resolved Profile opts into trust semantics."""
+    profile = registry.node(node.type)
+    if profile is None or "trust_subject" not in profile.capabilities:
+        return None
+    return trust_level(node.attrs)
 
 
-def provenance_chain(layout: ProjectLayout, node_id: str) -> list[dict[str, Any]]:
+def provenance_chain(
+    layout: ProjectLayout,
+    node_id: str,
+    *,
+    registry: Registry = DEFAULT_REGISTRY,
+) -> list[dict[str, Any]]:
     """Fixed-edge-set backtrack: claim/hypothesis ← supports/contradicts ←
     evidence ← produces (or parent) ← run —fulfills→ task —parent→ experiment
     —plan_file→ plan file node.
@@ -76,7 +84,7 @@ def provenance_chain(layout: ProjectLayout, node_id: str) -> list[dict[str, Any]
             "id": n.id,
             "type": n.type,
             "name": n.name,
-            "trust": node_trust(n),
+            "trust": node_trust(n, registry=registry),
             "via_edge": via,
             "via_edge_trust": via_trust,
         }
