@@ -13,10 +13,11 @@ from simulanka.kernel.manifest import (
     compute_content_hash,
     load_manifest,
 )
+from simulanka.kernel.validator import build_validation_view, profile_entity_view
 from simulanka.layout.project import ProjectLayout
 from simulanka.registry.builtin import DEFAULT_REGISTRY
 from simulanka.registry.file_kinds import FILE_KINDS
-from simulanka.registry.profiles import Registry
+from simulanka.registry.profiles import ProfileValidationOp, Registry
 from simulanka.storage.entity_store import iter_edges, iter_nodes, iter_ports
 from simulanka.storage.index import index_path, rebuild_index, table_counts
 
@@ -177,7 +178,13 @@ def _check_dangling_refs(layout: ProjectLayout) -> list[Issue]:
 def _check_edge_registry(layout: ProjectLayout, registry: Registry) -> list[Issue]:
     out: list[Issue] = []
     nodes = {n.id: n for n in iter_nodes(layout)}
+    edges = {e.id: e for e in iter_edges(layout)}
     ports = {p.id: p for p in iter_ports(layout)}
+    validation_view = build_validation_view(
+        nodes=nodes.values(),
+        edges=edges.values(),
+        ports=ports.values(),
+    )
 
     for n in nodes.values():
         profile = registry.node(n.type)
@@ -211,6 +218,16 @@ def _check_edge_registry(layout: ProjectLayout, registry: Registry) -> list[Issu
                         f"{sorted(unknown_attrs)}."
                     ),
                 ))
+        for error in registry.validate_profile(
+            profile,
+            validation_view,
+            ProfileValidationOp(kind="doctor", entity=profile_entity_view(n)),
+        ):
+            out.append(Issue(
+                code="profile_validator_failed",
+                severity="error",
+                message=f"node `{n.id}` type=`{n.type}`: {error}",
+            ))
 
     for p in ports.values():
         if registry.resolve_port_key(p.port_type) is None:
@@ -220,7 +237,7 @@ def _check_edge_registry(layout: ProjectLayout, registry: Registry) -> list[Issu
                 message=f"port `{p.id}` has unregistered port_type `{p.port_type}`.",
             ))
 
-    for e in iter_edges(layout):
+    for e in edges.values():
         spec = registry.edge(e.type)
         if spec is None:
             out.append(Issue(
@@ -296,6 +313,16 @@ def _check_edge_registry(layout: ProjectLayout, registry: Registry) -> list[Issu
                         f"!= `{spec.target_port_direction}`."
                     ),
                 ))
+        for error in registry.validate_profile(
+            spec,
+            validation_view,
+            ProfileValidationOp(kind="doctor", entity=profile_entity_view(e)),
+        ):
+            out.append(Issue(
+                code="profile_validator_failed",
+                severity="error",
+                message=f"edge `{e.id}` type=`{e.type}`: {error}",
+            ))
     return out
 
 

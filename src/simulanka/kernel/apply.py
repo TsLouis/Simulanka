@@ -23,6 +23,7 @@ from simulanka.kernel.migration import check_versions
 from simulanka.kernel.resolver import resolve_node, resolve_port
 from simulanka.kernel.validator import (
     ValidationError,
+    build_validation_view,
     reserved_name_error,
     validate_edge,
     validate_node,
@@ -30,15 +31,20 @@ from simulanka.kernel.validator import (
 )
 from simulanka.layout.project import ProjectLayout
 from simulanka.registry.builtin import DEFAULT_REGISTRY
-from simulanka.registry.profiles import Registry
+from simulanka.registry.profiles import ProfileValidationView, Registry
 from simulanka.schema.entities import Edge, Node, Port
 from simulanka.storage.checkpoint import maybe_checkpoint
 from simulanka.storage.entity_store import (
     delete_edge,
     delete_node,
     delete_port,
+    iter_edges,
+    iter_nodes,
+    iter_ports,
     list_ports_of,
     load_edge,
+    load_node,
+    load_port,
     save_edge,
     save_node,
     save_port,
@@ -61,6 +67,36 @@ class _Pending:
     deleted_nodes: list[Node]
     deleted_ports: list[Port]
     refs: dict[str, Node]  # intent-local @ref handles → pending nodes
+
+
+def _validation_view(
+    layout: ProjectLayout,
+    pending: _Pending,
+    *,
+    extra_nodes: tuple[Node, ...] = (),
+    extra_edges: tuple[Edge, ...] = (),
+    extra_ports: tuple[Port, ...] = (),
+) -> ProfileValidationView:
+    nodes = {node.id: node for node in iter_nodes(layout)}
+    edges = {edge.id: edge for edge in iter_edges(layout)}
+    ports = {port.id: port for port in iter_ports(layout)}
+    for node in (*pending.nodes, *pending.updated_nodes, *extra_nodes):
+        nodes[node.id] = node
+    for edge in (*pending.edges, *pending.updated_edges, *extra_edges):
+        edges[edge.id] = edge
+    for port in (*pending.ports, *extra_ports):
+        ports[port.id] = port
+    for node in pending.deleted_nodes:
+        nodes.pop(node.id, None)
+    for edge in pending.deleted_edges:
+        edges.pop(edge.id, None)
+    for port in pending.deleted_ports:
+        ports.pop(port.id, None)
+    return build_validation_view(
+        nodes=nodes.values(),
+        edges=edges.values(),
+        ports=ports.values(),
+    )
 
 
 def apply_patch_now(
@@ -213,7 +249,7 @@ def _apply_op(
             layout, op, actor, now, pending, registry, prefix=prefix
         )
     if isinstance(op, UpdateAttrsOp):
-        return _handle_update_attrs(layout, op, pending, prefix=prefix)
+        return _handle_update_attrs(layout, op, pending, registry, prefix=prefix)
     if isinstance(op, RenameNodeOp):
         return _handle_rename_node(layout, op, pending, prefix=prefix)
     if isinstance(op, DeleteEdgeOp):
@@ -274,6 +310,7 @@ def _handle_create_node(
             node,
             parent_type=parent_node.type if parent_node else None,
             registry=registry,
+            view=_validation_view(layout, pending, extra_nodes=(node,)),
         )
     ]
     if errors:
@@ -311,6 +348,7 @@ def _handle_create_node(
                 source_port=None,
                 target_port=None,
                 registry=registry,
+                view=_validation_view(layout, pending, extra_edges=(edge,)),
             )
         ]
         if edge_errors:
@@ -420,6 +458,7 @@ def _handle_create_edge(
             source_port=source_port,
             target_port=target_port,
             registry=registry,
+            view=_validation_view(layout, pending, extra_edges=(edge,)),
         )
     ]
     if errors:
@@ -444,11 +483,14 @@ def _handle_update_attrs(
     layout: ProjectLayout,
     op: UpdateAttrsOp,
     pending: _Pending,
+    registry: Registry,
     *,
     prefix: str,
 ) -> list[str]:
     if op.target.startswith("edg_"):
-        return _handle_update_edge_attrs(layout, op, pending, prefix=prefix)
+        return _handle_update_edge_attrs(
+            layout, op, pending, registry, prefix=prefix
+        )
     try:
         existing = resolve_node(layout, op.target)
     except ValueError as exc:
@@ -463,6 +505,19 @@ def _handle_update_attrs(
 
     merged = {**existing.attrs, **op.attrs}
     updated = existing.model_copy(update={"attrs": merged})
+    parent = load_node(layout, existing.parent_id) if existing.parent_id else None
+    errors = [
+        f"{prefix}: {error}"
+        for error in validate_node(
+            updated,
+            parent_type=parent.type if parent is not None else None,
+            registry=registry,
+            view=_validation_view(layout, pending, extra_nodes=(updated,)),
+            validation_kind="update",
+        )
+    ]
+    if errors:
+        return errors
 
     # Replace any previously staged update for the same node.
     pending.updated_nodes = [n for n in pending.updated_nodes if n.id != existing.id]
@@ -482,6 +537,7 @@ def _handle_update_edge_attrs(
     layout: ProjectLayout,
     op: UpdateAttrsOp,
     pending: _Pending,
+    registry: Registry,
     *,
     prefix: str,
 ) -> list[str]:
@@ -500,6 +556,29 @@ def _handle_update_edge_attrs(
 
     merged = {**existing.attrs, **op.attrs}
     updated = existing.model_copy(update={"attrs": merged})
+    source_node = load_node(layout, existing.source_id)
+    target_node = load_node(layout, existing.target_id)
+    source_port = (
+        load_port(layout, existing.source_port_id) if existing.source_port_id else None
+    )
+    target_port = (
+        load_port(layout, existing.target_port_id) if existing.target_port_id else None
+    )
+    errors = [
+        f"{prefix}: {error}"
+        for error in validate_edge(
+            updated,
+            source_node=source_node,
+            target_node=target_node,
+            source_port=source_port,
+            target_port=target_port,
+            registry=registry,
+            view=_validation_view(layout, pending, extra_edges=(updated,)),
+            validation_kind="update",
+        )
+    ]
+    if errors:
+        return errors
 
     pending.updated_edges = [e for e in pending.updated_edges if e.id != existing.id]
     pending.updated_edges.append(updated)

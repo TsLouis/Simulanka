@@ -1,7 +1,15 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from simulanka.registry.builtin import DEFAULT_REGISTRY
-from simulanka.registry.profiles import Registry
+from simulanka.registry.profiles import (
+    ProfileEntityView,
+    ProfileValidationOp,
+    ProfileValidationView,
+    Registry,
+    ValidationKind,
+)
 from simulanka.schema.entities import Edge, Node, Port
 
 
@@ -10,6 +18,50 @@ class ValidationError(ValueError):
 
 
 _RESERVED_NAME_PREFIXES = ("nod_", "edg_", "prt_")
+
+
+def profile_entity_view(entity: Node | Edge | Port) -> ProfileEntityView:
+    if isinstance(entity, Node):
+        return ProfileEntityView(
+            kind="node",
+            id=entity.id,
+            profile=entity.type,
+            name=entity.name,
+            parent_id=entity.parent_id,
+            attrs=entity.attrs,
+        )
+    if isinstance(entity, Edge):
+        return ProfileEntityView(
+            kind="edge",
+            id=entity.id,
+            profile=entity.type,
+            source_id=entity.source_id,
+            target_id=entity.target_id,
+            source_port_id=entity.source_port_id,
+            target_port_id=entity.target_port_id,
+            attrs=entity.attrs,
+        )
+    return ProfileEntityView(
+        kind="port",
+        id=entity.id,
+        profile=entity.port_type,
+        name=entity.name,
+        node_id=entity.node_id,
+        direction=entity.direction,
+        attrs=entity.attrs,
+    )
+
+
+def build_validation_view(
+    *,
+    nodes: Iterable[Node],
+    edges: Iterable[Edge],
+    ports: Iterable[Port],
+) -> ProfileValidationView:
+    node_views = {node.id: profile_entity_view(node) for node in nodes}
+    edge_views = {edge.id: profile_entity_view(edge) for edge in edges}
+    port_views = {port.id: profile_entity_view(port) for port in ports}
+    return ProfileValidationView(nodes=node_views, edges=edge_views, ports=port_views)
 
 
 def reserved_name_error(name: str) -> str | None:
@@ -32,6 +84,8 @@ def validate_node(
     *,
     parent_type: str | None,
     registry: Registry = DEFAULT_REGISTRY,
+    view: ProfileValidationView | None = None,
+    validation_kind: ValidationKind = "create",
 ) -> list[str]:
     errors: list[str] = []
     reserved = reserved_name_error(node.name)
@@ -59,6 +113,20 @@ def validate_node(
         if unknown_attrs:
             errors.append(
                 f"Node type `{node.type}` has unknown attrs: {sorted(unknown_attrs)}."
+            )
+    if spec.validator_chain:
+        if view is None:
+            errors.append(f"Node type `{node.type}` requires a read-only validation view.")
+        else:
+            errors.extend(
+                registry.validate_profile(
+                    spec,
+                    view,
+                    ProfileValidationOp(
+                        kind=validation_kind,
+                        entity=profile_entity_view(node),
+                    ),
+                )
             )
     return errors
 
@@ -90,6 +158,8 @@ def validate_edge(
     source_port: Port | None,
     target_port: Port | None,
     registry: Registry = DEFAULT_REGISTRY,
+    view: ProfileValidationView | None = None,
+    validation_kind: ValidationKind = "create",
 ) -> list[str]:
     errors: list[str] = []
     spec = registry.edge(edge.type)
@@ -164,5 +234,20 @@ def validate_edge(
             f"Edge type `{edge.type}` does not use ports; "
             "source_port/target_port must be omitted."
         )
+
+    if spec.validator_chain:
+        if view is None:
+            errors.append(f"Edge type `{edge.type}` requires a read-only validation view.")
+        else:
+            errors.extend(
+                registry.validate_profile(
+                    spec,
+                    view,
+                    ProfileValidationOp(
+                        kind=validation_kind,
+                        entity=profile_entity_view(edge),
+                    ),
+                )
+            )
 
     return errors

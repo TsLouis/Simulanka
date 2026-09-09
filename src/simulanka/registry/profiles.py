@@ -11,7 +11,8 @@ from simulanka.registry.types import ANY, PortDirection
 
 CapabilityConsumer = Literal["validation", "action", "context", "presentation"]
 ProfileKind = Literal["node", "edge", "port"]
-ProfileValidator: TypeAlias = Callable[[object, object], Sequence[str]]
+EntityKind = Literal["node", "edge", "port"]
+ValidationKind = Literal["create", "update", "doctor"]
 
 _CAPABILITY_CONSUMERS = frozenset({"validation", "action", "context", "presentation"})
 
@@ -48,6 +49,48 @@ def _json_value(value: Any) -> Any:
         items = [_json_value(item) for item in value]
         return sorted(items, key=lambda item: json.dumps(item, sort_keys=True))
     return value
+
+
+@dataclass(frozen=True)
+class ProfileEntityView:
+    kind: EntityKind
+    id: str
+    profile: str
+    attrs: Mapping[str, Any] = field(default_factory=dict)
+    name: str | None = None
+    parent_id: str | None = None
+    node_id: str | None = None
+    source_id: str | None = None
+    target_id: str | None = None
+    source_port_id: str | None = None
+    target_port_id: str | None = None
+    direction: PortDirection | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "attrs", _freeze_mapping(self.attrs))
+
+
+@dataclass(frozen=True)
+class ProfileValidationView:
+    nodes: Mapping[str, ProfileEntityView] = field(default_factory=dict)
+    edges: Mapping[str, ProfileEntityView] = field(default_factory=dict)
+    ports: Mapping[str, ProfileEntityView] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "nodes", MappingProxyType(dict(self.nodes)))
+        object.__setattr__(self, "edges", MappingProxyType(dict(self.edges)))
+        object.__setattr__(self, "ports", MappingProxyType(dict(self.ports)))
+
+
+@dataclass(frozen=True)
+class ProfileValidationOp:
+    kind: ValidationKind
+    entity: ProfileEntityView
+
+
+ProfileValidator: TypeAlias = Callable[
+    [ProfileValidationView, ProfileValidationOp], Sequence[str]
+]
 
 
 @dataclass(frozen=True)
@@ -784,6 +827,36 @@ class Registry:
     def edge(self, key: str) -> ResolvedProfile | None:
         canonical = self.resolve_edge_key(key)
         return self.edge_profiles.get(canonical) if canonical is not None else None
+
+    def validate_profile(
+        self,
+        profile: ResolvedProfile,
+        view: ProfileValidationView,
+        op: ProfileValidationOp,
+    ) -> list[str]:
+        errors: list[str] = []
+        for validator_key in profile.validator_chain:
+            validator = self.validators[validator_key]
+            try:
+                result = validator(view, op)
+            except Exception as exc:  # trusted extension still fails closed
+                errors.append(
+                    f"Validator `{validator_key}` failed: {type(exc).__name__}: {exc}"
+                )
+                continue
+            if isinstance(result, str):
+                errors.append(
+                    f"Validator `{validator_key}` returned a string instead of a sequence"
+                )
+                continue
+            for error in result:
+                if not isinstance(error, str):
+                    errors.append(
+                        f"Validator `{validator_key}` returned a non-string error"
+                    )
+                    break
+                errors.append(error)
+        return errors
 
     def descriptor(self) -> dict[str, Any]:
         payload = self._descriptor_payload(
