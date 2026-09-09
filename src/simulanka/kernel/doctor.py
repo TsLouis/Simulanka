@@ -14,8 +14,9 @@ from simulanka.kernel.manifest import (
     load_manifest,
 )
 from simulanka.layout.project import ProjectLayout
-from simulanka.registry.builtin import EDGE_TYPES, NODE_TYPES, PORT_TYPES
+from simulanka.registry.builtin import DEFAULT_REGISTRY
 from simulanka.registry.file_kinds import FILE_KINDS
+from simulanka.registry.profiles import Registry
 from simulanka.storage.entity_store import iter_edges, iter_nodes, iter_ports
 from simulanka.storage.index import index_path, rebuild_index, table_counts
 
@@ -39,13 +40,17 @@ class RepairResult(BaseModel):
     skipped: list[str]
 
 
-def run_doctor(layout: ProjectLayout) -> DoctorReport:
+def run_doctor(
+    layout: ProjectLayout,
+    *,
+    registry: Registry = DEFAULT_REGISTRY,
+) -> DoctorReport:
     issues: list[Issue] = []
     issues.extend(_check_versions(layout))
     issues.extend(_check_content_hash(layout))
     issues.extend(_check_parent_cache(layout))
     issues.extend(_check_dangling_refs(layout))
-    issues.extend(_check_edge_registry(layout))
+    issues.extend(_check_edge_registry(layout, registry))
     issues.extend(_check_file_nodes(layout))
     issues.extend(_check_untracked_managed_files(layout))
     issues.extend(_check_stale_running_runs(layout))
@@ -169,21 +174,46 @@ def _check_dangling_refs(layout: ProjectLayout) -> list[Issue]:
     return out
 
 
-def _check_edge_registry(layout: ProjectLayout) -> list[Issue]:
+def _check_edge_registry(layout: ProjectLayout, registry: Registry) -> list[Issue]:
     out: list[Issue] = []
     nodes = {n.id: n for n in iter_nodes(layout)}
     ports = {p.id: p for p in iter_ports(layout)}
 
     for n in nodes.values():
-        if n.type not in NODE_TYPES:
+        profile = registry.node(n.type)
+        if profile is None:
             out.append(Issue(
                 code="unknown_node_type",
                 severity="error",
                 message=f"node `{n.id}` has unregistered type `{n.type}`.",
             ))
+            continue
+        parent = nodes.get(n.parent_id) if n.parent_id is not None else None
+        parent_profile = registry.node(parent.type) if parent is not None else None
+        parent_type = parent_profile.key if parent_profile is not None else None
+        if (n.parent_id is None or parent is not None) and not profile.accepts_parent(parent_type):
+            out.append(Issue(
+                code="node_parent_type_mismatch",
+                severity="error",
+                message=(
+                    f"node `{n.id}` type=`{n.type}` rejects parent type "
+                    f"`{parent.type if parent is not None else None}`."
+                ),
+            ))
+        if profile.closed_attrs:
+            unknown_attrs = n.attrs.keys() - profile.attrs_fields.keys()
+            if unknown_attrs:
+                out.append(Issue(
+                    code="node_attrs_contract_mismatch",
+                    severity="error",
+                    message=(
+                        f"node `{n.id}` type=`{n.type}` has unknown attrs "
+                        f"{sorted(unknown_attrs)}."
+                    ),
+                ))
 
     for p in ports.values():
-        if p.port_type not in PORT_TYPES:
+        if registry.resolve_port_key(p.port_type) is None:
             out.append(Issue(
                 code="unknown_port_type",
                 severity="warn",
@@ -191,7 +221,7 @@ def _check_edge_registry(layout: ProjectLayout) -> list[Issue]:
             ))
 
     for e in iter_edges(layout):
-        spec = EDGE_TYPES.get(e.type)
+        spec = registry.edge(e.type)
         if spec is None:
             out.append(Issue(
                 code="unknown_edge_type",
@@ -201,7 +231,9 @@ def _check_edge_registry(layout: ProjectLayout) -> list[Issue]:
             continue
         src = nodes.get(e.source_id)
         tgt = nodes.get(e.target_id)
-        if src and not spec.accepts_source_type(src.type):
+        source_profile = registry.node(src.type) if src else None
+        target_profile = registry.node(tgt.type) if tgt else None
+        if src and source_profile is not None and not spec.accepts_source(source_profile):
             out.append(Issue(
                 code="edge_source_type_mismatch",
                 severity="error",
@@ -210,7 +242,7 @@ def _check_edge_registry(layout: ProjectLayout) -> list[Issue]:
                     f"`{src.type}`."
                 ),
             ))
-        if tgt and not spec.accepts_target_type(tgt.type):
+        if tgt and target_profile is not None and not spec.accepts_target(target_profile):
             out.append(Issue(
                 code="edge_target_type_mismatch",
                 severity="error",

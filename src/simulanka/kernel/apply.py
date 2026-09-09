@@ -29,6 +29,8 @@ from simulanka.kernel.validator import (
     validate_port,
 )
 from simulanka.layout.project import ProjectLayout
+from simulanka.registry.builtin import DEFAULT_REGISTRY
+from simulanka.registry.profiles import Registry
 from simulanka.schema.entities import Edge, Node, Port
 from simulanka.storage.checkpoint import maybe_checkpoint
 from simulanka.storage.entity_store import (
@@ -67,6 +69,7 @@ def apply_patch_now(
     ops: list[IntentOp],
     actor: str,
     note: str | None = None,
+    registry: Registry = DEFAULT_REGISTRY,
 ) -> Receipt:
     """Convenience wrapper: build a ``PatchIntent`` from the live ``graph_version``.
 
@@ -83,10 +86,16 @@ def apply_patch_now(
             base_graph_version=load_manifest(layout).graph_version,
             note=note,
         ),
+        registry=registry,
     )
 
 
-def apply_patch(layout: ProjectLayout, intent: PatchIntent) -> Receipt:
+def apply_patch(
+    layout: ProjectLayout,
+    intent: PatchIntent,
+    *,
+    registry: Registry = DEFAULT_REGISTRY,
+) -> Receipt:
     check_versions(layout)
     manifest = load_manifest(layout)
     if intent.base_graph_version != manifest.graph_version:
@@ -106,7 +115,17 @@ def apply_patch(layout: ProjectLayout, intent: PatchIntent) -> Receipt:
     errors: list[str] = []
 
     for idx, op in enumerate(intent.ops):
-        errors.extend(_apply_op(layout, op, intent.actor, now, pending, op_index=idx))
+        errors.extend(
+            _apply_op(
+                layout,
+                op,
+                intent.actor,
+                now,
+                pending,
+                registry,
+                op_index=idx,
+            )
+        )
 
     if errors:
         raise ValidationError("; ".join(errors))
@@ -176,16 +195,23 @@ def _apply_op(
     actor: str,
     now: datetime,
     pending: _Pending,
+    registry: Registry,
     *,
     op_index: int,
 ) -> list[str]:
     prefix = f"op[{op_index}] {op.kind}"
     if isinstance(op, CreateNodeOp):
-        return _handle_create_node(layout, op, actor, now, pending, prefix=prefix)
+        return _handle_create_node(
+            layout, op, actor, now, pending, registry, prefix=prefix
+        )
     if isinstance(op, CreatePortOp):
-        return _handle_create_port(layout, op, actor, now, pending, prefix=prefix)
+        return _handle_create_port(
+            layout, op, actor, now, pending, registry, prefix=prefix
+        )
     if isinstance(op, CreateEdgeOp):
-        return _handle_create_edge(layout, op, actor, now, pending, prefix=prefix)
+        return _handle_create_edge(
+            layout, op, actor, now, pending, registry, prefix=prefix
+        )
     if isinstance(op, UpdateAttrsOp):
         return _handle_update_attrs(layout, op, pending, prefix=prefix)
     if isinstance(op, RenameNodeOp):
@@ -203,6 +229,7 @@ def _handle_create_node(
     actor: str,
     now: datetime,
     pending: _Pending,
+    registry: Registry,
     *,
     prefix: str,
 ) -> list[str]:
@@ -241,9 +268,14 @@ def _handle_create_node(
         created_at=now,
         created_by=actor,
     )
-    errors = [f"{prefix}: {e}" for e in validate_node(
-        node, parent_type=parent_node.type if parent_node else None
-    )]
+    errors = [
+        f"{prefix}: {error}"
+        for error in validate_node(
+            node,
+            parent_type=parent_node.type if parent_node else None,
+            registry=registry,
+        )
+    ]
     if errors:
         return errors
 
@@ -270,13 +302,17 @@ def _handle_create_node(
             created_at=now,
             created_by=actor,
         )
-        edge_errors = [f"{prefix}: contains: {e}" for e in validate_edge(
-            edge,
-            source_node=parent_node,
-            target_node=node,
-            source_port=None,
-            target_port=None,
-        )]
+        edge_errors = [
+            f"{prefix}: contains: {error}"
+            for error in validate_edge(
+                edge,
+                source_node=parent_node,
+                target_node=node,
+                source_port=None,
+                target_port=None,
+                registry=registry,
+            )
+        ]
         if edge_errors:
             return edge_errors
         pending.edges.append(edge)
@@ -300,6 +336,7 @@ def _handle_create_port(
     actor: str,
     now: datetime,
     pending: _Pending,
+    registry: Registry,
     *,
     prefix: str,
 ) -> list[str]:
@@ -319,7 +356,10 @@ def _handle_create_port(
         created_at=now,
         created_by=actor,
     )
-    errors = [f"{prefix}: {e}" for e in validate_port(port, node_ports=existing)]
+    errors = [
+        f"{prefix}: {error}"
+        for error in validate_port(port, node_ports=existing, registry=registry)
+    ]
     if errors:
         return errors
 
@@ -343,6 +383,7 @@ def _handle_create_edge(
     actor: str,
     now: datetime,
     pending: _Pending,
+    registry: Registry,
     *,
     prefix: str,
 ) -> list[str]:
@@ -370,13 +411,17 @@ def _handle_create_edge(
         created_at=now,
         created_by=actor,
     )
-    errors = [f"{prefix}: {e}" for e in validate_edge(
-        edge,
-        source_node=source_node,
-        target_node=target_node,
-        source_port=source_port,
-        target_port=target_port,
-    )]
+    errors = [
+        f"{prefix}: {error}"
+        for error in validate_edge(
+            edge,
+            source_node=source_node,
+            target_node=target_node,
+            source_port=source_port,
+            target_port=target_port,
+            registry=registry,
+        )
+    ]
     if errors:
         return errors
 

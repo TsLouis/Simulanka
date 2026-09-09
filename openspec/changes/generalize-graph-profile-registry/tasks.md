@@ -12,12 +12,12 @@
 - [x] 1.2 实现确定组合、单继承展开、alias 解析、descriptor digest 和运行期不可变
 - [x] 1.3 对重复 key、未知 base、继承/alias 环、无消费者 capability、悬空引用 fail closed
 - [x] 1.4 用兼容 facade 暂时导出旧 NODE_TYPES/EDGE_TYPES/PORT_TYPES，锁定现有类型和边约束
-- [ ] 1.5 增加非科研 software service 测试/演示包，证明无 kernel 分支扩展
+- [x] 1.5 增加非科研 software service 测试/演示包，证明无 kernel 分支扩展
 
 ## 2. Kernel、doctor 与迁移
 
-- [ ] 2.1 validator 注入 Registry，Node parent、Edge endpoint/port 与 Port type 走 resolved rules
-- [ ] 2.2 doctor 使用同一 Registry；未知 Profile 报错但只读 view 不丢实体
+- [x] 2.1 validator 注入 Registry，Node parent、Edge endpoint/port 与 Port type 走 resolved rules
+- [x] 2.2 doctor 使用同一 Registry；未知 Profile 报错但只读 view 不丢实体
 - [ ] 2.3 支持开放式 attrs contract 与可选只读 validator，验证 validator 无写副作用
 - [ ] 2.4 REGISTRY_VERSION 升至 2，注册 v1→v2 仅 manifest/event migration，证明实体文件逐字不改
 - [ ] 2.5 更新 kernel/CLI/importer 调用点，移除对旧全局常量的直接依赖

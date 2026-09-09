@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from simulanka.registry.builtin import EDGE_TYPES, NODE_TYPES, PORT_TYPES
+from simulanka.registry.builtin import DEFAULT_REGISTRY
+from simulanka.registry.profiles import Registry
 from simulanka.schema.entities import Edge, Node, Port
 
 
@@ -30,29 +31,49 @@ def validate_node(
     node: Node,
     *,
     parent_type: str | None,
+    registry: Registry = DEFAULT_REGISTRY,
 ) -> list[str]:
     errors: list[str] = []
     reserved = reserved_name_error(node.name)
     if reserved:
         errors.append(reserved)
-    spec = NODE_TYPES.get(node.type)
+    spec = registry.node(node.type)
     if spec is None:
         errors.append(f"Unknown node type `{node.type}`.")
         return errors
-    if not spec.accepts_parent(parent_type):
+    canonical_parent = parent_type
+    if parent_type is not None:
+        parent_profile = registry.node(parent_type)
+        if parent_profile is None:
+            errors.append(f"Unknown parent node type `{parent_type}`.")
+            return errors
+        canonical_parent = parent_profile.key
+    if not spec.accepts_parent(canonical_parent):
         allowed = ", ".join(sorted(repr(p) for p in spec.allow_parents))
         errors.append(
             f"Node type `{node.type}` cannot have parent of type "
             f"`{parent_type}` (allowed: {allowed})."
         )
+    if spec.closed_attrs:
+        unknown_attrs = node.attrs.keys() - spec.attrs_fields.keys()
+        if unknown_attrs:
+            errors.append(
+                f"Node type `{node.type}` has unknown attrs: {sorted(unknown_attrs)}."
+            )
     return errors
 
 
-def validate_port(port: Port, *, node_ports: list[Port]) -> list[str]:
+def validate_port(
+    port: Port,
+    *,
+    node_ports: list[Port],
+    registry: Registry = DEFAULT_REGISTRY,
+) -> list[str]:
     errors: list[str] = []
-    if port.port_type not in PORT_TYPES:
+    if registry.resolve_port_key(port.port_type) is None:
         errors.append(
-            f"Unknown port_type `{port.port_type}` (registered: {sorted(PORT_TYPES)})."
+            f"Unknown port_type `{port.port_type}` "
+            f"(registered: {sorted(registry.port_types)})."
         )
     if any(other.name == port.name for other in node_ports):
         errors.append(
@@ -68,22 +89,29 @@ def validate_edge(
     target_node: Node,
     source_port: Port | None,
     target_port: Port | None,
+    registry: Registry = DEFAULT_REGISTRY,
 ) -> list[str]:
     errors: list[str] = []
-    spec = EDGE_TYPES.get(edge.type)
+    spec = registry.edge(edge.type)
     if spec is None:
         errors.append(f"Unknown edge type `{edge.type}`.")
         return errors
 
-    if not spec.accepts_source_type(source_node.type):
+    source_profile = registry.node(source_node.type)
+    target_profile = registry.node(target_node.type)
+    if source_profile is None:
+        errors.append(f"Unknown source node type `{source_node.type}`.")
+    elif not spec.accepts_source(source_profile):
         errors.append(
             f"Edge `{edge.type}` rejects source node type `{source_node.type}` "
-            f"(allowed: {sorted(spec.source_node_types)})."
+            f"(allowed: {sorted(spec.source_profiles)})."
         )
-    if not spec.accepts_target_type(target_node.type):
+    if target_profile is None:
+        errors.append(f"Unknown target node type `{target_node.type}`.")
+    elif not spec.accepts_target(target_profile):
         errors.append(
             f"Edge `{edge.type}` rejects target node type `{target_node.type}` "
-            f"(allowed: {sorted(spec.target_node_types)})."
+            f"(allowed: {sorted(spec.target_profiles)})."
         )
 
     if spec.needs_ports:
