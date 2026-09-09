@@ -75,4 +75,3 @@ Provider 报告 cache usage 时，Adapter SHALL 原样记录并展示其 usage �
 #### Scenario: Provider 不报告 cache
 - **WHEN** Provider 完成事件没有 cache usage
 - **THEN** UI 显示未报告，而不是显示零命中或成功命中
-

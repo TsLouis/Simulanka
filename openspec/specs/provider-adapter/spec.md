@@ -37,4 +37,3 @@ Codex Adapter SHALL 以 `codex exec --json` 启动首轮，从 `thread.started` 
 #### Scenario: 并发发送
 - **WHEN** 同一 Session 已有 running turn 又收到发送请求
 - **THEN** server 拒绝第二个并发 turn 或把它留作显式草稿，不并行调用 Provider
-

@@ -86,4 +86,3 @@ Provider 启动失败、native session 缺失、事件解析失败、工具失�
 #### Scenario: 原生会话被外部删除
 - **WHEN** Provider resume 返回 native session 不存在
 - **THEN** 会话标记为 native_missing，并提供显式新建/fork 路径，不自动 replay transcript
-

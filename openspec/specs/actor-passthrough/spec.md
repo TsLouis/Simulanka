@@ -20,4 +20,3 @@ CLI 写命令 SHALL 接受 `--actor operator` 并在事件日志如实记账；�
 #### Scenario: 操作员建 task
 - **WHEN** 以 `--actor operator` 执行 task create
 - **THEN** 事件日志 actor=operator，图上铭章与 user 路径可区分
-
