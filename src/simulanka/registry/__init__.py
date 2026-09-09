@@ -1,15 +1,49 @@
-from simulanka.registry.builtin import EDGE_TYPES, NODE_TYPES, PORT_TYPES
+from simulanka.registry.builtin import (
+    BUILTIN_PACKAGE,
+    DEFAULT_REGISTRY,
+    EDGE_TYPES,
+    NODE_TYPES,
+    PORT_TYPES,
+)
 from simulanka.registry.file_kinds import FILE_KINDS, FileBinding, FileKindSpec
+from simulanka.registry.profiles import (
+    AliasSpec,
+    CapabilitySpec,
+    EdgeProfileSpec,
+    NodeProfileSpec,
+    PresentationSpec,
+    Registry,
+    RegistryBuildError,
+    RegistryPackage,
+    ResolvedProfile,
+    TemplatePortSpec,
+    TemplateSpec,
+)
+from simulanka.registry.software import SOFTWARE_SERVICE_PACKAGE
 from simulanka.registry.types import EdgeTypeSpec, NodeTypeSpec, PortDirection
 
 __all__ = [
+    "BUILTIN_PACKAGE",
+    "DEFAULT_REGISTRY",
     "EDGE_TYPES",
     "FILE_KINDS",
     "NODE_TYPES",
     "PORT_TYPES",
+    "SOFTWARE_SERVICE_PACKAGE",
+    "AliasSpec",
+    "CapabilitySpec",
+    "EdgeProfileSpec",
     "EdgeTypeSpec",
     "FileBinding",
     "FileKindSpec",
+    "NodeProfileSpec",
     "NodeTypeSpec",
     "PortDirection",
+    "PresentationSpec",
+    "Registry",
+    "RegistryBuildError",
+    "RegistryPackage",
+    "ResolvedProfile",
+    "TemplatePortSpec",
+    "TemplateSpec",
 ]

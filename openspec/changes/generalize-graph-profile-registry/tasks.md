@@ -8,10 +8,10 @@
 
 ## 1. Registry v2 核心
 
-- [ ] 1.1 定义 CapabilitySpec、NodeProfileSpec、EdgeProfileSpec、ResolvedProfile、PresentationSpec、TemplateSpec 与 Registry
-- [ ] 1.2 实现确定组合、单继承展开、alias 解析、descriptor digest 和运行期不可变
-- [ ] 1.3 对重复 key、未知 base、继承/alias 环、无消费者 capability、悬空引用 fail closed
-- [ ] 1.4 用兼容 facade 暂时导出旧 NODE_TYPES/EDGE_TYPES/PORT_TYPES，锁定现有类型和边约束
+- [x] 1.1 定义 CapabilitySpec、NodeProfileSpec、EdgeProfileSpec、ResolvedProfile、PresentationSpec、TemplateSpec 与 Registry
+- [x] 1.2 实现确定组合、单继承展开、alias 解析、descriptor digest 和运行期不可变
+- [x] 1.3 对重复 key、未知 base、继承/alias 环、无消费者 capability、悬空引用 fail closed
+- [x] 1.4 用兼容 facade 暂时导出旧 NODE_TYPES/EDGE_TYPES/PORT_TYPES，锁定现有类型和边约束
 - [ ] 1.5 增加非科研 software service 测试/演示包，证明无 kernel 分支扩展
 
 ## 2. Kernel、doctor 与迁移

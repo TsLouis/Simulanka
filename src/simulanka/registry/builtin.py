@@ -1,5 +1,15 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+from types import MappingProxyType
+
+from simulanka.registry.profiles import (
+    CapabilitySpec,
+    EdgeProfileSpec,
+    NodeProfileSpec,
+    Registry,
+    RegistryPackage,
+)
 from simulanka.registry.types import ANY, EdgeTypeSpec, NodeTypeSpec
 
 # ---------------------------------------------------------------------------
@@ -12,7 +22,7 @@ from simulanka.registry.types import ANY, EdgeTypeSpec, NodeTypeSpec
 # documented in docs/design.md; the kernel does not strictly validate them
 # (research fields churn frequently; a hard attrs schema would be friction).
 
-NODE_TYPES: dict[str, NodeTypeSpec] = {
+_LEGACY_NODE_TYPES: dict[str, NodeTypeSpec] = {
     "directory": NodeTypeSpec(
         name="directory",
         allow_parents=frozenset({"directory", None}),
@@ -68,7 +78,7 @@ NODE_TYPES: dict[str, NodeTypeSpec] = {
 # Edge types
 # ---------------------------------------------------------------------------
 
-EDGE_TYPES: dict[str, EdgeTypeSpec] = {
+_LEGACY_EDGE_TYPES: dict[str, EdgeTypeSpec] = {
     "contains": EdgeTypeSpec(
         name="contains",
         needs_ports=False,
@@ -139,4 +149,93 @@ EDGE_TYPES: dict[str, EdgeTypeSpec] = {
     ),
 }
 
-PORT_TYPES: frozenset[str] = frozenset({"any", "tensor", "scalar"})
+_LEGACY_PORT_TYPES = frozenset({"any", "tensor", "scalar"})
+
+_CONTAINER_TYPES = frozenset({"directory", "model", "module", "experiment", "run"})
+_TRUST_SUBJECT_TYPES = frozenset(
+    {"hypothesis", "claim", "experiment", "task", "run", "evidence", "note"}
+)
+
+BUILTIN_PACKAGE = RegistryPackage(
+    name="builtin",
+    capabilities=(
+        CapabilitySpec(
+            key="container",
+            consumers=frozenset({"validation", "action"}),
+            description="May contain child nodes subject to profile parent rules.",
+        ),
+        CapabilitySpec(
+            key="contextualizable",
+            consumers=frozenset({"context", "action"}),
+            description="May be attached to an agent session as explicit context.",
+        ),
+        CapabilitySpec(
+            key="renamable",
+            consumers=frozenset({"action"}),
+            description="May be a rename candidate before actor and state policy.",
+        ),
+        CapabilitySpec(
+            key="deletable",
+            consumers=frozenset({"action"}),
+            description="May be a delete candidate before actor and state policy.",
+        ),
+        CapabilitySpec(
+            key="trust_subject",
+            consumers=frozenset({"context", "presentation"}),
+            description="Receives research-domain trust and provenance presentation.",
+        ),
+    ),
+    node_profiles=tuple(
+        NodeProfileSpec(
+            key=key,
+            capabilities=frozenset(
+                {
+                    "contextualizable",
+                    "renamable",
+                    "deletable",
+                    *(("container",) if key in _CONTAINER_TYPES else ()),
+                    *(("trust_subject",) if key in _TRUST_SUBJECT_TYPES else ()),
+                }
+            ),
+            allow_parents=legacy.allow_parents,
+        )
+        for key, legacy in _LEGACY_NODE_TYPES.items()
+    ),
+    edge_profiles=tuple(
+        EdgeProfileSpec(
+            key=key,
+            needs_ports=legacy.needs_ports,
+            source_profiles=legacy.source_node_types,
+            target_profiles=legacy.target_node_types,
+            source_port_direction=legacy.source_port_direction,
+            target_port_direction=legacy.target_port_direction,
+        )
+        for key, legacy in _LEGACY_EDGE_TYPES.items()
+    ),
+    port_types=_LEGACY_PORT_TYPES,
+)
+
+DEFAULT_REGISTRY = Registry.build(version=2, packages=(BUILTIN_PACKAGE,))
+
+# Compatibility facade for existing consumers. Registry v2 is authoritative;
+# tasks 2.x migrate kernel and doctor injection before these names are retired.
+NODE_TYPES: Mapping[str, NodeTypeSpec] = MappingProxyType(
+    {
+        key: NodeTypeSpec(name=key, allow_parents=profile.allow_parents)
+        for key, profile in DEFAULT_REGISTRY.node_profiles.items()
+    }
+)
+EDGE_TYPES: Mapping[str, EdgeTypeSpec] = MappingProxyType(
+    {
+        key: EdgeTypeSpec(
+            name=key,
+            needs_ports=profile.needs_ports,
+            source_node_types=profile.source_profiles,
+            target_node_types=profile.target_profiles,
+            source_port_direction=profile.source_port_direction,
+            target_port_direction=profile.target_port_direction,
+        )
+        for key, profile in DEFAULT_REGISTRY.edge_profiles.items()
+    }
+)
+PORT_TYPES = DEFAULT_REGISTRY.port_types
