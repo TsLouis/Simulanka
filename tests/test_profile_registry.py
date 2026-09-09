@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -240,6 +241,18 @@ def test_builtin_compatibility_facade_preserves_v1_contract() -> None:
 
     with pytest.raises(TypeError):
         cast(dict[str, Any], NODE_TYPES)["service"] = NODE_TYPES["module"]
+
+
+def test_runtime_consumers_do_not_depend_on_legacy_global_type_maps() -> None:
+    source_root = Path(__file__).parents[1] / "src" / "simulanka"
+    legacy_names = ("NODE_TYPES", "EDGE_TYPES", "PORT_TYPES")
+    offenders = [
+        str(path.relative_to(source_root))
+        for package in ("kernel", "cli", "importer", "server")
+        for path in sorted((source_root / package).rglob("*.py"))
+        if any(name in path.read_text("utf-8") for name in legacy_names)
+    ]
+    assert offenders == []
 
 
 def test_software_service_package_extends_registry_without_core_branches() -> None:

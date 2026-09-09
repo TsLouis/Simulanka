@@ -20,7 +20,7 @@
 - [x] 2.2 doctor 使用同一 Registry；未知 Profile 报错但只读 view 不丢实体
 - [x] 2.3 支持开放式 attrs contract 与可选只读 validator，验证 validator 无写副作用
 - [x] 2.4 REGISTRY_VERSION 升至 2，注册 v1→v2 仅 manifest/event migration，证明实体文件逐字不改
-- [ ] 2.5 更新 kernel/CLI/importer 调用点，移除对旧全局常量的直接依赖
+- [x] 2.5 更新 kernel/CLI/importer 调用点，移除对旧全局常量的直接依赖
 
 ## 3. 内置领域包
 
