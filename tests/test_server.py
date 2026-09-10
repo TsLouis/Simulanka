@@ -779,6 +779,46 @@ def test_action_endpoints_revalidate_current_state_and_source_policy(
     assert "projection" in projected.json()["detail"]["reason"]
 
 
+def test_registry_descriptor_endpoint_uses_injected_registry(tmp_path: Path) -> None:
+    layout = init_project(tmp_path).layout
+    registry = Registry.build(
+        version=2,
+        packages=(*BUILTIN_PACKAGES, SOFTWARE_SERVICE_PACKAGE),
+    )
+    response = TestClient(create_app(layout, registry=registry)).get("/registry")
+
+    assert response.status_code == 200
+    descriptor = response.json()
+    assert descriptor["version"] == registry.version
+    assert descriptor["digest"] == registry.descriptor_digest
+    assert set(descriptor) == {
+        "version",
+        "digest",
+        "packages",
+        "capabilities",
+        "node_profiles",
+        "edge_profiles",
+        "port_types",
+        "presentations",
+        "templates",
+        "actions",
+        "aliases",
+    }
+    assert "software.service" in {
+        profile["key"] for profile in descriptor["node_profiles"]
+    }
+    assert "software.depends_on" in {
+        profile["key"] for profile in descriptor["edge_profiles"]
+    }
+    assert "software.http-service" in {
+        template["key"] for template in descriptor["templates"]
+    }
+    assert {action["id"] for action in descriptor["actions"]} >= {
+        "node.rename",
+        "node.delete",
+    }
+
+
 def test_templates_roundtrip(tmp_path: Path) -> None:
     layout = _seed_project(tmp_path)
     client = TestClient(create_app(layout))

@@ -265,6 +265,11 @@ def create_app(
         },
     )
 
+    @app.get("/registry")
+    def get_registry_descriptor() -> dict[str, Any]:
+        """Return the immutable semantic descriptor used by this server."""
+        return registry.descriptor()
+
     @app.get("/graph")
     def get_graph(root: str | None = Query(default=None)) -> dict[str, Any]:
         return _build_payload(layout, root, registry=registry)
