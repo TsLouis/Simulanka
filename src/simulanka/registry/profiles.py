@@ -13,6 +13,19 @@ CapabilityConsumer = Literal["validation", "action", "context", "presentation"]
 ProfileKind = Literal["node", "edge", "port"]
 EntityKind = Literal["node", "edge", "port"]
 ValidationKind = Literal["create", "update", "doctor"]
+ExecutorFamily = Literal["GraphCommand", "SessionCommand", "ProjectionCommand"]
+TargetMatch = Literal["all", "any"]
+ActionReasonCode = Literal[
+    "available",
+    "target_count_mismatch",
+    "target_kind_mismatch",
+    "unknown_profile",
+    "missing_capability",
+    "actor_forbidden",
+    "source_read_only",
+    "state_locked",
+    "executor_unavailable",
+]
 
 _CAPABILITY_CONSUMERS = frozenset({"validation", "action", "context", "presentation"})
 
@@ -226,6 +239,106 @@ class ResolvedProfile:
 
 
 @dataclass(frozen=True)
+class RefSetPredicate:
+    """Structural action target selection, independent from write policy."""
+
+    min_count: int = 1
+    max_count: int | None = 1
+    entity_kinds: frozenset[EntityKind] = field(
+        default_factory=lambda: frozenset({"node", "edge", "port"})
+    )
+    capabilities: frozenset[str] = field(default_factory=frozenset)
+    target_match: TargetMatch = "all"
+
+    def __post_init__(self) -> None:
+        if self.min_count < 0:
+            raise RegistryBuildError("Action target min_count must be non-negative")
+        if self.max_count is not None and self.max_count < self.min_count:
+            raise RegistryBuildError(
+                "Action target max_count must be greater than or equal to min_count"
+            )
+        if not self.entity_kinds:
+            raise RegistryBuildError("Action target must accept at least one entity kind")
+        unknown_kinds = set(self.entity_kinds) - {"node", "edge", "port"}
+        if unknown_kinds:
+            raise RegistryBuildError(
+                f"Action target has unknown entity kinds: {sorted(unknown_kinds)}"
+            )
+        if self.target_match not in {"all", "any"}:
+            raise RegistryBuildError(
+                f"Action target match must be 'all' or 'any': {self.target_match!r}"
+            )
+        object.__setattr__(self, "entity_kinds", frozenset(self.entity_kinds))
+        object.__setattr__(self, "capabilities", frozenset(self.capabilities))
+        for capability in self.capabilities:
+            _require_key("action target capability", capability)
+
+
+@dataclass(frozen=True)
+class ActionExecutorSpec:
+    key: str
+    family: ExecutorFamily
+
+    def __post_init__(self) -> None:
+        _require_key("action executor", self.key)
+        if self.family not in {"GraphCommand", "SessionCommand", "ProjectionCommand"}:
+            raise RegistryBuildError(
+                f"Action executor {self.key!r} has unknown family {self.family!r}"
+            )
+
+
+@dataclass(frozen=True)
+class ActionSpec:
+    key: str
+    label: str
+    target: RefSetPredicate
+    executor: str
+    executor_family: ExecutorFamily
+    input_schema: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        _require_key("action", self.key)
+        _require_key("action label", self.label)
+        _require_key("action executor", self.executor)
+        if self.executor_family not in {
+            "GraphCommand",
+            "SessionCommand",
+            "ProjectionCommand",
+        }:
+            raise RegistryBuildError(
+                f"Action {self.key!r} has unknown executor family {self.executor_family!r}"
+            )
+        object.__setattr__(self, "input_schema", _freeze_mapping(self.input_schema))
+
+
+@dataclass(frozen=True)
+class Affordance:
+    id: str
+    label: str
+    enabled: bool
+    reason: str
+    reason_code: ActionReasonCode
+    input_schema: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        _require_key("affordance id", self.id)
+        _require_key("affordance label", self.label)
+        if not self.reason:
+            raise RegistryBuildError("Affordance reason must be non-empty")
+        object.__setattr__(self, "input_schema", _freeze_mapping(self.input_schema))
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "label": self.label,
+            "enabled": self.enabled,
+            "reason": self.reason,
+            "reason_code": self.reason_code,
+            "input_schema": _json_value(self.input_schema),
+        }
+
+
+@dataclass(frozen=True)
 class PresentationSpec:
     key: str
     category: str
@@ -288,6 +401,8 @@ class RegistryPackage:
     port_types: frozenset[str] = field(default_factory=frozenset)
     presentations: tuple[PresentationSpec, ...] = ()
     templates: tuple[TemplateSpec, ...] = ()
+    executors: tuple[ActionExecutorSpec, ...] = ()
+    actions: tuple[ActionSpec, ...] = ()
     aliases: tuple[AliasSpec, ...] = ()
     validators: Mapping[str, ProfileValidator] = field(default_factory=dict)
 
@@ -299,6 +414,8 @@ class RegistryPackage:
         object.__setattr__(self, "port_types", frozenset(self.port_types))
         object.__setattr__(self, "presentations", tuple(self.presentations))
         object.__setattr__(self, "templates", tuple(self.templates))
+        object.__setattr__(self, "executors", tuple(self.executors))
+        object.__setattr__(self, "actions", tuple(self.actions))
         object.__setattr__(self, "aliases", tuple(self.aliases))
         object.__setattr__(self, "validators", MappingProxyType(dict(self.validators)))
 
@@ -313,6 +430,8 @@ class Registry:
     port_types: frozenset[str]
     presentations: Mapping[str, PresentationSpec]
     templates: Mapping[str, TemplateSpec]
+    executors: Mapping[str, ActionExecutorSpec]
+    actions: Mapping[str, ActionSpec]
     validators: Mapping[str, ProfileValidator]
     node_aliases: Mapping[str, str]
     edge_aliases: Mapping[str, str]
@@ -338,6 +457,10 @@ class Registry:
         presentation_sources: dict[str, str] = {}
         templates: dict[str, TemplateSpec] = {}
         template_sources: dict[str, str] = {}
+        executors: dict[str, ActionExecutorSpec] = {}
+        executor_sources: dict[str, str] = {}
+        actions: dict[str, ActionSpec] = {}
+        action_sources: dict[str, str] = {}
         validators: dict[str, ProfileValidator] = {}
         validator_sources: dict[str, str] = {}
         aliases: list[tuple[AliasSpec, str]] = []
@@ -381,6 +504,20 @@ class Registry:
                 package.name,
                 "template",
             )
+            cls._add_unique(
+                executors,
+                executor_sources,
+                package.executors,
+                package.name,
+                "action executor",
+            )
+            cls._add_unique(
+                actions,
+                action_sources,
+                package.actions,
+                package.name,
+                "action",
+            )
             for port_type in package.port_types:
                 _require_key("port type", port_type)
                 if port_type in port_types:
@@ -419,12 +556,15 @@ class Registry:
         templates = cls._resolve_templates(
             templates, resolved_nodes, node_aliases, port_types, port_aliases
         )
+        cls._validate_actions(actions, executors, capabilities)
 
         frozen_capabilities = MappingProxyType(dict(capabilities))
         frozen_nodes = MappingProxyType(resolved_nodes)
         frozen_edges = MappingProxyType(resolved_edges)
         frozen_presentations = MappingProxyType(dict(presentations))
         frozen_templates = MappingProxyType(dict(templates))
+        frozen_executors = MappingProxyType(dict(executors))
+        frozen_actions = MappingProxyType(dict(actions))
         frozen_validators = MappingProxyType(dict(validators))
         frozen_node_aliases = MappingProxyType(node_aliases)
         frozen_edge_aliases = MappingProxyType(edge_aliases)
@@ -441,6 +581,7 @@ class Registry:
             port_types=frozen_ports,
             presentations=frozen_presentations,
             templates=frozen_templates,
+            actions=frozen_actions,
             node_aliases=frozen_node_aliases,
             edge_aliases=frozen_edge_aliases,
             port_aliases=frozen_port_aliases,
@@ -460,6 +601,8 @@ class Registry:
             port_types=frozen_ports,
             presentations=frozen_presentations,
             templates=frozen_templates,
+            executors=frozen_executors,
+            actions=frozen_actions,
             validators=frozen_validators,
             node_aliases=frozen_node_aliases,
             edge_aliases=frozen_edge_aliases,
@@ -757,6 +900,39 @@ class Registry:
             )
 
     @staticmethod
+    def _validate_actions(
+        actions: Mapping[str, ActionSpec],
+        executors: Mapping[str, ActionExecutorSpec],
+        capabilities: Mapping[str, CapabilitySpec],
+    ) -> None:
+        for action in actions.values():
+            unknown = action.target.capabilities - capabilities.keys()
+            if unknown:
+                raise RegistryBuildError(
+                    f"Action {action.key!r} references unknown capabilities: {sorted(unknown)}"
+                )
+            non_action = sorted(
+                key
+                for key in action.target.capabilities
+                if "action" not in capabilities[key].consumers
+            )
+            if non_action:
+                raise RegistryBuildError(
+                    f"Action {action.key!r} references capabilities without an action "
+                    f"consumer: {non_action}"
+                )
+            executor = executors.get(action.executor)
+            if executor is None:
+                raise RegistryBuildError(
+                    f"Action {action.key!r} references unknown executor {action.executor!r}"
+                )
+            if executor.family != action.executor_family:
+                raise RegistryBuildError(
+                    f"Action {action.key!r} declares {action.executor_family} but executor "
+                    f"{executor.key!r} belongs to {executor.family}"
+                )
+
+    @staticmethod
     def _endpoint_profiles(
         requested: frozenset[str] | None,
         inherited: frozenset[str],
@@ -868,6 +1044,7 @@ class Registry:
             port_types=self.port_types,
             presentations=self.presentations,
             templates=self.templates,
+            actions=self.actions,
             node_aliases=self.node_aliases,
             edge_aliases=self.edge_aliases,
             port_aliases=self.port_aliases,
@@ -885,6 +1062,7 @@ class Registry:
         port_types: frozenset[str],
         presentations: Mapping[str, PresentationSpec],
         templates: Mapping[str, TemplateSpec],
+        actions: Mapping[str, ActionSpec],
         node_aliases: Mapping[str, str],
         edge_aliases: Mapping[str, str],
         port_aliases: Mapping[str, str],
@@ -965,6 +1143,23 @@ class Registry:
                     ],
                 }
                 for item in sorted(templates.values(), key=lambda item: item.key)
+            ],
+            "actions": [
+                {
+                    "id": item.key,
+                    "label": item.label,
+                    "target": {
+                        "min_count": item.target.min_count,
+                        "max_count": item.target.max_count,
+                        "entity_kinds": sorted(item.target.entity_kinds),
+                        "capabilities": sorted(item.target.capabilities),
+                        "target_match": item.target.target_match,
+                    },
+                    "executor": item.executor,
+                    "executor_family": item.executor_family,
+                    "input_schema": _json_value(item.input_schema),
+                }
+                for item in sorted(actions.values(), key=lambda item: item.key)
             ],
             "aliases": {
                 "node": dict(sorted(node_aliases.items())),

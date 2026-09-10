@@ -32,7 +32,7 @@
 
 ## 4. Action 与 descriptor 服务
 
-- [ ] 4.1 定义 ActionSpec、RefSet predicate、executor family、reason code 和 Affordance DTO
+- [x] 4.1 定义 ActionSpec、RefSet predicate、executor family、reason code 和 Affordance DTO
 - [ ] 4.2 实现服务端 resolver：target capability ∩ actor policy ∩ state/source policy ∩ executor support
 - [ ] 4.3 执行端点复用同一 resolver 重验，测试陈旧客户端和绕过请求
 - [ ] 4.4 增加 Registry descriptor API（version/digest/profiles/edges/presentations/templates/actions）

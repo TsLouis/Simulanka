@@ -14,11 +14,15 @@ from simulanka.registry import (
     NODE_TYPES,
     PORT_TYPES,
     SOFTWARE_SERVICE_PACKAGE,
+    ActionExecutorSpec,
+    ActionSpec,
+    Affordance,
     AliasSpec,
     CapabilitySpec,
     EdgeProfileSpec,
     NodeProfileSpec,
     PresentationSpec,
+    RefSetPredicate,
     Registry,
     RegistryBuildError,
     RegistryPackage,
@@ -125,6 +129,78 @@ def test_registry_resolves_inheritance_aliases_and_descriptor_deterministically(
     assert json.loads(json.dumps(descriptor))["version"] == 2
 
 
+def test_action_specs_and_affordance_dto_are_immutable_descriptor_data() -> None:
+    rename = DEFAULT_REGISTRY.actions["node.rename"]
+    assert rename.target == RefSetPredicate(
+        entity_kinds=frozenset({"node"}),
+        capabilities=frozenset({"renamable"}),
+    )
+    assert rename.executor_family == "GraphCommand"
+    assert DEFAULT_REGISTRY.executors[rename.executor].family == "GraphCommand"
+
+    descriptor_action = next(
+        action
+        for action in DEFAULT_REGISTRY.descriptor()["actions"]
+        if action["id"] == "node.rename"
+    )
+    assert descriptor_action == {
+        "id": "node.rename",
+        "label": "重命名",
+        "target": {
+            "min_count": 1,
+            "max_count": 1,
+            "entity_kinds": ["node"],
+            "capabilities": ["renamable"],
+            "target_match": "all",
+        },
+        "executor": "graph.rename_node",
+        "executor_family": "GraphCommand",
+        "input_schema": {
+            "type": "object",
+            "required": ["new_name"],
+            "properties": {"new_name": {"type": "string", "minLength": 1}},
+            "additionalProperties": False,
+        },
+    }
+
+    with pytest.raises(TypeError):
+        cast(dict[str, Any], rename.input_schema)["type"] = "array"
+
+    affordance = Affordance(
+        id=rename.key,
+        label=rename.label,
+        enabled=False,
+        reason="当前节点已锁定",
+        reason_code="state_locked",
+        input_schema=rename.input_schema,
+    )
+    assert affordance.as_dict()["reason_code"] == "state_locked"
+    assert json.loads(json.dumps(affordance.as_dict()))["enabled"] is False
+
+
+def test_refset_predicate_expresses_all_or_any_multi_selection() -> None:
+    all_targets = RefSetPredicate(
+        min_count=1,
+        max_count=None,
+        entity_kinds=frozenset({"node", "edge"}),
+        capabilities=frozenset({"contextualizable"}),
+        target_match="all",
+    )
+    any_target = RefSetPredicate(
+        min_count=2,
+        max_count=10,
+        entity_kinds=frozenset({"node"}),
+        capabilities=frozenset({"deletable"}),
+        target_match="any",
+    )
+    assert all_targets.max_count is None
+    assert all_targets.target_match == "all"
+    assert any_target.target_match == "any"
+
+    with pytest.raises(RegistryBuildError, match="max_count"):
+        RefSetPredicate(min_count=2, max_count=1)
+
+
 def test_registry_and_nested_template_defaults_are_runtime_immutable() -> None:
     registry = Registry.build(version=2, packages=(_composable_package(),))
 
@@ -185,6 +261,61 @@ def test_registry_fails_closed_for_duplicate_and_invalid_references() -> None:
     )
     with pytest.raises(RegistryBuildError, match="unknown validator"):
         Registry.build(version=2, packages=(dangling,))
+
+
+def test_registry_fails_closed_for_invalid_action_references() -> None:
+    action_capability = CapabilitySpec("actionable", frozenset({"action"}))
+    target = RefSetPredicate(capabilities=frozenset({"actionable"}))
+
+    dangling = RegistryPackage(
+        name="dangling-action",
+        capabilities=(action_capability,),
+        actions=(
+            ActionSpec(
+                key="test.run",
+                label="Run",
+                target=target,
+                executor="missing",
+                executor_family="GraphCommand",
+            ),
+        ),
+    )
+    with pytest.raises(RegistryBuildError, match="unknown executor 'missing'"):
+        Registry.build(version=2, packages=(dangling,))
+
+    mismatched = RegistryPackage(
+        name="mismatched-action",
+        capabilities=(action_capability,),
+        executors=(ActionExecutorSpec(key="test.run", family="SessionCommand"),),
+        actions=(
+            ActionSpec(
+                key="test.run",
+                label="Run",
+                target=target,
+                executor="test.run",
+                executor_family="GraphCommand",
+            ),
+        ),
+    )
+    with pytest.raises(RegistryBuildError, match="belongs to SessionCommand"):
+        Registry.build(version=2, packages=(mismatched,))
+
+    presentation_only = RegistryPackage(
+        name="presentation-action",
+        capabilities=(CapabilitySpec("decorative", frozenset({"presentation"})),),
+        executors=(ActionExecutorSpec(key="test.decorate", family="GraphCommand"),),
+        actions=(
+            ActionSpec(
+                key="test.decorate",
+                label="Decorate",
+                target=RefSetPredicate(capabilities=frozenset({"decorative"})),
+                executor="test.decorate",
+                executor_family="GraphCommand",
+            ),
+        ),
+    )
+    with pytest.raises(RegistryBuildError, match="without an action consumer"):
+        Registry.build(version=2, packages=(presentation_only,))
 
 
 def test_registry_rejects_consumerless_capability_and_alias_cycles() -> None:

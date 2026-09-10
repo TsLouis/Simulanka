@@ -4,9 +4,12 @@ from collections.abc import Mapping
 from types import MappingProxyType
 
 from simulanka.registry.profiles import (
+    ActionExecutorSpec,
+    ActionSpec,
     CapabilitySpec,
     EdgeProfileSpec,
     NodeProfileSpec,
+    RefSetPredicate,
     Registry,
     RegistryPackage,
     TemplatePortSpec,
@@ -311,6 +314,38 @@ CORE_PACKAGE = RegistryPackage(
         _edge_profile("data_flow"),
     ),
     port_types=frozenset({"any"}),
+    executors=(
+        ActionExecutorSpec(key="graph.rename_node", family="GraphCommand"),
+        ActionExecutorSpec(key="graph.delete_node", family="GraphCommand"),
+    ),
+    actions=(
+        ActionSpec(
+            key="node.rename",
+            label="重命名",
+            target=RefSetPredicate(
+                entity_kinds=frozenset({"node"}),
+                capabilities=frozenset({"renamable"}),
+            ),
+            executor="graph.rename_node",
+            executor_family="GraphCommand",
+            input_schema={
+                "type": "object",
+                "required": ["new_name"],
+                "properties": {"new_name": {"type": "string", "minLength": 1}},
+                "additionalProperties": False,
+            },
+        ),
+        ActionSpec(
+            key="node.delete",
+            label="删除",
+            target=RefSetPredicate(
+                entity_kinds=frozenset({"node"}),
+                capabilities=frozenset({"deletable"}),
+            ),
+            executor="graph.delete_node",
+            executor_family="GraphCommand",
+        ),
+    ),
 )
 
 FILESYSTEM_PACKAGE = RegistryPackage(
@@ -421,6 +456,8 @@ def _aggregate_packages(
             item for package in packages for item in package.presentations
         ),
         templates=tuple(item for package in packages for item in package.templates),
+        executors=tuple(item for package in packages for item in package.executors),
+        actions=tuple(item for package in packages for item in package.actions),
         aliases=tuple(item for package in packages for item in package.aliases),
         validators={
             key: validator
