@@ -169,6 +169,9 @@
             status = `delete edge failed: ${(err as Error).message}`
           })
         },
+        onConnectionRejected: (reason) => {
+          status = `连接已拦截：${reason}`
+        },
       }, viewPositions, registryDescriptor)
       if (lgcanvas) {
         lgcanvas.setGraph(graph)

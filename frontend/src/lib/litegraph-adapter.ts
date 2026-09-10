@@ -6,6 +6,7 @@
 import dagre from 'dagre'
 import { LiteGraph, LGraph, type LGraphNode } from 'litegraph.js'
 import { CARD_LINE_H, CARD_WIDTH, cardLines, type CardLine } from './cards'
+import { edgeConnectionRejection } from './edge-rules'
 import { resolveNodePresentation } from './presentation'
 import {
   EDGE_COLORS,
@@ -72,6 +73,7 @@ export interface AdapterCallbacks {
   ) => Promise<boolean>
   // User removed a connection that maps to a persisted edge.
   onDeleteEdge?: (edgeId: string) => void
+  onConnectionRejected?: (reason: string) => void
 }
 
 // A semantic edge with no ports (fulfills / produces / addresses / tests…).
@@ -160,6 +162,51 @@ export function buildLiteGraph(
     }
   }
 
+  function onConnectInput(
+    this: LGraphNode,
+    inputIndex: number,
+    _outputType: unknown,
+    _outputSlot: unknown,
+    outputNode: LGraphNode,
+    outputIndex: number,
+  ): boolean {
+    if (building) return true
+    const source = (outputNode as unknown as { simulanka?: NodeDTO }).simulanka
+    const target = (this as unknown as { simulanka?: NodeDTO }).simulanka
+    const sourcePortId = (outputNode as unknown as { simulanka_out_ports?: string[] })
+      .simulanka_out_ports?.[outputIndex]
+    const targetPortId = (this as unknown as { simulanka_in_ports?: string[] })
+      .simulanka_in_ports?.[inputIndex]
+    const sourcePort = sourcePortId ? portsById.get(sourcePortId) : undefined
+    const targetPort = targetPortId ? portsById.get(targetPortId) : undefined
+    if (!source || !target || !sourcePort || !targetPort) {
+      callbacks.onConnectionRejected?.('边界投影端点不可直接连接')
+      return false
+    }
+    const rejection = edgeConnectionRejection(
+      descriptor,
+      'data_flow',
+      source,
+      target,
+      sourcePort,
+      targetPort,
+    )
+    if (rejection) callbacks.onConnectionRejected?.(rejection)
+    return rejection === null
+  }
+
+  function onConnectOutput(
+    _outputIndex: number,
+    _inputType: unknown,
+    _inputSlot: unknown,
+    inputNode: LGraphNode,
+  ): boolean {
+    if (building) return true
+    if ((inputNode as unknown as { simulanka?: NodeDTO }).simulanka) return true
+    callbacks.onConnectionRejected?.('边界投影端点不可直接连接')
+    return false
+  }
+
   // Auto-layout: dagre runs over real nodes + their internal data-flow edges.
   // Persisted positions in persistedPositions override the dagre result, so
   // user-dragged nodes stick across reloads.
@@ -203,6 +250,8 @@ export function buildLiteGraph(
     ;(lgnode as unknown as { simulanka_out_ports: string[] }).simulanka_out_ports = outPorts
     ;(lgnode as unknown as { onConnectionsChange: typeof onConnectionsChange })
       .onConnectionsChange = onConnectionsChange
+    ;(lgnode as unknown as { onConnectInput: typeof onConnectInput }).onConnectInput = onConnectInput
+    ;(lgnode as unknown as { onConnectOutput: typeof onConnectOutput }).onConnectOutput = onConnectOutput
 
     // S5 卡片：attr 驱动的展示模板（cards.ts 是唯一的字段清单来源）。
     // S6 trust 描边共用同一 foreground 钩子——只染节点体，边色不叠加。
