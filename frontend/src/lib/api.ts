@@ -1,4 +1,62 @@
-import type { GraphPayload, ShapeCheck, TrustLevel } from './types'
+import type {
+  GraphPayload,
+  RegistryDescriptorDTO,
+  ShapeCheck,
+  TrustLevel,
+} from './types'
+
+let registryDescriptorCache: RegistryDescriptorDTO | null = null
+let registryDescriptorRequest: Promise<RegistryDescriptorDTO> | null = null
+
+export function getCachedRegistryDescriptor(): RegistryDescriptorDTO | null {
+  return registryDescriptorCache
+}
+
+export function clearRegistryDescriptorCache(): void {
+  registryDescriptorCache = null
+  registryDescriptorRequest = null
+}
+
+export async function fetchRegistryDescriptor(
+  force = false,
+): Promise<RegistryDescriptorDTO> {
+  if (!force && registryDescriptorCache) return registryDescriptorCache
+  if (registryDescriptorRequest) return registryDescriptorRequest
+
+  registryDescriptorRequest = (async () => {
+    const resp = await fetch('/registry', { cache: 'no-store' })
+    if (!resp.ok) {
+      throw new Error(`GET /registry failed: ${resp.status} ${await resp.text()}`)
+    }
+    const descriptor = (await resp.json()) as RegistryDescriptorDTO
+    if (!descriptor.digest) throw new Error('GET /registry returned no descriptor digest')
+    registryDescriptorCache = descriptor
+    return descriptor
+  })()
+
+  try {
+    return await registryDescriptorRequest
+  } finally {
+    registryDescriptorRequest = null
+  }
+}
+
+export async function ensureRegistryDescriptor(
+  expectedDigest: string,
+): Promise<RegistryDescriptorDTO> {
+  if (registryDescriptorCache?.digest === expectedDigest) return registryDescriptorCache
+
+  let descriptor = await fetchRegistryDescriptor(registryDescriptorCache !== null)
+  if (descriptor.digest !== expectedDigest) {
+    descriptor = await fetchRegistryDescriptor(true)
+  }
+  if (descriptor.digest !== expectedDigest) {
+    throw new Error(
+      `registry digest mismatch: graph=${expectedDigest} descriptor=${descriptor.digest}`,
+    )
+  }
+  return descriptor
+}
 
 // One view = the inside of one container (root's direct children); navigation
 // is drill-down/breadcrumb only. There is no depth knob — the server contract
@@ -10,7 +68,10 @@ export async function fetchGraph(root: string | null): Promise<GraphPayload> {
   if (!resp.ok) {
     throw new Error(`GET /graph failed: ${resp.status} ${await resp.text()}`)
   }
-  return (await resp.json()) as GraphPayload
+  const payload = (await resp.json()) as GraphPayload
+  if (!payload.registry_digest) throw new Error('GET /graph returned no registry digest')
+  await ensureRegistryDescriptor(payload.registry_digest)
+  return payload
 }
 
 // Persist a user-drawn data_flow edge (§13.5.2). Returns the new edge id.

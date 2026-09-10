@@ -1770,6 +1770,7 @@ def _build_payload(
         }
 
     return {
+        "registry_digest": registry.descriptor_digest,
         "root": root,
         "root_info": root_info,
         "nodes": nodes_payload,

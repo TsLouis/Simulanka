@@ -913,6 +913,20 @@ def test_graph_affordances_cover_disabled_non_research_extension(
     }
 
 
+def test_graph_payload_identifies_its_registry_descriptor(tmp_path: Path) -> None:
+    layout = init_project(tmp_path).layout
+    registry = Registry.build(
+        version=2,
+        packages=(*BUILTIN_PACKAGES, SOFTWARE_SERVICE_PACKAGE),
+    )
+    client = TestClient(create_app(layout, registry=registry))
+
+    graph = client.get("/graph").json()
+    descriptor = client.get("/registry").json()
+    assert graph["registry_digest"] == registry.descriptor_digest
+    assert graph["registry_digest"] == descriptor["digest"]
+
+
 def test_templates_roundtrip(tmp_path: Path) -> None:
     layout = _seed_project(tmp_path)
     client = TestClient(create_app(layout))
