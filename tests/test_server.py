@@ -869,6 +869,50 @@ def test_registry_descriptor_endpoint_uses_injected_registry(tmp_path: Path) -> 
     }
 
 
+def test_graph_affordances_cover_disabled_non_research_extension(
+    tmp_path: Path,
+) -> None:
+    layout = init_project(tmp_path).layout
+    registry = Registry.build(
+        version=2,
+        packages=(*BUILTIN_PACKAGES, SOFTWARE_SERVICE_PACKAGE),
+    )
+    client = TestClient(create_app(layout, registry=registry))
+    parent_id = next(node.id for node in iter_nodes(layout) if node.name == "src")
+    created = client.post(
+        "/node",
+        json={
+            "type": "software.service",
+            "name": "api",
+            "parent": parent_id,
+            "attrs": {
+                "runtime": "python",
+                "locked": True,
+                "lock_reason": "服务部署中，暂不可修改",
+            },
+        },
+    )
+    assert created.status_code == 200, created.text
+
+    payload = client.get("/graph", params={"root": parent_id}).json()
+    service = next(node for node in payload["nodes"] if node["id"] == created.json()["node_id"])
+    assert service["type"] == "software.service"
+    assert not service["unknown_profile"]
+    assert set(service["capabilities"]) >= {
+        "contextualizable",
+        "renamable",
+        "deletable",
+        "deployable",
+    }
+    affordances = {item["id"]: item for item in service["affordances"]}
+    assert set(affordances) == {"node.rename", "node.delete"}
+    assert all(not item["enabled"] for item in affordances.values())
+    assert {item["reason_code"] for item in affordances.values()} == {"state_locked"}
+    assert {item["reason"] for item in affordances.values()} == {
+        "服务部署中，暂不可修改"
+    }
+
+
 def test_templates_roundtrip(tmp_path: Path) -> None:
     layout = _seed_project(tmp_path)
     client = TestClient(create_app(layout))
