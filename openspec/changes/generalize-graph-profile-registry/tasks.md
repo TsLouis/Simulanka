@@ -36,7 +36,7 @@
 - [x] 4.2 实现服务端 resolver：target capability ∩ actor policy ∩ state/source policy ∩ executor support
 - [x] 4.3 执行端点复用同一 resolver 重验，测试陈旧客户端和绕过请求
 - [x] 4.4 增加 Registry descriptor API（version/digest/profiles/edges/presentations/templates/actions）
-- [ ] 4.5 graph/view payload 增加 resolved capabilities、unknown_profile 与 affordances
+- [x] 4.5 graph/view payload 增加 resolved capabilities、unknown_profile 与 affordances
 - [ ] 4.6 descriptor 与 graph API 覆盖禁用原因、未知 Profile 和非科研示例
 
 ## 5. Registry 驱动前端

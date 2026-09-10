@@ -272,7 +272,12 @@ def create_app(
 
     @app.get("/graph")
     def get_graph(root: str | None = Query(default=None)) -> dict[str, Any]:
-        return _build_payload(layout, root, registry=registry)
+        return _build_payload(
+            layout,
+            root,
+            registry=registry,
+            action_resolver=action_resolver,
+        )
 
     @app.get("/events")
     async def get_events(request: Request) -> StreamingResponse:
@@ -1509,10 +1514,27 @@ def _node_action_target(
     node: Node,
     registry: Registry,
 ) -> ActionTarget:
-    raw_source = node.attrs.get("source")
+    return _entity_action_target(
+        registry,
+        kind="node",
+        entity_id=node.id,
+        profile=node.type,
+        attrs=node.attrs,
+    )
+
+
+def _entity_action_target(
+    registry: Registry,
+    *,
+    kind: Literal["node", "edge", "port"],
+    entity_id: str,
+    profile: str,
+    attrs: Mapping[str, Any],
+) -> ActionTarget:
+    raw_source = attrs.get("source")
     source = raw_source if isinstance(raw_source, str) else "graph"
-    projected_immutable = source == "projection" and node.attrs.get("immutable") is True
-    raw_lock_reason = node.attrs.get("lock_reason")
+    projected_immutable = source == "projection" and attrs.get("immutable") is True
+    raw_lock_reason = attrs.get("lock_reason")
     lock_reason = (
         raw_lock_reason
         if isinstance(raw_lock_reason, str) and raw_lock_reason
@@ -1520,12 +1542,12 @@ def _node_action_target(
     )
     return ActionTarget.from_profile(
         registry,
-        kind="node",
-        id=node.id,
-        profile=node.type,
+        kind=kind,
+        id=entity_id,
+        profile=profile,
         source=source,
         writable=not projected_immutable,
-        locked=node.attrs.get("locked") is True,
+        locked=attrs.get("locked") is True,
         lock_reason=lock_reason,
     )
 
@@ -1575,6 +1597,7 @@ def _build_payload(
     root: str | None,
     *,
     registry: Registry,
+    action_resolver: ActionResolver,
 ) -> dict[str, Any]:
     """Return the one-container view payload: the inside of ``root``.
 
@@ -1623,7 +1646,7 @@ def _build_payload(
         src_in = e.source_id in included
         dst_in = e.target_id in included
         if src_in and dst_in:
-            edges_payload.append(edge_payload(e))
+            edges_payload.append(_edge_view_payload(e, registry, action_resolver))
         elif (src_in or dst_in) and root is not None and e.type != "contains":
             inside = e.source_id if src_in else e.target_id
             outside = e.target_id if src_in else e.source_id
@@ -1633,7 +1656,7 @@ def _build_payload(
             # boundary. Same reasoning as not drawing `contains`.
             if _is_descendant(outside, inside):
                 continue
-            boundary_payload.append(edge_payload(e))
+            boundary_payload.append(_edge_view_payload(e, registry, action_resolver))
             external_ids.add(outside)
             outside_port = e.target_port_id if src_in else e.source_port_id
             if outside_port is not None:
@@ -1651,6 +1674,13 @@ def _build_payload(
             ports_of.setdefault(p.node_id, []).append(p.id)
         elif p.node_id != root and p.id not in external_port_ids:
             continue
+        target = _entity_action_target(
+            registry,
+            kind="port",
+            entity_id=p.id,
+            profile=p.port_type,
+            attrs=p.attrs,
+        )
         ports_payload.append(
             {
                 "id": p.id,
@@ -1659,36 +1689,50 @@ def _build_payload(
                 "side": p.direction,
                 "port_type": p.port_type,
                 "attrs": p.attrs,
+                **_action_metadata(target, action_resolver),
             }
         )
 
-    external_payload = [
-        {
-            "id": nid,
-            "type": nodes_by_id[nid].type,
-            "name": nodes_by_id[nid].name,
-        }
-        for nid in external_ids
-        if nid in nodes_by_id
-    ]
+    external_payload: list[dict[str, Any]] = []
+    for nid in external_ids:
+        if nid not in nodes_by_id:
+            continue
+        node = nodes_by_id[nid]
+        external_payload.append(
+            {
+                "id": node.id,
+                "type": node.type,
+                "name": node.name,
+                **_action_metadata(
+                    _node_action_target(node, registry),
+                    action_resolver,
+                ),
+            }
+        )
 
     # S6: trust is query-time-computed here and never persisted; research-
     # domain nodes get their level, everything else null. The canvas colours
     # node bodies only — edge colours keep their source/verdict semantics.
-    nodes_payload = [
-        {
-            "id": n.id,
-            "type": n.type,
-            "name": n.name,
-            "parent_id": n.parent_id,
-            "attrs": n.attrs,
-            "ports": ports_of.get(n.id, []),
-            "child_count": len(children_of.get(n.id, [])),
-            "trust": node_trust(n, registry=registry),
-        }
-        for nid, n in nodes_by_id.items()
-        if nid in included
-    ]
+    nodes_payload: list[dict[str, Any]] = []
+    for nid, node in nodes_by_id.items():
+        if nid not in included:
+            continue
+        nodes_payload.append(
+            {
+                "id": node.id,
+                "type": node.type,
+                "name": node.name,
+                "parent_id": node.parent_id,
+                "attrs": node.attrs,
+                "ports": ports_of.get(node.id, []),
+                "child_count": len(children_of.get(node.id, [])),
+                "trust": node_trust(node, registry=registry),
+                **_action_metadata(
+                    _node_action_target(node, registry),
+                    action_resolver,
+                ),
+            }
+        )
 
     # Ancestor chain from top-level down to the root's direct parent. Lets the
     # frontend reconstruct the breadcrumb trail for a non-null root regardless
@@ -1698,14 +1742,32 @@ def _build_payload(
         cur = nodes_by_id[root].parent_id
         while cur is not None and cur in nodes_by_id:
             anc = nodes_by_id[cur]
-            ancestors.append({"id": anc.id, "type": anc.type, "name": anc.name})
+            ancestors.append(
+                {
+                    "id": anc.id,
+                    "type": anc.type,
+                    "name": anc.name,
+                    **_action_metadata(
+                        _node_action_target(anc, registry),
+                        action_resolver,
+                    ),
+                }
+            )
             cur = anc.parent_id
         ancestors.reverse()
 
     root_info: dict[str, Any] | None = None
     if root is not None:
         rn = nodes_by_id[root]
-        root_info = {"id": rn.id, "type": rn.type, "name": rn.name}
+        root_info = {
+            "id": rn.id,
+            "type": rn.type,
+            "name": rn.name,
+            **_action_metadata(
+                _node_action_target(rn, registry),
+                action_resolver,
+            ),
+        }
 
     return {
         "root": root,
@@ -1716,6 +1778,40 @@ def _build_payload(
         "external_nodes": external_payload,
         "ports": ports_payload,
         "ancestors": ancestors,
+    }
+
+
+def _edge_view_payload(
+    edge: Edge,
+    registry: Registry,
+    action_resolver: ActionResolver,
+) -> dict[str, Any]:
+    return {
+        **edge_payload(edge),
+        **_action_metadata(
+            _entity_action_target(
+                registry,
+                kind="edge",
+                entity_id=edge.id,
+                profile=edge.type,
+                attrs=edge.attrs,
+            ),
+            action_resolver,
+        ),
+    }
+
+
+def _action_metadata(
+    target: ActionTarget,
+    resolver: ActionResolver,
+) -> dict[str, Any]:
+    return {
+        "capabilities": sorted(target.capabilities),
+        "unknown_profile": target.unknown_profile,
+        "affordances": [
+            affordance.as_dict()
+            for affordance in resolver.resolve((target,), actor="user")
+        ],
     }
 
 

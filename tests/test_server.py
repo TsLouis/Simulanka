@@ -30,6 +30,7 @@ from simulanka.storage.entity_store import (
     iter_edges,
     iter_nodes,
     load_edge,
+    save_node,
 )
 
 
@@ -126,7 +127,10 @@ def test_get_graph_root_returns_children_only(tmp_path: Path) -> None:
     payload = resp.json()
 
     assert payload["root"] == net_id
-    assert payload["root_info"] == {"id": net_id, "type": "model", "name": "Net"}
+    assert {
+        key: payload["root_info"][key]
+        for key in ("id", "type", "name")
+    } == {"id": net_id, "type": "model", "name": "Net"}
     names = sorted(n["name"] for n in payload["nodes"])
     assert names == ["dec", "enc"]
 
@@ -358,6 +362,52 @@ def test_get_graph_unknown_root_404(tmp_path: Path) -> None:
     client = TestClient(create_app(layout))
     resp = client.get("/graph", params={"root": "nod_does_not_exist"})
     assert resp.status_code == 404
+
+
+def test_graph_payload_exposes_capabilities_affordances_and_unknown_profiles(
+    tmp_path: Path,
+) -> None:
+    layout = _seed_project(tmp_path)
+    nodes = {node.name: node for node in iter_nodes(layout)}
+    save_node(
+        layout,
+        nodes["dec"].model_copy(update={"type": "uninstalled.domain"}),
+    )
+    client = TestClient(create_app(layout))
+
+    payload = client.get("/graph", params={"root": nodes["Net"].id}).json()
+    by_name = {node["name"]: node for node in payload["nodes"]}
+
+    encoder = by_name["enc"]
+    assert set(encoder["capabilities"]) >= {
+        "contextualizable",
+        "deletable",
+        "renamable",
+    }
+    assert not encoder["unknown_profile"]
+    assert {item["id"] for item in encoder["affordances"]} == {
+        "node.rename",
+        "node.delete",
+    }
+    assert all(item["enabled"] for item in encoder["affordances"])
+
+    unknown = by_name["dec"]
+    assert unknown["id"] == nodes["dec"].id
+    assert unknown["type"] == "uninstalled.domain"
+    assert unknown["attrs"] == nodes["dec"].attrs
+    assert unknown["capabilities"] == []
+    assert unknown["unknown_profile"]
+    assert unknown["affordances"] == []
+
+    for edge in payload["edges"]:
+        assert set(edge) >= {"capabilities", "unknown_profile", "affordances"}
+    for port in payload["ports"]:
+        assert set(port) >= {"capabilities", "unknown_profile", "affordances"}
+    assert set(payload["root_info"]) >= {
+        "capabilities",
+        "unknown_profile",
+        "affordances",
+    }
 
 
 def test_event_stream_emits_commit_for_new_event(tmp_path: Path) -> None:
