@@ -13,6 +13,7 @@
     deleteNode,
     deleteTemplate,
     fetchGraph,
+    getCachedRegistryDescriptor,
     fetchNodeInfo,
     fetchPositions,
     fetchProviderDescriptors,
@@ -50,7 +51,13 @@
   import FileViewer from './lib/FileViewer.svelte'
   import NodeInspector from './lib/NodeInspector.svelte'
   import SessionRecovery from './lib/SessionRecovery.svelte'
-  import type { EdgeDTO, NodeDTO, PortDTO } from './lib/types'
+  import type {
+    AffordanceDTO,
+    EdgeDTO,
+    NodeDTO,
+    PortDTO,
+    RegistryDescriptorDTO,
+  } from './lib/types'
 
   let canvasEl: HTMLCanvasElement
   let status = 'idle'
@@ -97,11 +104,18 @@
     graphPos: [number, number]
   } | null = null
   let customTemplates: Record<string, CustomTemplateDTO> = {}
+  let registryDescriptor: RegistryDescriptorDTO | null = null
+  let createAffordance: AffordanceDTO | null = null
   // Type of the container the view is inside (null = top-level). The add-node
   // menu only offers templates the kernel's containment matrix would accept
   // here — torch modules inside model/module, containers inside directories.
   let currentRootType: string | null = null
-  $: templateGroups = buildGroups(customTemplates, currentRootType)
+  $: templateGroups = buildGroups(
+    registryDescriptor,
+    customTemplates,
+    currentRootType,
+    createAffordance,
+  )
 
   // Persisted conversation trees are always projected as ChatNodes in their
   // creation scope. draftOpen controls only the not-yet-persisted new-tree shell.
@@ -120,8 +134,13 @@
 
   async function load() {
     status = 'loading…'
+    createAffordance = null
     try {
       const payload = await fetchGraph(currentRootId)
+      registryDescriptor = getCachedRegistryDescriptor()
+      createAffordance = (
+        payload.root_info?.affordances ?? payload.view_affordances
+      ).find(action => action.id === 'node.create') ?? null
       const { graph, byNode, lineage } = buildLiteGraph(payload, {
         onDrillDown: (id) => navigateTo(id),
         onJumpExternal: (id) => navigateTo(id),

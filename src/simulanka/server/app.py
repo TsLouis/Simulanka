@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 import threading
 import uuid
-from collections.abc import AsyncIterator, Iterable, Iterator, Mapping
+from collections.abc import AsyncIterator, Iterable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -260,6 +260,7 @@ def create_app(
     action_resolver = ActionResolver(
         registry,
         supported_executors={
+            "graph.create_node": "GraphCommand",
             "graph.rename_node": "GraphCommand",
             "graph.delete_node": "GraphCommand",
         },
@@ -454,6 +455,17 @@ def create_app(
         nodes_by_id = {n.id: n for n in iter_nodes(layout)}
         if parent is not None and parent not in nodes_by_id:
             raise HTTPException(status_code=404, detail=f"parent {parent!r} not found")
+        targets = (
+            ()
+            if parent is None
+            else (_node_action_target(nodes_by_id[parent], registry),)
+        )
+        _require_action(
+            action_resolver,
+            "node.create",
+            targets,
+            actor="user",
+        )
         siblings = {n.name for n in nodes_by_id.values() if n.parent_id == parent}
         base = name.strip()
         final = base
@@ -523,7 +535,7 @@ def create_app(
         _require_action(
             action_resolver,
             "node.rename",
-            _node_action_target(node, registry),
+            (_node_action_target(node, registry),),
             actor="user",
         )
         try:
@@ -551,7 +563,7 @@ def create_app(
         _require_action(
             action_resolver,
             "node.delete",
-            _node_action_target(node, registry),
+            (_node_action_target(node, registry),),
             actor="user",
         )
         try:
@@ -1555,11 +1567,11 @@ def _entity_action_target(
 def _require_action(
     resolver: ActionResolver,
     action_id: str,
-    target: ActionTarget,
+    targets: Sequence[ActionTarget],
     *,
     actor: str,
 ) -> None:
-    affordance = resolver.resolve_action(action_id, (target,), actor=actor)
+    affordance = resolver.resolve_action(action_id, targets, actor=actor)
     if not affordance.enabled:
         raise HTTPException(
             status_code=422,
@@ -1771,6 +1783,15 @@ def _build_payload(
 
     return {
         "registry_digest": registry.descriptor_digest,
+        "view_affordances": [
+            affordance.as_dict()
+            for affordance in action_resolver.resolve(
+                ()
+                if root is None
+                else (_node_action_target(nodes_by_id[root], registry),),
+                actor="user",
+            )
+        ],
         "root": root,
         "root_info": root_info,
         "nodes": nodes_payload,

@@ -79,6 +79,7 @@ export interface AncestorDTO extends EntitySemanticsDTO {
 
 export interface GraphPayload {
   registry_digest: string
+  view_affordances: AffordanceDTO[]
   root: string | null
   // The container whose inside this view shows; null at top-level. The root
   // itself never appears in `nodes` — the crumb renders from here.

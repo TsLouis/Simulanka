@@ -386,6 +386,7 @@ def test_graph_payload_exposes_capabilities_affordances_and_unknown_profiles(
     }
     assert not encoder["unknown_profile"]
     assert {item["id"] for item in encoder["affordances"]} == {
+        "node.create",
         "node.rename",
         "node.delete",
     }
@@ -925,6 +926,35 @@ def test_graph_payload_identifies_its_registry_descriptor(tmp_path: Path) -> Non
     descriptor = client.get("/registry").json()
     assert graph["registry_digest"] == registry.descriptor_digest
     assert graph["registry_digest"] == descriptor["digest"]
+
+
+def test_create_action_is_discovered_and_revalidated_for_current_container(
+    tmp_path: Path,
+) -> None:
+    layout = init_project(tmp_path).layout
+    client = TestClient(create_app(layout))
+
+    top = client.get("/graph").json()
+    create = next(
+        action for action in top["view_affordances"] if action["id"] == "node.create"
+    )
+    assert create["enabled"]
+
+    baselines = next(node for node in iter_nodes(layout) if node.name == "baselines")
+    task = client.post(
+        "/node",
+        json={"type": "task", "name": "leaf", "parent": baselines.id},
+    )
+    assert task.status_code == 200, task.text
+
+    bypass = client.post(
+        "/node",
+        json={"type": "module", "name": "child", "parent": task.json()["node_id"]},
+    )
+    assert bypass.status_code == 422
+    assert bypass.json()["detail"]["action"] == "node.create"
+    assert bypass.json()["detail"]["reason_code"] == "missing_capability"
+    assert "container" in bypass.json()["detail"]["reason"]
 
 
 def test_templates_roundtrip(tmp_path: Path) -> None:

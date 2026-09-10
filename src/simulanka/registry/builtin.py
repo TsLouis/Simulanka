@@ -315,10 +315,35 @@ CORE_PACKAGE = RegistryPackage(
     ),
     port_types=frozenset({"any"}),
     executors=(
+        ActionExecutorSpec(key="graph.create_node", family="GraphCommand"),
         ActionExecutorSpec(key="graph.rename_node", family="GraphCommand"),
         ActionExecutorSpec(key="graph.delete_node", family="GraphCommand"),
     ),
     actions=(
+        ActionSpec(
+            key="node.create",
+            label="添加节点",
+            target=RefSetPredicate(
+                min_count=0,
+                max_count=1,
+                entity_kinds=frozenset({"node"}),
+                capabilities=frozenset({"container"}),
+            ),
+            executor="graph.create_node",
+            executor_family="GraphCommand",
+            input_schema={
+                "type": "object",
+                "required": ["type", "name"],
+                "properties": {
+                    "type": {"type": "string", "minLength": 1},
+                    "name": {"type": "string", "minLength": 1},
+                    "parent": {"type": ["string", "null"]},
+                    "attrs": {"type": "object"},
+                    "ports": {"type": "array"},
+                },
+                "additionalProperties": False,
+            },
+        ),
         ActionSpec(
             key="node.rename",
             label="重命名",

@@ -13,6 +13,7 @@ from simulanka.registry import (
 from simulanka.server.action_resolver import ActionResolver, ActionTarget
 
 GRAPH_EXECUTORS: dict[str, ExecutorFamily] = {
+    "graph.create_node": "GraphCommand",
     "graph.rename_node": "GraphCommand",
     "graph.delete_node": "GraphCommand",
 }
@@ -45,7 +46,10 @@ def test_resolver_intersects_capability_actor_source_state_and_executor() -> Non
     model_actions = {item.id: item for item in resolver.resolve((_target("model"),), actor="user")}
     assert model_actions["node.rename"].enabled
     assert model_actions["node.delete"].enabled
-    assert resolver.resolve((_target("directory"),), actor="user") == ()
+    directory_actions = resolver.resolve((_target("directory"),), actor="user")
+    assert len(directory_actions) == 1
+    assert directory_actions[0].id == "node.create"
+    assert directory_actions[0].enabled
 
     missing_capability = resolver.resolve_action(
         "node.delete", (_target("task"),), actor="user"
