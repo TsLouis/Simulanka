@@ -16,6 +16,12 @@ GRAPH_EXECUTORS: dict[str, ExecutorFamily] = {
     "graph.create_node": "GraphCommand",
     "graph.rename_node": "GraphCommand",
     "graph.delete_node": "GraphCommand",
+    "graph.edge_verdict": "GraphCommand",
+    "graph.accept_edge": "GraphCommand",
+    "graph.toggle_edge_discussion": "GraphCommand",
+    "session.attach_context": "SessionCommand",
+    "projection.enter_node": "ProjectionCommand",
+    "projection.save_template": "ProjectionCommand",
 }
 
 
@@ -46,10 +52,16 @@ def test_resolver_intersects_capability_actor_source_state_and_executor() -> Non
     model_actions = {item.id: item for item in resolver.resolve((_target("model"),), actor="user")}
     assert model_actions["node.rename"].enabled
     assert model_actions["node.delete"].enabled
-    directory_actions = resolver.resolve((_target("directory"),), actor="user")
-    assert len(directory_actions) == 1
-    assert directory_actions[0].id == "node.create"
-    assert directory_actions[0].enabled
+    directory_actions = {
+        item.id: item for item in resolver.resolve((_target("directory"),), actor="user")
+    }
+    assert set(directory_actions) == {
+        "context.attach",
+        "node.create",
+        "node.enter",
+        "template.save",
+    }
+    assert all(item.enabled for item in directory_actions.values())
 
     missing_capability = resolver.resolve_action(
         "node.delete", (_target("task"),), actor="user"
@@ -78,6 +90,11 @@ def test_resolver_intersects_capability_actor_source_state_and_executor() -> Non
         "node.rename", (_target("model"),), actor="user"
     )
     assert unavailable.reason_code == "executor_unavailable"
+
+    projected_context = resolver.resolve_action(
+        "context.attach", (_target("model", writable=False),), actor="user"
+    )
+    assert projected_context.enabled
 
 
 def test_resolver_reports_unknown_profile_and_refset_shape() -> None:

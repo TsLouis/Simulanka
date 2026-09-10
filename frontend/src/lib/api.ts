@@ -1,9 +1,15 @@
 import type {
+  AffordanceDTO,
   GraphPayload,
   RegistryDescriptorDTO,
   ShapeCheck,
   TrustLevel,
 } from './types'
+
+export interface ActionRefDTO {
+  kind: 'node' | 'edge' | 'port'
+  id: string
+}
 
 let registryDescriptorCache: RegistryDescriptorDTO | null = null
 let registryDescriptorRequest: Promise<RegistryDescriptorDTO> | null = null
@@ -56,6 +62,19 @@ export async function ensureRegistryDescriptor(
     )
   }
   return descriptor
+}
+
+export async function resolveAffordances(refs: ActionRefDTO[]): Promise<AffordanceDTO[]> {
+  const resp = await fetch('/actions/resolve', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ refs }),
+  })
+  if (!resp.ok) {
+    throw new Error(`resolve actions failed: ${resp.status} ${await resp.text()}`)
+  }
+  const payload = (await resp.json()) as { affordances: AffordanceDTO[] }
+  return payload.affordances
 }
 
 // One view = the inside of one container (root's direct children); navigation
@@ -127,8 +146,8 @@ export async function createNode(req: CreateNodeRequest): Promise<CreateNodeResu
   return (await resp.json()) as CreateNodeResult
 }
 
-// Delete an empty module/model node (kernel cascades ports + incident edges).
-// Non-empty or out-of-domain nodes come back as a 422 with the reason.
+// Delete one node selected by a server affordance (kernel cascades ports and
+// incident edges). The endpoint revalidates current capability/state policy.
 export async function deleteNode(nodeId: string): Promise<void> {
   const resp = await fetch(`/node/${encodeURIComponent(nodeId)}`, { method: 'DELETE' })
   if (!resp.ok) {

@@ -386,9 +386,12 @@ def test_graph_payload_exposes_capabilities_affordances_and_unknown_profiles(
     }
     assert not encoder["unknown_profile"]
     assert {item["id"] for item in encoder["affordances"]} == {
+        "context.attach",
         "node.create",
         "node.rename",
         "node.delete",
+        "node.enter",
+        "template.save",
     }
     assert all(item["enabled"] for item in encoder["affordances"])
 
@@ -402,13 +405,48 @@ def test_graph_payload_exposes_capabilities_affordances_and_unknown_profiles(
 
     for edge in payload["edges"]:
         assert set(edge) >= {"capabilities", "unknown_profile", "affordances"}
+        if edge["type"] == "data_flow":
+            actions = {item["id"]: item for item in edge["affordances"]}
+            assert set(actions) == {
+                "context.attach",
+                "edge.accept",
+                "edge.discuss",
+                "edge.verdict",
+            }
+            assert actions["edge.accept"]["reason_code"] == "state_locked"
+            assert all(
+                actions[action]["enabled"]
+                for action in ("context.attach", "edge.discuss", "edge.verdict")
+            )
     for port in payload["ports"]:
         assert set(port) >= {"capabilities", "unknown_profile", "affordances"}
+        assert {item["id"] for item in port["affordances"]} == {"context.attach"}
     assert set(payload["root_info"]) >= {
         "capabilities",
         "unknown_profile",
         "affordances",
     }
+
+
+def test_action_resolution_endpoint_uses_current_multi_selection(tmp_path: Path) -> None:
+    layout = _seed_project(tmp_path)
+    nodes = {node.name: node for node in iter_nodes(layout)}
+    client = TestClient(create_app(layout))
+
+    response = client.post(
+        "/actions/resolve",
+        json={
+            "refs": [
+                {"kind": "node", "id": nodes["enc"].id},
+                {"kind": "node", "id": nodes["dec"].id},
+            ]
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    actions = {item["id"]: item for item in response.json()["affordances"]}
+    assert set(actions) == {"context.attach", "node.delete"}
+    assert all(action["enabled"] for action in actions.values())
 
 
 def test_event_stream_emits_commit_for_new_event(tmp_path: Path) -> None:
@@ -906,12 +944,23 @@ def test_graph_affordances_cover_disabled_non_research_extension(
         "deployable",
     }
     affordances = {item["id"]: item for item in service["affordances"]}
-    assert set(affordances) == {"node.rename", "node.delete"}
-    assert all(not item["enabled"] for item in affordances.values())
-    assert {item["reason_code"] for item in affordances.values()} == {"state_locked"}
-    assert {item["reason"] for item in affordances.values()} == {
+    assert set(affordances) == {
+        "context.attach",
+        "node.rename",
+        "node.delete",
+        "node.enter",
+        "template.save",
+    }
+    graph_actions = {key: affordances[key] for key in ("node.rename", "node.delete")}
+    assert all(not item["enabled"] for item in graph_actions.values())
+    assert {item["reason_code"] for item in graph_actions.values()} == {"state_locked"}
+    assert {item["reason"] for item in graph_actions.values()} == {
         "服务部署中，暂不可修改"
     }
+    assert all(
+        affordances[action]["enabled"]
+        for action in ("context.attach", "node.enter", "template.save")
+    )
 
 
 def test_graph_payload_identifies_its_registry_descriptor(tmp_path: Path) -> None:
@@ -1112,11 +1161,30 @@ def test_accept_ghost(tmp_path: Path) -> None:
     assert client.get("/disagreements").json()["disagreements"] == []
 
 
+def test_ghost_accept_affordance_uses_same_state_policy_as_endpoint(
+    tmp_path: Path,
+) -> None:
+    layout = _seed_project(tmp_path)
+    ghost_id = _seed_ghost_edge(layout)
+    root_id = next(node.id for node in iter_nodes(layout) if node.name == "Net")
+    client = TestClient(create_app(layout))
+
+    payload = client.get("/graph", params={"root": root_id}).json()
+    ghost = next(edge for edge in payload["edges"] if edge["id"] == ghost_id)
+    accept = next(
+        action for action in ghost["affordances"] if action["id"] == "edge.accept"
+    )
+    assert accept["enabled"]
+    assert accept["reason_code"] == "available"
+
+
 def test_accept_non_ghost_rejected(tmp_path: Path) -> None:
     layout = _seed_project(tmp_path)
     user_edge = next(e for e in iter_edges(layout) if e.type == "data_flow")
     client = TestClient(create_app(layout))
-    assert client.post(f"/edge/{user_edge.id}/accept").status_code == 422
+    response = client.post(f"/edge/{user_edge.id}/accept")
+    assert response.status_code == 422
+    assert response.json()["detail"] == "only a proposed ghost edge can be accepted"
 
 
 def test_disagreements_agent_flagged_and_disputed(tmp_path: Path) -> None:
@@ -1161,6 +1229,38 @@ def test_discuss_toggle(tmp_path: Path) -> None:
         == 200
     )
     assert client.get("/disagreements").json()["disagreements"] == []
+
+
+def test_edge_action_rechecks_current_lock_before_write(tmp_path: Path) -> None:
+    layout = _seed_project(tmp_path)
+    edge = next(item for item in iter_edges(layout) if item.type == "data_flow")
+    apply_patch(
+        layout,
+        PatchIntent(
+            ops=[
+                UpdateAttrsOp(
+                    target=edge.id,
+                    attrs={"locked": True, "lock_reason": "边正在复核"},
+                )
+            ],
+            actor="test",
+            base_graph_version=load_manifest(layout).graph_version,
+        ),
+    )
+    client = TestClient(create_app(layout))
+
+    response = client.post(
+        f"/edge/{edge.id}/verdict",
+        json={"verdict": "correct", "note": "已人工核对"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == {
+        "action": "edge.verdict",
+        "reason": "边正在复核",
+        "reason_code": "state_locked",
+    }
+    assert "verdict" not in load_edge(layout, edge.id).attrs
 
 
 def test_cors_preflight_allows_delete(tmp_path: Path) -> None:

@@ -44,7 +44,7 @@
 - [x] 5.1 定义 descriptor/affordance DTO、缓存与 digest 失配刷新
 - [x] 5.2 添加节点目录改用 Profiles/Templates + create affordance，删除前端 ALLOW_PARENTS
 - [x] 5.3 cards/theme/Inspector 改读 PresentationSpec；实现稳定 generic fallback
-- [ ] 5.4 ContextMenu/EdgeMenu/多选菜单改为 affordances，删除 task 派工和 module/model delete 分支
+- [x] 5.4 ContextMenu/EdgeMenu/多选菜单改为 affordances，删除 task 派工和 module/model delete 分支
 - [ ] 5.5 连接候选按 Edge Profile descriptor 预过滤，server 422/reason 保持硬闸
 - [ ] 5.6 浏览器演示 software service Profile 的创建、连接、选择、Inspector 和通用动作
 

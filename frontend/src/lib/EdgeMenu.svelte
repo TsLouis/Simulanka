@@ -2,7 +2,7 @@
   // S7 就地裁决：点选一条 data_flow 边（LiteGraph 链接中心点）在原地弹出
   // 人侧动作。动作本身由宿主执行（写权矩阵的 user 行走 server 端点）——
   // 本组件只是锚定在选择处的菜单壳。
-  import type { EdgeDTO } from './types'
+  import type { AffordanceDTO, EdgeDTO } from './types'
 
   export let x: number
   export let y: number
@@ -18,11 +18,16 @@
   const str = (key: string): string | null =>
     typeof edge.attrs[key] === 'string' ? (edge.attrs[key] as string) : null
 
-  // proposed ghost（agent 提议未决）：人只有「接受」或「拒绝（要理由）」。
-  $: isGhost = str('source') === 'agent' && str('status') === 'proposed'
   $: inDiscuss = edge.attrs.discuss === true
   $: verdict = str('verdict')
   $: verdictBy = str('verdict_by')
+  $: verdictAction = edge.affordances.find(action => action.id === 'edge.verdict') ?? null
+  $: acceptAction = edge.affordances.find(action => action.id === 'edge.accept') ?? null
+  $: discussAction = edge.affordances.find(action => action.id === 'edge.discuss') ?? null
+  $: attachAction = edge.affordances.find(action => action.id === 'context.attach') ?? null
+
+  const disabledTitle = (action: AffordanceDTO): string =>
+    action.enabled ? action.label : action.reason
 
   let menuEl: HTMLDivElement
 
@@ -50,26 +55,56 @@
     <span class="chip src-{str('source') ?? 'user'}">{str('source') ?? '?'}</span>
     <span class="ends" title={edge.id}>{srcName} → {dstName}</span>
   </div>
-  {#if edge.type === 'data_flow'}
+  {#if verdictAction}
     {#if verdict}
       <div class="state">
         裁决: <b class="v-{verdict}">{verdict}</b>{#if verdictBy}&nbsp;by {verdictBy}{/if}
       </div>
     {/if}
 
-    {#if isGhost}
-      <button class="row good" on:click={onAccept}>✓ 接受提议</button>
-      <button class="row bad" on:click={() => onVerdict('wrong')}>✗ 拒绝（要理由）</button>
-    {:else}
+    {#if verdictAction.enabled}
       <button class="row good" on:click={() => onVerdict('correct')}>✓ 裁决：正确</button>
       <button class="row bad" on:click={() => onVerdict('wrong')}>✗ 裁决：错误</button>
       <button class="row" on:click={() => onVerdict('disputed')}>⚖ 裁决：存疑</button>
+    {:else}
+      <button class="row disabled" disabled title={disabledTitle(verdictAction)}>
+        {verdictAction.label}<span class="reason">{verdictAction.reason}</span>
+      </button>
     {/if}
-    <button class="row" on:click={onToggleDiscuss}>
-      ⇄ {inDiscuss ? '移出讨论' : '拉入讨论'}
+  {/if}
+  {#if acceptAction}
+    <button
+      class="row good"
+      class:disabled={!acceptAction.enabled}
+      disabled={!acceptAction.enabled}
+      title={disabledTitle(acceptAction)}
+      on:click={onAccept}
+    >✓ {acceptAction.label}
+      {#if !acceptAction.enabled}<span class="reason">{acceptAction.reason}</span>{/if}
     </button>
   {/if}
-  <button class="row" on:click={onAttach}>附加上下文 ＋</button>
+  {#if discussAction}
+    <button
+      class="row"
+      class:disabled={!discussAction.enabled}
+      disabled={!discussAction.enabled}
+      title={disabledTitle(discussAction)}
+      on:click={onToggleDiscuss}
+    >⇄ {inDiscuss ? '移出讨论' : '拉入讨论'}
+      {#if !discussAction.enabled}<span class="reason">{discussAction.reason}</span>{/if}
+    </button>
+  {/if}
+  {#if attachAction}
+    <button
+      class="row"
+      class:disabled={!attachAction.enabled}
+      disabled={!attachAction.enabled}
+      title={disabledTitle(attachAction)}
+      on:click={onAttach}
+    >{attachAction.label} ＋
+      {#if !attachAction.enabled}<span class="reason">{attachAction.reason}</span>{/if}
+    </button>
+  {/if}
 </div>
 
 <style>
@@ -158,5 +193,19 @@
   .bad:hover {
     color: var(--crimson);
     background: rgba(224, 122, 104, 0.1);
+  }
+  .disabled,
+  .disabled:hover {
+    color: var(--muted);
+    background: transparent;
+    cursor: not-allowed;
+  }
+  .reason {
+    margin-left: auto;
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 10px;
   }
 </style>

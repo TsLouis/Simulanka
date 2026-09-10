@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
 from types import MappingProxyType
 
 from simulanka.registry import (
@@ -25,6 +25,7 @@ class ActionTarget:
     profile: str
     capabilities: frozenset[str]
     unknown_profile: bool = False
+    attrs: Mapping[str, object] = field(default_factory=dict)
     source: str = "graph"
     writable: bool = True
     locked: bool = False
@@ -32,6 +33,7 @@ class ActionTarget:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "capabilities", frozenset(self.capabilities))
+        object.__setattr__(self, "attrs", MappingProxyType(dict(self.attrs)))
 
     @classmethod
     def from_profile(
@@ -41,6 +43,7 @@ class ActionTarget:
         kind: EntityKind,
         id: str,
         profile: str,
+        attrs: Mapping[str, object] | None = None,
         source: str = "graph",
         writable: bool = True,
         locked: bool = False,
@@ -66,6 +69,7 @@ class ActionTarget:
             profile=canonical,
             capabilities=capabilities,
             unknown_profile=unknown,
+            attrs={} if attrs is None else attrs,
             source=source,
             writable=writable,
             locked=locked,
@@ -79,6 +83,12 @@ class _Rejection:
     reason: str
 
 
+ActionStatePolicy = Callable[
+    [Sequence[ActionTarget]],
+    tuple[ActionReasonCode, str] | None,
+]
+
+
 class ActionResolver:
     """Resolve Registry actions without granting capability-derived permission."""
 
@@ -87,10 +97,12 @@ class ActionResolver:
         registry: Registry,
         *,
         supported_executors: Mapping[str, ExecutorFamily],
+        state_policies: Mapping[str, ActionStatePolicy] | None = None,
         allowed_actors: frozenset[str] = frozenset({"user"}),
     ) -> None:
         self._registry = registry
         self._supported_executors = MappingProxyType(dict(supported_executors))
+        self._state_policies = MappingProxyType(dict(state_policies or {}))
         self._allowed_actors = frozenset(allowed_actors)
 
     def resolve(
@@ -138,22 +150,29 @@ class ActionResolver:
                 ),
             )
 
-        read_only = next((ref for ref in refs if not ref.writable), None)
-        if read_only is not None:
-            return _affordance(
-                action,
-                _Rejection(
-                    "source_read_only",
-                    f"来源 {read_only.source!r} 的实体 {read_only.id!r} 为只读",
-                ),
-            )
+        if action.executor_family == "GraphCommand":
+            read_only = next((ref for ref in refs if not ref.writable), None)
+            if read_only is not None:
+                return _affordance(
+                    action,
+                    _Rejection(
+                        "source_read_only",
+                        f"来源 {read_only.source!r} 的实体 {read_only.id!r} 为只读",
+                    ),
+                )
 
-        locked = next((ref for ref in refs if ref.locked), None)
-        if locked is not None:
-            return _affordance(
-                action,
-                _Rejection("state_locked", locked.lock_reason),
-            )
+            locked = next((ref for ref in refs if ref.locked), None)
+            if locked is not None:
+                return _affordance(
+                    action,
+                    _Rejection("state_locked", locked.lock_reason),
+                )
+
+        state_policy = self._state_policies.get(action.key)
+        if state_policy is not None:
+            state_rejection = state_policy(refs)
+            if state_rejection is not None:
+                return _affordance(action, _Rejection(*state_rejection))
 
         family = self._supported_executors.get(action.executor)
         if family != action.executor_family:

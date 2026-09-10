@@ -85,6 +85,7 @@ from simulanka.storage.entity_store import (
     iter_ports,
     load_edge,
     load_node,
+    load_port,
     node_exists,
 )
 from simulanka.trust import node_trust, provenance_chain
@@ -263,13 +264,54 @@ def create_app(
             "graph.create_node": "GraphCommand",
             "graph.rename_node": "GraphCommand",
             "graph.delete_node": "GraphCommand",
+            "graph.edge_verdict": "GraphCommand",
+            "graph.accept_edge": "GraphCommand",
+            "graph.toggle_edge_discussion": "GraphCommand",
+            "session.attach_context": "SessionCommand",
+            "projection.enter_node": "ProjectionCommand",
+            "projection.save_template": "ProjectionCommand",
         },
+        state_policies={"edge.accept": _edge_accept_state_policy},
     )
 
     @app.get("/registry")
     def get_registry_descriptor() -> dict[str, Any]:
         """Return the immutable semantic descriptor used by this server."""
         return registry.descriptor()
+
+    @app.post("/actions/resolve")
+    def resolve_actions(
+        body: dict[str, Any] = Body(default_factory=dict),
+    ) -> dict[str, Any]:
+        """Resolve one current RefSet for multi-selection menu discovery."""
+        raw_refs = body.get("refs")
+        if not isinstance(raw_refs, list) or not raw_refs:
+            raise HTTPException(status_code=422, detail="refs must be a non-empty list")
+        targets: list[ActionTarget] = []
+        for raw_ref in raw_refs:
+            if not isinstance(raw_ref, dict):
+                raise HTTPException(status_code=422, detail="each ref must be an object")
+            kind = raw_ref.get("kind")
+            entity_id = raw_ref.get("id")
+            if kind not in {"node", "edge", "port"} or not isinstance(entity_id, str):
+                raise HTTPException(
+                    status_code=422,
+                    detail="each ref requires kind=node|edge|port and string id",
+                )
+            targets.append(
+                _load_action_target(
+                    layout,
+                    registry,
+                    kind=kind,
+                    entity_id=entity_id,
+                )
+            )
+        return {
+            "affordances": [
+                affordance.as_dict()
+                for affordance in action_resolver.resolve(targets, actor="user")
+            ]
+        }
 
     @app.get("/graph")
     def get_graph(root: str | None = Query(default=None)) -> dict[str, Any]:
@@ -656,7 +698,19 @@ def create_app(
         ``status`` stays ``proposed`` so it enters the disagreement queue;
         deletion happens only after discussion via DELETE /edge/{id}.
         """
-        _require_data_flow(layout, edge_id)
+        edge = _require_data_flow(layout, edge_id)
+        _require_action(
+            action_resolver,
+            "edge.verdict",
+            (_entity_action_target(
+                registry,
+                kind="edge",
+                entity_id=edge.id,
+                profile=edge.type,
+                attrs=edge.attrs,
+            ),),
+            actor="user",
+        )
         verdict = body.get("verdict")
         note = body.get("note")
         if verdict not in ("correct", "wrong", "disputed"):
@@ -689,14 +743,19 @@ def create_app(
         """Accept a proposed ghost edge (§13.5.3 同意即连). Agreement needs no
         defense, so no note. Only the human may do this (write matrix)."""
         edge = _require_data_flow(layout, edge_id)
-        if not (
-            edge.attrs.get("source") == "agent"
-            and edge.attrs.get("status") == "proposed"
-        ):
-            raise HTTPException(
-                status_code=422,
-                detail="only a proposed ghost edge can be accepted",
-            )
+        _require_action(
+            action_resolver,
+            "edge.accept",
+            (_entity_action_target(
+                registry,
+                kind="edge",
+                entity_id=edge.id,
+                profile=edge.type,
+                attrs=edge.attrs,
+            ),),
+            actor="user",
+            structured_detail=False,
+        )
         receipt = _apply_user_op(
             layout,
             UpdateAttrsOp(
@@ -719,7 +778,19 @@ def create_app(
     ) -> dict[str, Any]:
         """Pull any edge into (or out of) the discussion set by hand.
         Body: ``{discuss: bool}``, defaults to true."""
-        _require_data_flow(layout, edge_id)
+        edge = _require_data_flow(layout, edge_id)
+        _require_action(
+            action_resolver,
+            "edge.discuss",
+            (_entity_action_target(
+                registry,
+                kind="edge",
+                entity_id=edge.id,
+                profile=edge.type,
+                attrs=edge.attrs,
+            ),),
+            actor="user",
+        )
         flag = body.get("discuss", True)
         if not isinstance(flag, bool):
             raise HTTPException(status_code=422, detail="discuss must be a boolean")
@@ -1557,11 +1628,62 @@ def _entity_action_target(
         kind=kind,
         id=entity_id,
         profile=profile,
+        attrs=attrs,
         source=source,
         writable=not projected_immutable,
         locked=attrs.get("locked") is True,
         lock_reason=lock_reason,
     )
+
+
+def _edge_accept_state_policy(
+    refs: Sequence[ActionTarget],
+) -> tuple[Literal["state_locked"], str] | None:
+    edge = refs[0]
+    if edge.attrs.get("source") == "agent" and edge.attrs.get("status") == "proposed":
+        return None
+    return "state_locked", "only a proposed ghost edge can be accepted"
+
+
+def _load_action_target(
+    layout: ProjectLayout,
+    registry: Registry,
+    *,
+    kind: Literal["node", "edge", "port"],
+    entity_id: str,
+) -> ActionTarget:
+    try:
+        if kind == "node":
+            node = load_node(layout, entity_id)
+            return _entity_action_target(
+                registry,
+                kind=kind,
+                entity_id=node.id,
+                profile=node.type,
+                attrs=node.attrs,
+            )
+        if kind == "edge":
+            edge = load_edge(layout, entity_id)
+            return _entity_action_target(
+                registry,
+                kind=kind,
+                entity_id=edge.id,
+                profile=edge.type,
+                attrs=edge.attrs,
+            )
+        port = load_port(layout, entity_id)
+        return _entity_action_target(
+            registry,
+            kind=kind,
+            entity_id=port.id,
+            profile=port.port_type,
+            attrs=port.attrs,
+        )
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"{kind} {entity_id!r} not found",
+        ) from None
 
 
 def _require_action(
@@ -1570,16 +1692,21 @@ def _require_action(
     targets: Sequence[ActionTarget],
     *,
     actor: str,
+    structured_detail: bool = True,
 ) -> None:
     affordance = resolver.resolve_action(action_id, targets, actor=actor)
     if not affordance.enabled:
         raise HTTPException(
             status_code=422,
-            detail={
-                "action": affordance.id,
-                "reason": affordance.reason,
-                "reason_code": affordance.reason_code,
-            },
+            detail=(
+                {
+                    "action": affordance.id,
+                    "reason": affordance.reason,
+                    "reason_code": affordance.reason_code,
+                }
+                if structured_detail
+                else affordance.reason
+            ),
         )
 
 

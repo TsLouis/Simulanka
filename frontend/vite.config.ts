@@ -9,6 +9,8 @@ export default defineConfig({
     proxy: {
       '/graph': apiTarget,
       '/registry': apiTarget,
+      // RefSet-aware affordance discovery for multi-selection menus.
+      '/actions': apiTarget,
       // POST creates a user-drawn edge, DELETE /edge/{id} removes one
       // (§13.5.2); /edge/{id}/verdict|accept|discuss are the §13.6 human ops.
       '/edge': apiTarget,

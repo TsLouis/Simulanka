@@ -20,6 +20,10 @@
   $: attrEntries = node
     ? orderedAttributeEntries(node.attrs, presentation?.inspector_fields ?? [])
     : []
+  $: nodeAttachAction = node?.affordances.find(action => action.id === 'context.attach') ?? null
+
+  const portAttachAction = (port: PortDTO) =>
+    port.affordances.find(action => action.id === 'context.attach') ?? null
 
   const strAttr = (n: NodeDTO | null, key: string): string | null =>
     n && typeof n.attrs[key] === 'string' ? (n.attrs[key] as string) : null
@@ -88,9 +92,14 @@
       {/if}
       <h2>{node.name}</h2>
       <code class="id">{node.id}</code>
-      <button class="attach-btn" on:click={() => onAttachNode(node!)}>
-        ＋ 附加节点
-      </button>
+      {#if nodeAttachAction}
+        <button
+          class="attach-btn"
+          disabled={!nodeAttachAction.enabled}
+          title={nodeAttachAction.enabled ? nodeAttachAction.label : nodeAttachAction.reason}
+          on:click={() => onAttachNode(node!)}
+        >＋ {nodeAttachAction.label}</button>
+      {/if}
     </header>
 
     {#if openEscalate}
@@ -158,6 +167,7 @@
         <h3>Ports</h3>
         <ul class="ports">
           {#each ports as p (p.id)}
+            {@const attachAction = portAttachAction(p)}
             <li>
               <span class="side side-{p.side}">{p.side}</span>
               <span class="name">
@@ -168,12 +178,15 @@
               {#if portConfidence(p)}
                 <span class="conf conf-{portConfidence(p)}">{portConfidence(p)}</span>
               {/if}
-              <button
-                class="port-attach"
-                title={`附加端口 ${p.id}`}
-                aria-label={`附加端口 ${portLabel(p) ?? p.name}`}
-                on:click={() => onAttachPort(p)}
-              >＋</button>
+              {#if attachAction}
+                <button
+                  class="port-attach"
+                  disabled={!attachAction.enabled}
+                  title={attachAction.enabled ? `附加端口 ${p.id}` : attachAction.reason}
+                  aria-label={`附加端口 ${portLabel(p) ?? p.name}`}
+                  on:click={() => onAttachPort(p)}
+                >＋</button>
+              {/if}
             </li>
           {/each}
         </ul>
@@ -299,6 +312,11 @@
     background: var(--panel-3);
     color: var(--gold-bright);
     cursor: pointer;
+  }
+  .attach-btn:disabled,
+  .port-attach:disabled {
+    color: var(--muted);
+    cursor: not-allowed;
   }
   section {
     margin-bottom: 14px;

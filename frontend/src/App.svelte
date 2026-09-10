@@ -24,6 +24,7 @@
     postVerdict,
     previewSessionContext,
     renameNode,
+    resolveAffordances,
     resolveNote,
     savePositions,
     saveTemplate,
@@ -100,7 +101,8 @@
     x: number
     y: number
     mode: 'add' | 'node'
-    node: NodeDTO | null
+    nodes: NodeDTO[]
+    affordances: AffordanceDTO[]
     graphPos: [number, number]
   } | null = null
   let customTemplates: Record<string, CustomTemplateDTO> = {}
@@ -1216,15 +1218,15 @@
           selected_nodes?: Record<string, LGraphNode>
         }).selected_nodes
         if (!sel) return
-        for (const key of Object.keys(sel)) {
-          const dto = (sel[key] as unknown as { simulanka?: NodeDTO }).simulanka
-          if (dto) requestDeleteNode(dto)
-        }
+        const nodes = Object.values(sel)
+          .map(selected => (selected as unknown as { simulanka?: NodeDTO }).simulanka)
+          .filter((dto): dto is NodeDTO => dto !== undefined)
+        void deleteSelectedNodes(nodes)
       }
     canvasEl.addEventListener('contextmenu', onCanvasContextMenu)
   }
 
-  function onCanvasContextMenu(e: MouseEvent) {
+  async function onCanvasContextMenu(e: MouseEvent) {
     e.preventDefault()
     if (!lgcanvas) return
     const pos = (lgcanvas as unknown as {
@@ -1236,11 +1238,34 @@
     const hit = g?.getNodeOnPos?.(pos[0], pos[1]) ?? null
     // Boundary stubs carry no `simulanka` DTO — treat them like empty canvas.
     const dto = hit ? ((hit as unknown as { simulanka?: NodeDTO }).simulanka ?? null) : null
+    const selected = (lgcanvas as unknown as {
+      selected_nodes?: Record<string, LGraphNode>
+    }).selected_nodes
+    const selectedDtos = Object.values(selected ?? {})
+      .map(selectedNode => (selectedNode as unknown as { simulanka?: NodeDTO }).simulanka)
+      .filter((item): item is NodeDTO => item !== undefined)
+    const nodes = dto && selectedDtos.some(item => item.id === dto.id) && selectedDtos.length > 1
+      ? selectedDtos
+      : dto
+        ? [dto]
+        : []
+    let affordances = dto?.affordances ?? []
+    if (nodes.length > 1) {
+      try {
+        affordances = await resolveAffordances(
+          nodes.map(node => ({ kind: 'node', id: node.id })),
+        )
+      } catch (err) {
+        status = `resolve actions failed: ${(err as Error).message}`
+        return
+      }
+    }
     menu = {
       x: e.clientX,
       y: e.clientY,
       mode: dto ? 'node' : 'add',
-      node: dto,
+      nodes,
+      affordances,
       graphPos: [Math.round(pos[0]), Math.round(pos[1])],
     }
   }
@@ -1265,15 +1290,38 @@
   }
 
   function menuEnter() {
-    if (!menu?.node) return
-    const id = menu.node.id
+    const node = menu?.nodes[0]
+    if (!node) return
+    const id = node.id
     menu = null
     navigateTo(id)
   }
 
+  async function menuCreateChild() {
+    const target = menu?.nodes[0]
+    if (!target || !menu) return
+    const anchor = { x: menu.x, y: menu.y }
+    menu = null
+    navBack = [...navBack, currentRootId]
+    navFwd = []
+    currentRootId = target.id
+    selectedTreeId = null
+    draftOpen = false
+    selectedId = null
+    await load()
+    void restoreSessions(target.id)
+    menu = {
+      ...anchor,
+      mode: 'add',
+      nodes: [],
+      affordances: [],
+      graphPos: [120, 120],
+    }
+  }
+
   async function menuRename() {
-    if (!menu?.node) return
-    const n = menu.node
+    const n = menu?.nodes[0]
+    if (!n) return
     menu = null
     const newName = window.prompt('新名字', n.name)
     if (!newName || !newName.trim() || newName.trim() === n.name) return
@@ -1285,8 +1333,8 @@
   }
 
   async function menuSaveTemplate() {
-    if (!menu?.node) return
-    const n = menu.node
+    const n = menu?.nodes[0]
+    if (!n) return
     menu = null
     const name = window.prompt('模板名', n.name)
     if (!name || !name.trim()) return
@@ -1308,20 +1356,78 @@
     }
   }
 
-  // One deletion path for menu and Delete key alike: the kernel decides, the
-  // canvas never forks from graph state. Refusals (non-empty, out-of-domain)
-  // surface in the status bar; success comes back over SSE.
-  function requestDeleteNode(dto: NodeDTO) {
-    void deleteNode(dto.id).catch(err => {
-      status = `delete failed: ${(err as Error).message}`
-    })
+  async function deleteSelectedNodes(nodes: NodeDTO[]) {
+    if (nodes.length === 0) return
+    let affordances = nodes[0].affordances
+    if (nodes.length > 1) {
+      try {
+        affordances = await resolveAffordances(
+          nodes.map(node => ({ kind: 'node', id: node.id })),
+        )
+      } catch (err) {
+        status = `resolve delete failed: ${(err as Error).message}`
+        return
+      }
+    }
+    const action = affordances.find(item => item.id === 'node.delete')
+    if (!action?.enabled) {
+      status = action?.reason ?? '所选节点当前不可删除'
+      return
+    }
+    for (const node of nodes) {
+      try {
+        await deleteNode(node.id)
+      } catch (err) {
+        status = `delete failed: ${(err as Error).message}`
+        return
+      }
+    }
   }
 
   function menuDelete() {
-    if (!menu?.node) return
-    const n = menu.node
+    const nodes = menu?.nodes ?? []
     menu = null
-    requestDeleteNode(n)
+    void deleteSelectedNodes(nodes)
+  }
+
+  function menuAttach() {
+    const nodes = menu?.nodes ?? []
+    for (const node of nodes) {
+      addPendingRef(
+        { kind: 'node', ref_id: node.id },
+        `${node.type} · ${node.name}`,
+      )
+    }
+    menu = null
+  }
+
+  function menuAction(action: AffordanceDTO) {
+    if (!action.enabled) {
+      status = action.reason
+      return
+    }
+    switch (action.id) {
+      case 'node.create':
+        void menuCreateChild()
+        break
+      case 'node.enter':
+        menuEnter()
+        break
+      case 'node.rename':
+        void menuRename()
+        break
+      case 'node.delete':
+        menuDelete()
+        break
+      case 'context.attach':
+        menuAttach()
+        break
+      case 'template.save':
+        void menuSaveTemplate()
+        break
+      default:
+        status = `unsupported action: ${action.id}`
+    }
   }
 
   async function menuDeleteTemplate(name: string) {
@@ -1714,25 +1820,13 @@
       x={menu.x}
       y={menu.y}
       mode={menu.mode}
-      node={menu.node}
+      nodes={menu.nodes}
+      affordances={menu.affordances}
       groups={templateGroups}
       onClose={() => (menu = null)}
       onPick={menuAddNode}
-      onEnter={menuEnter}
-      onRename={menuRename}
-      onSaveTemplate={menuSaveTemplate}
-      onDelete={menuDelete}
+      onAction={menuAction}
       onDeleteTemplate={menuDeleteTemplate}
-      onAttach={() => {
-        const activeNode = menu!.node
-        if (activeNode) {
-          addPendingRef(
-            { kind: 'node', ref_id: activeNode.id },
-            `${activeNode.type} · ${activeNode.name}`,
-          )
-        }
-        menu = null
-      }}
     />
   {/if}
   <ChatDock

@@ -1,27 +1,31 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { filterGroups, type NodeTemplate, type TemplateGroup } from './templates'
-  import type { NodeDTO } from './types'
+  import type { AffordanceDTO, NodeDTO } from './types'
 
   // Viewport coordinates of the right-click; the menu clamps itself to stay
   // on screen.
   export let x: number
   export let y: number
   export let mode: 'add' | 'node'
-  export let node: NodeDTO | null = null
+  export let nodes: NodeDTO[] = []
+  export let affordances: AffordanceDTO[] = []
   export let groups: TemplateGroup[] = []
   export let onClose: () => void
   export let onPick: (t: NodeTemplate) => void = () => {}
-  export let onEnter: () => void = () => {}
-  export let onRename: () => void = () => {}
-  export let onSaveTemplate: () => void = () => {}
-  export let onDelete: () => void = () => {}
+  export let onAction: (action: AffordanceDTO) => void = () => {}
   export let onDeleteTemplate: (name: string) => void = () => {}
-  export let onAttach: () => void = () => {}
 
-  // Canvas delete covers the model-sketch domain only (server policy) — the
-  // menu doesn't offer what the kernel would refuse.
-  $: deletable = node !== null && (node.type === 'module' || node.type === 'model')
+  $: node = nodes[0] ?? null
+
+  const actionIcon = (id: string): string => ({
+    'node.create': '＋',
+    'node.enter': '⤢',
+    'node.rename': '✎',
+    'node.delete': '✕',
+    'context.attach': '＋',
+    'template.save': '⧉',
+  })[id] ?? '›'
 
   let query = ''
   let searchEl: HTMLInputElement | null = null
@@ -90,19 +94,23 @@
     </div>
   {:else if node}
     <div class="node-head">
-      <span class="type-chip">{node.type}</span>
-      <span class="node-name">{node.name}</span>
+      <span class="type-chip">{nodes.length > 1 ? `${nodes.length} 项` : node.type}</span>
+      <span class="node-name">{nodes.length > 1 ? '多选' : node.name}</span>
     </div>
-    <button class="row action" on:click={onEnter}>
-      进入子图 ⤢
-      {#if node.child_count > 0}<span class="hint">{node.child_count} 项</span>{/if}
-    </button>
-    <button class="row action" on:click={onRename}>重命名 ✎</button>
-    <button class="row action" on:click={onAttach}>附加上下文 ＋</button>
-    <button class="row action" on:click={onSaveTemplate}>存为模板 ⧉</button>
-    {#if deletable}
-      <button class="row action danger" on:click={onDelete}>删除 ✕</button>
-    {/if}
+    {#each affordances as action (action.id)}
+      <button
+        class="row action"
+        class:danger={action.id === 'node.delete'}
+        class:disabled={!action.enabled}
+        disabled={!action.enabled}
+        title={action.enabled ? action.label : action.reason}
+        on:click={() => onAction(action)}
+      >
+        <span>{action.label} {actionIcon(action.id)}</span>
+        {#if !action.enabled}<span class="reason">{action.reason}</span>{/if}
+      </button>
+    {/each}
+    {#if affordances.length === 0}<div class="empty">无可用动作</div>{/if}
   {/if}
 </div>
 
@@ -209,8 +217,18 @@
     color: var(--crimson);
     background: rgba(224, 122, 104, 0.1);
   }
-  .hint {
+  .disabled,
+  .disabled:hover {
     color: var(--muted);
-    font-size: 11px;
+    background: transparent;
+    cursor: not-allowed;
+  }
+  .reason {
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--muted);
+    font-size: 10px;
   }
 </style>

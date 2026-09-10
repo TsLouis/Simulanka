@@ -322,10 +322,15 @@ def _node_profile(key: str) -> NodeProfileSpec:
     )
 
 
-def _edge_profile(key: str) -> EdgeProfileSpec:
+def _edge_profile(
+    key: str,
+    *,
+    capabilities: frozenset[str] = frozenset(),
+) -> EdgeProfileSpec:
     legacy = _LEGACY_EDGE_TYPES[key]
     return EdgeProfileSpec(
         key=key,
+        capabilities=capabilities,
         needs_ports=legacy.needs_ports,
         source_profiles=legacy.source_node_types,
         target_profiles=legacy.target_node_types,
@@ -445,6 +450,11 @@ CORE_PACKAGE = RegistryPackage(
             consumers=frozenset({"action"}),
             description="May be a delete candidate before actor and state policy.",
         ),
+        CapabilitySpec(
+            key="reviewable",
+            consumers=frozenset({"action"}),
+            description="May receive human verdict and discussion actions.",
+        ),
     ),
     edge_profiles=(
         EdgeProfileSpec(
@@ -453,13 +463,22 @@ CORE_PACKAGE = RegistryPackage(
             source_capabilities=frozenset({"container"}),
             target_profiles=frozenset({ANY}),
         ),
-        _edge_profile("data_flow"),
+        _edge_profile(
+            "data_flow",
+            capabilities=frozenset({"reviewable"}),
+        ),
     ),
     port_types=frozenset({"any"}),
     executors=(
         ActionExecutorSpec(key="graph.create_node", family="GraphCommand"),
         ActionExecutorSpec(key="graph.rename_node", family="GraphCommand"),
         ActionExecutorSpec(key="graph.delete_node", family="GraphCommand"),
+        ActionExecutorSpec(key="graph.edge_verdict", family="GraphCommand"),
+        ActionExecutorSpec(key="graph.accept_edge", family="GraphCommand"),
+        ActionExecutorSpec(key="graph.toggle_edge_discussion", family="GraphCommand"),
+        ActionExecutorSpec(key="session.attach_context", family="SessionCommand"),
+        ActionExecutorSpec(key="projection.enter_node", family="ProjectionCommand"),
+        ActionExecutorSpec(key="projection.save_template", family="ProjectionCommand"),
     ),
     actions=(
         ActionSpec(
@@ -506,11 +525,91 @@ CORE_PACKAGE = RegistryPackage(
             key="node.delete",
             label="删除",
             target=RefSetPredicate(
+                max_count=None,
                 entity_kinds=frozenset({"node"}),
                 capabilities=frozenset({"deletable"}),
             ),
             executor="graph.delete_node",
             executor_family="GraphCommand",
+        ),
+        ActionSpec(
+            key="edge.verdict",
+            label="裁决",
+            target=RefSetPredicate(
+                entity_kinds=frozenset({"edge"}),
+                capabilities=frozenset({"reviewable"}),
+            ),
+            executor="graph.edge_verdict",
+            executor_family="GraphCommand",
+            input_schema={
+                "type": "object",
+                "required": ["verdict", "note"],
+                "properties": {
+                    "verdict": {
+                        "type": "string",
+                        "enum": ["correct", "wrong", "disputed"],
+                    },
+                    "note": {"type": "string", "minLength": 1},
+                },
+                "additionalProperties": False,
+            },
+        ),
+        ActionSpec(
+            key="edge.accept",
+            label="接受提议",
+            target=RefSetPredicate(
+                entity_kinds=frozenset({"edge"}),
+                capabilities=frozenset({"reviewable"}),
+            ),
+            executor="graph.accept_edge",
+            executor_family="GraphCommand",
+        ),
+        ActionSpec(
+            key="edge.discuss",
+            label="切换讨论",
+            target=RefSetPredicate(
+                entity_kinds=frozenset({"edge"}),
+                capabilities=frozenset({"reviewable"}),
+            ),
+            executor="graph.toggle_edge_discussion",
+            executor_family="GraphCommand",
+            input_schema={
+                "type": "object",
+                "required": ["discuss"],
+                "properties": {"discuss": {"type": "boolean"}},
+                "additionalProperties": False,
+            },
+        ),
+        ActionSpec(
+            key="context.attach",
+            label="附加上下文",
+            target=RefSetPredicate(
+                min_count=1,
+                max_count=None,
+                entity_kinds=frozenset({"node", "edge", "port"}),
+            ),
+            executor="session.attach_context",
+            executor_family="SessionCommand",
+        ),
+        ActionSpec(
+            key="node.enter",
+            label="进入子图",
+            target=RefSetPredicate(
+                entity_kinds=frozenset({"node"}),
+                capabilities=frozenset({"contextualizable"}),
+            ),
+            executor="projection.enter_node",
+            executor_family="ProjectionCommand",
+        ),
+        ActionSpec(
+            key="template.save",
+            label="存为模板",
+            target=RefSetPredicate(
+                entity_kinds=frozenset({"node"}),
+                capabilities=frozenset({"contextualizable"}),
+            ),
+            executor="projection.save_template",
+            executor_family="ProjectionCommand",
         ),
     ),
 )
