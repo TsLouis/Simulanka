@@ -58,7 +58,9 @@ from simulanka.kernel.manifest import load_manifest
 from simulanka.kernel.validator import ValidationError
 from simulanka.layout.project import ProjectLayout
 from simulanka.plan import PlanError, resolve_escalate
-from simulanka.schema.entities import Edge
+from simulanka.registry.builtin import DEFAULT_REGISTRY
+from simulanka.registry.profiles import Registry
+from simulanka.schema.entities import Edge, Node
 from simulanka.server.agent_ops import apply_agent_ops
 from simulanka.server.sessions import (
     Session,
@@ -229,6 +231,7 @@ def create_app(
     *,
     opencode_runner: CommandRunner | None = None,
     opencode_stream_runner: StreamRunner | None = None,
+    registry: Registry = DEFAULT_REGISTRY,
 ) -> FastAPI:
     if layout is None:
         layout = ProjectLayout.require()
@@ -256,7 +259,7 @@ def create_app(
 
     @app.get("/graph")
     def get_graph(root: str | None = Query(default=None)) -> dict[str, Any]:
-        return _build_payload(layout, root)
+        return _build_payload(layout, root, registry=registry)
 
     @app.get("/events")
     async def get_events(request: Request) -> StreamingResponse:
@@ -377,6 +380,7 @@ def create_app(
                 )],
                 actor="user",
                 note="frontend: draw edge",
+                registry=registry,
             )
         except ValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -392,6 +396,7 @@ def create_app(
                 ops=[DeleteEdgeOp(edge=edge_id)],
                 actor="user",
                 note="frontend: remove edge",
+                registry=registry,
             )
         except ValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -445,6 +450,7 @@ def create_app(
                 ops=[CreateNodeOp(type=node_type.strip(), name=final, parent=parent, attrs=attrs)],
                 actor="user",
                 note=f"frontend: add node {final}",
+                registry=registry,
             )
         except ValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -466,6 +472,7 @@ def create_app(
                     ],
                     actor="user",
                     note=f"frontend: ports for {final}",
+                    registry=registry,
                 )
             except ValidationError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -483,27 +490,26 @@ def create_app(
         node_id: str,
         body: dict[str, Any] = Body(default_factory=dict),
     ) -> dict[str, Any]:
-        """Rename a node from the canvas. file/directory nodes are refused —
-        their name is bound to ``fs_path`` (FileRegistry territory), and the
-        graph must not drift from the disk. Sibling-name conflicts surface as
-        the kernel's 422."""
+        """Rename a node whose Profile exposes the structural capability.
+
+        Domain packages with source-bound names (for example FileRegistry
+        nodes) omit that capability. Sibling conflicts remain the kernel's
+        state-policy 422.
+        """
         new_name = body.get("new_name")
         if not isinstance(new_name, str) or not new_name.strip():
             raise HTTPException(status_code=422, detail="new_name is required")
         node = next((n for n in iter_nodes(layout) if n.id == node_id), None)
         if node is None:
             raise HTTPException(status_code=404, detail=f"node {node_id!r} not found")
-        if node.type in ("file", "directory"):
-            raise HTTPException(
-                status_code=422,
-                detail="file/directory nodes rename via FileRegistry (name ↔ fs_path)",
-            )
+        _require_node_capability(node, registry, "renamable", "rename")
         try:
             receipt = apply_patch_now(
                 layout,
                 ops=[RenameNodeOp(target=node_id, new_name=new_name.strip())],
                 actor="user",
                 note=f"frontend: rename {node.name} → {new_name.strip()}",
+                registry=registry,
             )
         except ValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -511,25 +517,22 @@ def create_app(
 
     @app.delete("/node/{node_id}")
     def delete_node_endpoint(node_id: str) -> dict[str, Any]:
-        """Delete an empty node from the canvas, cascading its ports and
-        incident edges (kernel DeleteNodeOp). Canvas policy: only the model-
-        sketch domain (module/model) is deletable here — file/directory are
-        disk-bound, research atoms carry lineage that must not silently break.
-        A node with children is the kernel's 422 (empty it first)."""
+        """Delete an empty node whose Profile exposes ``deletable``.
+
+        Capability selects structural candidates; the kernel still enforces
+        current graph state (children, incident structure, and integrity).
+        """
         node = next((n for n in iter_nodes(layout) if n.id == node_id), None)
         if node is None:
             raise HTTPException(status_code=404, detail=f"node {node_id!r} not found")
-        if node.type not in ("module", "model"):
-            raise HTTPException(
-                status_code=422,
-                detail=f"canvas delete is limited to module/model nodes, not `{node.type}`",
-            )
+        _require_node_capability(node, registry, "deletable", "delete")
         try:
             receipt = apply_patch_now(
                 layout,
                 ops=[DeleteNodeOp(node=node_id)],
                 actor="user",
                 note=f"frontend: delete node {node.name}",
+                registry=registry,
             )
         except ValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -562,7 +565,7 @@ def create_app(
         plan file, node and edge trust levelled separately per hop. Computed
         at query time, never persisted."""
         try:
-            chain = provenance_chain(layout, node_id)
+            chain = provenance_chain(layout, node_id, registry=registry)
         except KeyError:
             raise HTTPException(
                 status_code=404, detail=f"node {node_id!r} not found"
@@ -637,6 +640,7 @@ def create_app(
                 },
             ),
             note="frontend: human verdict",
+            registry=registry,
         )
         return {"edge_id": edge_id, "graph_version": receipt.graph_version}
 
@@ -664,6 +668,7 @@ def create_app(
                 },
             ),
             note="frontend: accept ghost",
+            registry=registry,
         )
         return {"edge_id": edge_id, "graph_version": receipt.graph_version}
 
@@ -682,6 +687,7 @@ def create_app(
             layout,
             UpdateAttrsOp(target=edge_id, attrs={"discuss": flag}),
             note="frontend: toggle discuss",
+            registry=registry,
         )
         return {"edge_id": edge_id, "graph_version": receipt.graph_version}
 
@@ -1326,7 +1332,7 @@ def create_app(
             and isinstance(event.get("text"), str)
         ).strip()
         parsed = parse_op_blocks(reply)
-        applied, rejected = apply_agent_ops(layout, parsed.ops)
+        applied, rejected = apply_agent_ops(layout, parsed.ops, registry=registry)
         return current, reply, applied, rejected, parsed.errors
 
     @app.post("/discussion/start")
@@ -1476,16 +1482,55 @@ def _require_data_flow(layout: ProjectLayout, edge_id: str) -> Edge:
     return edge
 
 
-def _apply_user_op(layout: ProjectLayout, op: UpdateAttrsOp, note: str) -> Receipt:
+def _require_node_capability(
+    node: Node,
+    registry: Registry,
+    capability: str,
+    action: str,
+) -> None:
+    profile = registry.node(node.type)
+    if profile is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"cannot {action}: unknown Profile `{node.type}`",
+        )
+    if capability not in profile.capabilities:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"cannot {action}: Profile `{profile.key}` lacks "
+                f"`{capability}` capability"
+            ),
+        )
+
+
+def _apply_user_op(
+    layout: ProjectLayout,
+    op: UpdateAttrsOp,
+    note: str,
+    *,
+    registry: Registry,
+) -> Receipt:
     """apply_patch_now with kernel rejections surfaced as 422 — e.g. the edge
     vanished between the endpoint's precondition check and the write."""
     try:
-        return apply_patch_now(layout, ops=[op], actor="user", note=note)
+        return apply_patch_now(
+            layout,
+            ops=[op],
+            actor="user",
+            note=note,
+            registry=registry,
+        )
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-def _build_payload(layout: ProjectLayout, root: str | None) -> dict[str, Any]:
+def _build_payload(
+    layout: ProjectLayout,
+    root: str | None,
+    *,
+    registry: Registry,
+) -> dict[str, Any]:
     """Return the one-container view payload: the inside of ``root``.
 
     The canvas mental model is a subgraph view — one view shows the direct
@@ -1594,7 +1639,7 @@ def _build_payload(layout: ProjectLayout, root: str | None) -> dict[str, Any]:
             "attrs": n.attrs,
             "ports": ports_of.get(n.id, []),
             "child_count": len(children_of.get(n.id, [])),
-            "trust": node_trust(n),
+            "trust": node_trust(n, registry=registry),
         }
         for nid, n in nodes_by_id.items()
         if nid in included

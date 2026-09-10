@@ -161,17 +161,18 @@ _TRUST_SUBJECT_TYPES = frozenset(
 
 def _node_profile(key: str) -> NodeProfileSpec:
     legacy = _LEGACY_NODE_TYPES[key]
+    capabilities = {"contextualizable"}
+    if key not in {"directory", "file"}:
+        capabilities.add("renamable")
+    if key in {"model", "module"}:
+        capabilities.add("deletable")
+    if key in _CONTAINER_TYPES:
+        capabilities.add("container")
+    if key in _TRUST_SUBJECT_TYPES:
+        capabilities.add("trust_subject")
     return NodeProfileSpec(
         key=key,
-        capabilities=frozenset(
-            {
-                "contextualizable",
-                "renamable",
-                "deletable",
-                *(("container",) if key in _CONTAINER_TYPES else ()),
-                *(("trust_subject",) if key in _TRUST_SUBJECT_TYPES else ()),
-            }
-        ),
+        capabilities=frozenset(capabilities),
         allow_parents=legacy.allow_parents,
     )
 

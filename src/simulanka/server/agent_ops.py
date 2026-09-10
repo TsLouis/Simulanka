@@ -28,6 +28,8 @@ from simulanka.kernel.apply import apply_patch_now
 from simulanka.kernel.intent import CreateEdgeOp, DeleteEdgeOp, UpdateAttrsOp
 from simulanka.kernel.validator import ValidationError
 from simulanka.layout.project import ProjectLayout
+from simulanka.registry.builtin import DEFAULT_REGISTRY
+from simulanka.registry.profiles import Registry
 from simulanka.schema.entities import Edge
 from simulanka.storage.entity_store import load_edge
 
@@ -42,7 +44,10 @@ class _Reject(Exception):
 
 
 def apply_agent_ops(
-    layout: ProjectLayout, ops: list[DiscussionOp]
+    layout: ProjectLayout,
+    ops: list[DiscussionOp],
+    *,
+    registry: Registry = DEFAULT_REGISTRY,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Filter + apply agent ops; returns ``(applied, rejected)`` summaries."""
     applied: list[dict[str, Any]] = []
@@ -55,6 +60,7 @@ def apply_agent_ops(
                 ops=[intent],
                 actor="agent",
                 note=f"discussion: {op.op}",
+                registry=registry,
             )
         except _Reject as exc:
             rejected.append({"op": op.raw, "reason": str(exc)})

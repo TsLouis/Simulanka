@@ -21,6 +21,7 @@ from simulanka.kernel.intent import (
 from simulanka.kernel.manifest import load_manifest
 from simulanka.layout import init_project
 from simulanka.layout.project import ProjectLayout
+from simulanka.registry import BUILTIN_PACKAGES, SOFTWARE_SERVICE_PACKAGE, Registry
 from simulanka.server.app import create_app
 from simulanka.storage.entity_store import (
     edge_exists,
@@ -680,6 +681,44 @@ def test_delete_node_endpoint(tmp_path: Path) -> None:
     dir_id = next(n.id for n in iter_nodes(layout) if n.type == "directory")
     assert client.delete(f"/node/{dir_id}").status_code == 422
     assert client.delete("/node/nod_missing").status_code == 404
+
+
+def test_node_policies_follow_injected_profile_capabilities(tmp_path: Path) -> None:
+    layout = init_project(tmp_path).layout
+    registry = Registry.build(
+        version=2,
+        packages=(*BUILTIN_PACKAGES, SOFTWARE_SERVICE_PACKAGE),
+    )
+    client = TestClient(create_app(layout, registry=registry))
+    parent_id = next(node.id for node in iter_nodes(layout) if node.name == "src")
+
+    created = client.post(
+        "/node",
+        json={
+            "type": "software.service",
+            "name": "api",
+            "parent": parent_id,
+            "attrs": {"runtime": "python"},
+        },
+    )
+    assert created.status_code == 200, created.text
+    node_id = created.json()["node_id"]
+
+    renamed = client.post(f"/node/{node_id}/rename", json={"new_name": "gateway"})
+    assert renamed.status_code == 200, renamed.text
+    deleted = client.delete(f"/node/{node_id}")
+    assert deleted.status_code == 200, deleted.text
+
+    directory_id = next(node.id for node in iter_nodes(layout) if node.name == "docs")
+    rename_denied = client.post(
+        f"/node/{directory_id}/rename",
+        json={"new_name": "documents"},
+    )
+    assert rename_denied.status_code == 422
+    assert "renamable" in rename_denied.json()["detail"]
+    delete_denied = client.delete(f"/node/{directory_id}")
+    assert delete_denied.status_code == 422
+    assert "deletable" in delete_denied.json()["detail"]
 
 
 def test_templates_roundtrip(tmp_path: Path) -> None:
