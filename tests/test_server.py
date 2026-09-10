@@ -10,13 +10,14 @@ pytest.importorskip("httpx")
 
 from fastapi.testclient import TestClient
 
-from simulanka.kernel.apply import apply_patch
+from simulanka.kernel.apply import apply_patch, apply_patch_now
 from simulanka.kernel.intent import (
     CreateEdgeOp,
     CreateNodeOp,
     CreatePortOp,
     DeleteEdgeOp,
     PatchIntent,
+    UpdateAttrsOp,
 )
 from simulanka.kernel.manifest import load_manifest
 from simulanka.layout import init_project
@@ -715,10 +716,67 @@ def test_node_policies_follow_injected_profile_capabilities(tmp_path: Path) -> N
         json={"new_name": "documents"},
     )
     assert rename_denied.status_code == 422
-    assert "renamable" in rename_denied.json()["detail"]
+    assert rename_denied.json()["detail"]["reason_code"] == "missing_capability"
+    assert "renamable" in rename_denied.json()["detail"]["reason"]
     delete_denied = client.delete(f"/node/{directory_id}")
     assert delete_denied.status_code == 422
-    assert "deletable" in delete_denied.json()["detail"]
+    assert delete_denied.json()["detail"]["reason_code"] == "missing_capability"
+    assert "deletable" in delete_denied.json()["detail"]["reason"]
+
+
+def test_action_endpoints_revalidate_current_state_and_source_policy(
+    tmp_path: Path,
+) -> None:
+    layout = _seed_project(tmp_path)
+    nodes = {node.name: node for node in iter_nodes(layout)}
+    client = TestClient(create_app(layout))
+
+    # The action is initially available, then a stale rename is rejected from
+    # current graph state after another writer locks the entity.
+    first = client.post(
+        f"/node/{nodes['enc'].id}/rename",
+        json={"new_name": "encoder"},
+    )
+    assert first.status_code == 200, first.text
+    apply_patch_now(
+        layout,
+        ops=[
+            UpdateAttrsOp(
+                target=nodes["enc"].id,
+                attrs={"locked": True, "lock_reason": "该节点正在运行，暂不可重命名"},
+            )
+        ],
+        actor="test",
+        note="simulate state change after menu discovery",
+    )
+    stale = client.post(
+        f"/node/{nodes['enc'].id}/rename",
+        json={"new_name": "stale-name"},
+    )
+    assert stale.status_code == 422
+    assert stale.json()["detail"] == {
+        "action": "node.rename",
+        "reason": "该节点正在运行，暂不可重命名",
+        "reason_code": "state_locked",
+    }
+
+    # A structurally deletable Profile remains disabled when its source marks
+    # the current entity as an immutable projection.
+    apply_patch_now(
+        layout,
+        ops=[
+            UpdateAttrsOp(
+                target=nodes["dec"].id,
+                attrs={"source": "projection", "immutable": True},
+            )
+        ],
+        actor="test",
+        note="simulate immutable projection",
+    )
+    projected = client.delete(f"/node/{nodes['dec'].id}")
+    assert projected.status_code == 422
+    assert projected.json()["detail"]["reason_code"] == "source_read_only"
+    assert "projection" in projected.json()["detail"]["reason"]
 
 
 def test_templates_roundtrip(tmp_path: Path) -> None:

@@ -61,6 +61,7 @@ from simulanka.plan import PlanError, resolve_escalate
 from simulanka.registry.builtin import DEFAULT_REGISTRY
 from simulanka.registry.profiles import Registry
 from simulanka.schema.entities import Edge, Node
+from simulanka.server.action_resolver import ActionResolver, ActionTarget
 from simulanka.server.agent_ops import apply_agent_ops
 from simulanka.server.sessions import (
     Session,
@@ -256,6 +257,13 @@ def create_app(
         allow_headers=["*"],
     )
     active_turns = _ActiveTurnRegistry()
+    action_resolver = ActionResolver(
+        registry,
+        supported_executors={
+            "graph.rename_node": "GraphCommand",
+            "graph.delete_node": "GraphCommand",
+        },
+    )
 
     @app.get("/graph")
     def get_graph(root: str | None = Query(default=None)) -> dict[str, Any]:
@@ -502,7 +510,12 @@ def create_app(
         node = next((n for n in iter_nodes(layout) if n.id == node_id), None)
         if node is None:
             raise HTTPException(status_code=404, detail=f"node {node_id!r} not found")
-        _require_node_capability(node, registry, "renamable", "rename")
+        _require_action(
+            action_resolver,
+            "node.rename",
+            _node_action_target(node, registry),
+            actor="user",
+        )
         try:
             receipt = apply_patch_now(
                 layout,
@@ -525,7 +538,12 @@ def create_app(
         node = next((n for n in iter_nodes(layout) if n.id == node_id), None)
         if node is None:
             raise HTTPException(status_code=404, detail=f"node {node_id!r} not found")
-        _require_node_capability(node, registry, "deletable", "delete")
+        _require_action(
+            action_resolver,
+            "node.delete",
+            _node_action_target(node, registry),
+            actor="user",
+        )
         try:
             receipt = apply_patch_now(
                 layout,
@@ -1482,25 +1500,47 @@ def _require_data_flow(layout: ProjectLayout, edge_id: str) -> Edge:
     return edge
 
 
-def _require_node_capability(
+def _node_action_target(
     node: Node,
     registry: Registry,
-    capability: str,
-    action: str,
+) -> ActionTarget:
+    raw_source = node.attrs.get("source")
+    source = raw_source if isinstance(raw_source, str) else "graph"
+    projected_immutable = source == "projection" and node.attrs.get("immutable") is True
+    raw_lock_reason = node.attrs.get("lock_reason")
+    lock_reason = (
+        raw_lock_reason
+        if isinstance(raw_lock_reason, str) and raw_lock_reason
+        else "实体当前已锁定"
+    )
+    return ActionTarget.from_profile(
+        registry,
+        kind="node",
+        id=node.id,
+        profile=node.type,
+        source=source,
+        writable=not projected_immutable,
+        locked=node.attrs.get("locked") is True,
+        lock_reason=lock_reason,
+    )
+
+
+def _require_action(
+    resolver: ActionResolver,
+    action_id: str,
+    target: ActionTarget,
+    *,
+    actor: str,
 ) -> None:
-    profile = registry.node(node.type)
-    if profile is None:
+    affordance = resolver.resolve_action(action_id, (target,), actor=actor)
+    if not affordance.enabled:
         raise HTTPException(
             status_code=422,
-            detail=f"cannot {action}: unknown Profile `{node.type}`",
-        )
-    if capability not in profile.capabilities:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"cannot {action}: Profile `{profile.key}` lacks "
-                f"`{capability}` capability"
-            ),
+            detail={
+                "action": affordance.id,
+                "reason": affordance.reason,
+                "reason_code": affordance.reason_code,
+            },
         )
 
 
