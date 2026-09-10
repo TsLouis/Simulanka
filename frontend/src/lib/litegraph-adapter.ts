@@ -6,6 +6,7 @@
 import dagre from 'dagre'
 import { LiteGraph, LGraph, type LGraphNode } from 'litegraph.js'
 import { CARD_LINE_H, CARD_WIDTH, cardLines, type CardLine } from './cards'
+import { resolveNodePresentation } from './presentation'
 import {
   EDGE_COLORS,
   GHOST_COLOR,
@@ -21,6 +22,7 @@ import type {
   GraphPayload,
   NodeDTO,
   PortDTO,
+  RegistryDescriptorDTO,
   ShapeCheck,
   TrustLevel,
 } from './types'
@@ -100,6 +102,7 @@ export function buildLiteGraph(
   payload: GraphPayload,
   callbacks: AdapterCallbacks = {},
   persistedPositions: Record<string, [number, number]> = {},
+  descriptor: RegistryDescriptorDTO | null = null,
 ): AdapterResult {
   const graph = new LGraph()
   const portsById = new Map<string, PortDTO>(payload.ports.map(p => [p.id, p]))
@@ -160,13 +163,14 @@ export function buildLiteGraph(
   // Auto-layout: dagre runs over real nodes + their internal data-flow edges.
   // Persisted positions in persistedPositions override the dagre result, so
   // user-dragged nodes stick across reloads.
-  const autoPos = computeAutoLayout(payload)
+  const autoPos = computeAutoLayout(payload, descriptor)
 
   payload.nodes.forEach((n: NodeDTO) => {
     const isContainer = n.child_count > 0
+    const presentation = resolveNodePresentation(descriptor, n.type)
     const lgnode = LiteGraph.createNode(ensureRegistered(n.type)) as LGraphNode
     lgnode.title = isContainer ? `▸ ${n.name}` : n.name
-    styleNode(lgnode, n.type)
+    styleNode(lgnode, presentation?.palette_token ?? 'default')
     ;(lgnode as unknown as { simulanka: NodeDTO }).simulanka = n
 
     let inI = 0
@@ -202,7 +206,7 @@ export function buildLiteGraph(
 
     // S5 卡片：attr 驱动的展示模板（cards.ts 是唯一的字段清单来源）。
     // S6 trust 描边共用同一 foreground 钩子——只染节点体，边色不叠加。
-    const card = cardLines(n)
+    const card = cardLines(n, presentation)
     if (card.length > 0 || n.trust) attachCard(lgnode, card, n.trust)
 
     const pos = persistedPositions[n.id] ?? autoPos.get(n.id) ?? [80, 80]
@@ -659,7 +663,10 @@ function injectBoundary(
 // dagre lays out the real nodes left-to-right (LR), driven by data-flow edges.
 // Nodes with no edges fall into their own rank column. Returns absolute (x, y)
 // positions keyed by node id; the caller may override with persisted values.
-function computeAutoLayout(payload: GraphPayload): Map<string, [number, number]> {
+function computeAutoLayout(
+  payload: GraphPayload,
+  descriptor: RegistryDescriptorDTO | null,
+): Map<string, [number, number]> {
   const g = new dagre.graphlib.Graph()
   g.setGraph({ rankdir: 'LR', nodesep: 40, ranksep: 90, marginx: 40, marginy: 40 })
   g.setDefaultEdgeLabel(() => ({}))
@@ -669,7 +676,8 @@ function computeAutoLayout(payload: GraphPayload): Map<string, [number, number]>
     // stacked (edge-less) atoms don't overlap.
     g.setNode(n.id, {
       width: NODE_W,
-      height: NODE_H + cardLines(n).length * CARD_LINE_H,
+      height: NODE_H
+        + cardLines(n, resolveNodePresentation(descriptor, n.type)).length * CARD_LINE_H,
     })
   }
   // Only real (both-endpoints-in) edges drive layout. Contains/structural edges

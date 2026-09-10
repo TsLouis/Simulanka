@@ -1,9 +1,11 @@
 <script lang="ts">
   import { fetchProvenance, type FileOpenRequest, type ProvenanceHop } from './api'
-  import type { NodeDTO, PortDTO } from './types'
+  import { orderedAttributeEntries, resolveNodePresentation } from './presentation'
+  import type { NodeDTO, PortDTO, RegistryDescriptorDTO } from './types'
 
   export let node: NodeDTO | null
   export let portsById: Map<string, PortDTO>
+  export let registryDescriptor: RegistryDescriptorDTO | null = null
   // S4: open the read-only file viewer. file 节点=打开自身；plan_file 深链=
   // 打开出处并高亮 lid；run 日志=打开 stdout/stderr file 节点。
   export let onOpenFile: (req: FileOpenRequest) => void = () => {}
@@ -14,7 +16,10 @@
   export let onAttachPort: (port: PortDTO) => void = () => {}
 
   $: ports = node ? node.ports.map(id => portsById.get(id)).filter(Boolean) as PortDTO[] : []
-  $: attrEntries = node ? Object.entries(node.attrs) : []
+  $: presentation = node ? resolveNodePresentation(registryDescriptor, node.type) : null
+  $: attrEntries = node
+    ? orderedAttributeEntries(node.attrs, presentation?.inspector_fields ?? [])
+    : []
 
   const strAttr = (n: NodeDTO | null, key: string): string | null =>
     n && typeof n.attrs[key] === 'string' ? (n.attrs[key] as string) : null
@@ -74,7 +79,10 @@
 {#if node}
   <aside class="inspector">
     <header>
-      <span class="type-chip">{node.type}</span>
+      <span
+        class="type-chip"
+        title={presentation ? `${presentation.category} · ${presentation.icon}` : '未知 Profile'}
+      >{node.type}</span>
       {#if node.trust}
         <span class="trust-chip t-{node.trust}">{node.trust}</span>
       {/if}

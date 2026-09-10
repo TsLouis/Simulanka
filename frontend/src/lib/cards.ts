@@ -1,20 +1,4 @@
-// S5 研究原子卡片：统一渲染器里 attr 驱动的展示模板。
-//
-// 呈现要求（2026-07-09 用户定为硬需求）：日常所需信息大多数不点开侧栏就能
-// 从画布读到。实现边界（2026-07-10 定）：同一套节点画法与卡片骨架，每类
-// 原子只是字段清单不同 —— 不做 per-type 分叉渲染。
-//
-// 字段清单（首版 Claude 定，彩排中按用户反馈迭代）：
-//   question   = 正文摘要
-//   hypothesis = verdict 徽记 + 正文摘要
-//   claim      = status 徽记 + 正文摘要
-//   experiment = status 徽记 + goal
-//   task       = 预算徽记 + goal + 契约摘要（globs 数 · acceptance）
-//   run        = status/contract_check 徽记 + 时长 · exit code
-//   evidence   = 关键 metrics 数值（至多 3 行，多则 +N）
-//   note       = ESCALATE/RESOLVED 徽记（kind=escalate）+ 正文摘要
-
-import type { NodeDTO } from './types'
+import type { NodeDTO, PresentationSpecDTO } from './types'
 
 export type CardLine =
   | { kind: 'badges'; badges: Badge[] }
@@ -25,23 +9,16 @@ export interface Badge {
   color: string
 }
 
-// 徽记语义色（app.css 调色板的 canvas 镜像，同 theme.ts 约定）
-const JADE = '#7ecfa5' // 好结果：done / passed / supported / resolved
-const AMBER = '#d9ba7d' // 待定：open / planned / pending
-const CRIMSON = '#e07a68' // 坏结果：failed / refuted / out_of_scope / ESCALATE
-const VIOLET = '#b28ce0' // 进行中：running
-const MUTED = '#77839c' // 未判 / 未知
+const JADE = '#7ecfa5'
+const AMBER = '#d9ba7d'
+const CRIMSON = '#e07a68'
+const VIOLET = '#b28ce0'
+const MUTED = '#77839c'
 
 export const CARD_LINE_H = 15
 export const CARD_WIDTH = 230
+const MAX_CARD_LINES = 5
 
-const str = (n: NodeDTO, key: string): string | null =>
-  typeof n.attrs[key] === 'string' ? (n.attrs[key] as string) : null
-
-const num = (n: NodeDTO, key: string): number | null =>
-  typeof n.attrs[key] === 'number' ? (n.attrs[key] as number) : null
-
-// 状态词 → 徽记色。未知词落灰 —— 不猜语义。
 const STATUS_COLORS: Record<string, string> = {
   done: JADE,
   passed: JADE,
@@ -50,6 +27,7 @@ const STATUS_COLORS: Record<string, string> = {
   correct: JADE,
   open: AMBER,
   planned: AMBER,
+  pending: AMBER,
   running: VIOLET,
   failed: CRIMSON,
   timed_out: CRIMSON,
@@ -60,169 +38,131 @@ const STATUS_COLORS: Record<string, string> = {
   uncertain: AMBER,
   disputed: CRIMSON,
   unconfirmed: MUTED,
+  escalate: CRIMSON,
 }
 
-const statusBadge = (word: string): Badge => ({
-  text: word,
-  color: STATUS_COLORS[word] ?? MUTED,
-})
+function statusBadge(value: string): Badge {
+  return {
+    text: value,
+    color: STATUS_COLORS[value.toLowerCase()] ?? MUTED,
+  }
+}
 
-// CJK 感知的字符宽折行：全角算 2，半角算 1。canvas 逐节点 measureText 太贵，
-// 字段清单本来就是可调项，字符预算截断对首版足够。
-function clampLines(text: string, maxUnits = 30, maxLines = 2): CardLine[] {
+function clampLines(text: string, maxUnits = 32, maxLines = 2): CardLine[] {
   const out: string[] = []
   let line = ''
   let units = 0
-  for (const ch of text.replace(/\s+/g, ' ').trim()) {
-    const w = ch.charCodeAt(0) > 0xff ? 2 : 1
-    if (units + w > maxUnits) {
+  for (const char of text.replace(/\s+/g, ' ').trim()) {
+    const width = char.charCodeAt(0) > 0xff ? 2 : 1
+    if (units + width > maxUnits) {
       out.push(line)
       if (out.length === maxLines) {
-        out[maxLines - 1] = out[maxLines - 1].slice(0, -1) + '…'
-        return out.map(t => ({ kind: 'text', text: t }))
+        out[maxLines - 1] = `${out[maxLines - 1].slice(0, -1)}…`
+        return out.map(value => ({ kind: 'text', text: value }))
       }
       line = ''
       units = 0
     }
-    line += ch
-    units += w
+    line += char
+    units += width
   }
   if (line) out.push(line)
-  return out.map(t => ({ kind: 'text', text: t }))
+  return out.map(value => ({ kind: 'text', text: value }))
 }
 
-function fmtDuration(seconds: number): string {
+function readField(attrs: Record<string, unknown>, path: string): unknown {
+  let value: unknown = attrs
+  for (const part of path.split('.')) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+    value = (value as Record<string, unknown>)[part]
+  }
+  return value
+}
+
+function formatDuration(seconds: number): string {
   if (seconds < 60) return `${seconds.toFixed(1)}s`
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m${Math.round(seconds % 60)}s`
   return `${(seconds / 3600).toFixed(1)}h`
 }
 
-// —— 每类原子的字段清单（表驱动；渲染骨架只有一个） ——————————————
-
-type FieldList = (n: NodeDTO) => CardLine[]
-
-const CARD_FIELDS: Record<string, FieldList> = {
-  question: n => {
-    const body = str(n, 'body')
-    return body ? clampLines(body) : []
-  },
-
-  hypothesis: n => {
-    const lines: CardLine[] = []
-    const verdict = str(n, 'verdict')
-    lines.push({
-      kind: 'badges',
-      badges: [verdict ? statusBadge(verdict) : { text: '未判', color: MUTED }],
-    })
-    const body = str(n, 'body')
-    if (body) lines.push(...clampLines(body))
-    return lines
-  },
-
-  claim: n => {
-    const lines: CardLine[] = []
-    const status = str(n, 'status')
-    if (status) lines.push({ kind: 'badges', badges: [statusBadge(status)] })
-    const body = str(n, 'body')
-    if (body) lines.push(...clampLines(body))
-    return lines
-  },
-
-  experiment: n => {
-    const lines: CardLine[] = []
-    lines.push({
-      kind: 'badges',
-      badges: [statusBadge(str(n, 'status') ?? 'planned')],
-    })
-    const goal = str(n, 'goal')
-    if (goal) lines.push(...clampLines(goal))
-    return lines
-  },
-
-  task: n => {
-    const lines: CardLine[] = []
-    const badges: Badge[] = []
-    const budget = num(n, 'budget_time_seconds')
-    if (budget !== null) badges.push({ text: `⏱ ${fmtDuration(budget)}`, color: AMBER })
-    if (badges.length) lines.push({ kind: 'badges', badges })
-    const goal = str(n, 'goal')
-    if (goal) lines.push(...clampLines(goal))
-    const globs = Array.isArray(n.attrs.allowed_outputs)
-      ? (n.attrs.allowed_outputs as unknown[]).length
-      : 0
-    const acceptance = str(n, 'acceptance_command')
-    const contract = [
-      globs > 0 ? `⛓ ${globs} glob${globs > 1 ? 's' : ''}` : null,
-      acceptance ? `✓ ${acceptance}` : null,
-    ].filter(Boolean).join(' · ')
-    if (contract) {
-      const clamped = clampLines(contract, 34, 1)[0]
-      if (clamped.kind === 'text') lines.push({ ...clamped, mono: true, dim: true })
-    }
-    return lines
-  },
-
-  run: n => {
-    const lines: CardLine[] = []
-    const badges: Badge[] = []
-    const status = str(n, 'status')
-    if (status) badges.push(statusBadge(status))
-    const check = n.attrs.contract_check
-    if (check && typeof check === 'object') {
-      const cs = (check as Record<string, unknown>).status
-      if (typeof cs === 'string') badges.push(statusBadge(cs))
-    }
-    if (badges.length) lines.push({ kind: 'badges', badges })
-    const duration = num(n, 'duration_seconds')
-    const exit = num(n, 'exit_code')
-    const meta = [
-      duration !== null ? `⏱ ${fmtDuration(duration)}` : status === 'running' ? '⏱ …' : null,
-      exit !== null ? `exit ${exit}` : null,
-    ].filter(Boolean).join(' · ')
-    if (meta) lines.push({ kind: 'text', text: meta, mono: true, dim: true })
-    return lines
-  },
-
-  evidence: n => {
-    const metrics = n.attrs.metrics
-    if (!metrics || typeof metrics !== 'object') {
-      const body = str(n, 'body')
-      return body ? clampLines(body) : []
-    }
-    const entries = Object.entries(metrics as Record<string, unknown>).sort(
-      ([a], [b]) => a.localeCompare(b),
+function displayValue(key: string, value: unknown, formatter = 'raw'): CardLine[] {
+  if (value === null || value === undefined || value === '') return []
+  if (formatter === 'metrics' && typeof value === 'object' && !Array.isArray(value)) {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .slice(0, 3)
+    const lines: CardLine[] = entries.flatMap(([metric, metricValue]) =>
+      clampLines(`${metric} = ${String(metricValue)}`, 32, 1)
+        .map(line => ({ ...line, mono: true })),
     )
-    const lines: CardLine[] = entries.slice(0, 3).map(([k, v]) => {
-      const clamped = clampLines(`${k} = ${String(v)}`, 32, 1)[0]
-      return clamped.kind === 'text' ? { ...clamped, mono: true } : clamped
-    })
-    if (entries.length > 3) {
-      lines.push({ kind: 'text', text: `+${entries.length - 3} more`, dim: true })
+    const total = Object.keys(value).length
+    if (total > entries.length) {
+      lines.push({ kind: 'text', text: `+${total - entries.length} more`, dim: true })
     }
     return lines
-  },
+  }
 
-  note: n => {
-    const lines: CardLine[] = []
-    if (str(n, 'kind') === 'escalate') {
-      const resolved = str(n, 'status') === 'resolved'
-      lines.push({
-        kind: 'badges',
-        badges: [
-          resolved
-            ? { text: 'RESOLVED', color: JADE }
-            : { text: 'ESCALATE', color: CRIMSON },
-        ],
-      })
-    }
-    const body = str(n, 'body')
-    if (body) lines.push(...clampLines(body))
-    return lines
-  },
+  if (formatter === 'duration' && typeof value === 'number') {
+    return [{ kind: 'text', text: `⏱ ${formatDuration(value)}`, mono: true, dim: true }]
+  }
+  if (formatter === 'count' && Array.isArray(value)) {
+    return [{ kind: 'text', text: `⛓ ${value.length} item${value.length === 1 ? '' : 's'}`, mono: true, dim: true }]
+  }
+  if (formatter === 'exit-code' && typeof value === 'number') {
+    return [{ kind: 'text', text: `exit ${value}`, mono: true, dim: true }]
+  }
+
+  const text = typeof value === 'string' ? value : JSON.stringify(value)
+  if (!text) return []
+  const labelled = formatter === 'text'
+    ? text
+    : formatter === 'command'
+      ? `✓ ${text}`
+      : `${key} = ${text}`
+  return clampLines(labelled, 32, 2).map(line => ({
+    ...line,
+    mono: formatter !== 'text',
+    dim: formatter === 'command',
+  }))
 }
 
-/** 该节点的卡片行；结构类型（model/module/directory/file…）返回空 = 无卡片。 */
-export function cardLines(n: NodeDTO): CardLine[] {
-  const fields = CARD_FIELDS[n.type]
-  return fields ? fields(n) : []
+function genericFields(node: NodeDTO): string[] {
+  return Object.keys(node.attrs)
+    .sort()
+    .slice(0, 2)
+}
+
+/** Render only declarative PresentationSpec fields; unknown Profiles get a stable fallback. */
+export function cardLines(
+  node: NodeDTO,
+  presentation: PresentationSpecDTO | null,
+): CardLine[] {
+  const lines: CardLine[] = []
+  if (!presentation) {
+    // The LiteGraph title already carries name; this line keeps type visible
+    // for an uninstalled/unknown Profile while the following lines expose attrs.
+    lines.push({ kind: 'text', text: node.type, mono: true, dim: true })
+  } else {
+    const badges = presentation.badges
+      .flatMap(key => {
+        const value = readField(node.attrs, key)
+        if (!['string', 'number', 'boolean'].includes(typeof value)) return []
+        if (presentation.formatters[key] === 'duration' && typeof value === 'number') {
+          return [{ text: `⏱ ${formatDuration(value)}`, color: AMBER }]
+        }
+        return [statusBadge(String(value))]
+      })
+    if (badges.length > 0) lines.push({ kind: 'badges', badges })
+  }
+
+  const fields = presentation?.card_fields ?? genericFields(node)
+  for (const key of fields) {
+    lines.push(...displayValue(
+      key,
+      readField(node.attrs, key),
+      presentation?.formatters[key],
+    ))
+    if (lines.length >= MAX_CARD_LINES) break
+  }
+  return lines.slice(0, MAX_CARD_LINES)
 }

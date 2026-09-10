@@ -134,6 +134,7 @@ export interface PresentationSpecDTO {
   card_fields: string[]
   inspector_fields: string[]
   badges: string[]
+  formatters: Record<string, string>
 }
 
 export interface TemplateSpecDTO {

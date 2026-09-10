@@ -39,7 +39,10 @@ interface NodeStyle {
   boxcolor: string
 }
 const CARD = '#151f38'
-const NODE_STYLES: Record<string, NodeStyle> = {
+// PresentationSpec.palette_token is the public selector for these tokens. Keep
+// profile names out of this module: an extension profile can reuse any token,
+// and an unknown token deliberately falls back to NODE_DEFAULT.
+const PALETTE_STYLES: Record<string, NodeStyle> = {
   model: { color: '#3f3419', bgcolor: '#1b2138', boxcolor: '#e3b566' },
   module: { color: '#20304f', bgcolor: CARD, boxcolor: '#8fb8e8' },
   directory: { color: '#2a3550', bgcolor: CARD, boxcolor: '#93794a' },
@@ -52,14 +55,17 @@ const NODE_STYLES: Record<string, NodeStyle> = {
   evidence: { color: '#1d3a30', bgcolor: CARD, boxcolor: '#7ecfa5' },
   note: { color: '#33301f', bgcolor: CARD, boxcolor: '#d9ba7d' },
   file: { color: '#232c42', bgcolor: CARD, boxcolor: '#8d99b5' },
+  service: { color: '#173a3b', bgcolor: '#142734', boxcolor: '#67c7bd' },
 }
 const NODE_DEFAULT: NodeStyle = { color: '#24304e', bgcolor: CARD, boxcolor: '#93794a' }
 /** 边界桩子：半透明幽影 —— 它是子图取景框的投影，不是真节点。 */
 const NODE_BOUNDARY: NodeStyle = { color: '#1a2233', bgcolor: '#10182bcc', boxcolor: '#5a6a8f' }
 
 /** 给一张星卡上色。`boundary` 走幽影样式。 */
-export function styleNode(node: LGraphNode, type: string): void {
-  const s = type === 'boundary' ? NODE_BOUNDARY : (NODE_STYLES[type] ?? NODE_DEFAULT)
+export function styleNode(node: LGraphNode, paletteToken: string): void {
+  const s = paletteToken === 'boundary'
+    ? NODE_BOUNDARY
+    : (PALETTE_STYLES[paletteToken] ?? NODE_DEFAULT)
   const n = node as unknown as Record<string, unknown>
   n.color = s.color
   n.bgcolor = s.bgcolor

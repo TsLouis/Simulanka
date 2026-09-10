@@ -347,12 +347,14 @@ class PresentationSpec:
     card_fields: tuple[str, ...] = ()
     inspector_fields: tuple[str, ...] = ()
     badges: tuple[str, ...] = ()
+    formatters: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         _require_key("presentation", self.key)
         object.__setattr__(self, "card_fields", tuple(self.card_fields))
         object.__setattr__(self, "inspector_fields", tuple(self.inspector_fields))
         object.__setattr__(self, "badges", tuple(self.badges))
+        object.__setattr__(self, "formatters", _freeze_mapping(self.formatters))
 
 
 @dataclass(frozen=True)
@@ -1123,6 +1125,7 @@ class Registry:
                     "card_fields": list(item.card_fields),
                     "inspector_fields": list(item.inspector_fields),
                     "badges": list(item.badges),
+                    "formatters": dict(sorted(item.formatters.items())),
                 }
                 for item in sorted(presentations.values(), key=lambda item: item.key)
             ],

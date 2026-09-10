@@ -74,6 +74,7 @@ def _composable_package() -> RegistryPackage:
                 key="base-card",
                 category="Test",
                 card_fields=("title", "score"),
+                formatters={"score": "integer"},
             ),
         ),
         templates=(
@@ -126,6 +127,7 @@ def test_registry_resolves_inheritance_aliases_and_descriptor_deterministically(
     assert len(first.descriptor_digest) == 64
     descriptor = first.descriptor()
     assert descriptor["digest"] == first.descriptor_digest
+    assert descriptor["presentations"][0]["formatters"] == {"score": "integer"}
     assert json.loads(json.dumps(descriptor))["version"] == 2
 
 
@@ -206,6 +208,10 @@ def test_registry_and_nested_template_defaults_are_runtime_immutable() -> None:
 
     with pytest.raises(TypeError):
         cast(dict[str, Any], registry.node_profiles)["other"] = registry.node_profiles["base"]
+
+    presentation = registry.presentations["base-card"]
+    with pytest.raises(TypeError):
+        cast(dict[str, Any], presentation.formatters)["title"] = "script"
 
     defaults = cast(dict[str, Any], registry.templates["child.default"].default_attrs)
     with pytest.raises(TypeError):
@@ -454,6 +460,23 @@ def test_torch_catalog_is_templates_not_profiles() -> None:
     assert cat.profile == "module"
     assert cat.default_attrs["class_module"] == "torch"
     assert [port.name for port in cat.default_ports] == ["a", "b", "output"]
+
+
+def test_builtin_profiles_resolve_declarative_presentations() -> None:
+    for key, profile in DEFAULT_REGISTRY.node_profiles.items():
+        assert profile.presentation == key
+        presentation = DEFAULT_REGISTRY.presentations[key]
+        assert presentation.palette_token
+        assert presentation.icon
+
+    task = DEFAULT_REGISTRY.presentations["task"]
+    assert task.card_fields == ("goal", "allowed_outputs", "acceptance_command")
+    assert "allowed_outputs" in task.inspector_fields
+    assert task.formatters["budget_time_seconds"] == "duration"
+
+    run = DEFAULT_REGISTRY.presentations["run"]
+    assert "contract_check.status" in run.badges
+    assert run.formatters["exit_code"] == "exit-code"
 
 
 def test_runtime_consumers_do_not_depend_on_legacy_global_type_maps() -> None:

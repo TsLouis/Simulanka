@@ -9,6 +9,7 @@ from simulanka.registry.profiles import (
     CapabilitySpec,
     EdgeProfileSpec,
     NodeProfileSpec,
+    PresentationSpec,
     RefSetPredicate,
     Registry,
     RegistryPackage,
@@ -161,6 +162,146 @@ _TRUST_SUBJECT_TYPES = frozenset(
     {"hypothesis", "claim", "experiment", "task", "run", "evidence", "note"}
 )
 
+_PRESENTATIONS = {
+    item.key: item
+    for item in (
+        PresentationSpec(
+            key="directory",
+            category="结构",
+            palette_token="directory",
+            icon="folder",
+            inspector_fields=("fs_path",),
+        ),
+        PresentationSpec(
+            key="file",
+            category="结构",
+            palette_token="file",
+            icon="file",
+            inspector_fields=("path", "kind", "content_hash"),
+        ),
+        PresentationSpec(
+            key="model",
+            category="模型",
+            palette_token="model",
+            icon="model",
+            card_fields=("class_name", "num_params"),
+            inspector_fields=("class_name", "num_params", "source_file"),
+            formatters={"class_name": "mono", "num_params": "integer"},
+        ),
+        PresentationSpec(
+            key="module",
+            category="模型",
+            palette_token="module",
+            icon="module",
+            card_fields=("class_name", "num_params"),
+            inspector_fields=("class_name", "class_module", "num_params", "source_file"),
+            formatters={"class_name": "mono", "num_params": "integer"},
+        ),
+        PresentationSpec(
+            key="question",
+            category="研究",
+            palette_token="question",
+            icon="question",
+            card_fields=("body",),
+            inspector_fields=("body",),
+            formatters={"body": "text"},
+        ),
+        PresentationSpec(
+            key="hypothesis",
+            category="研究",
+            palette_token="hypothesis",
+            icon="hypothesis",
+            card_fields=("body",),
+            inspector_fields=("body", "verdict"),
+            badges=("verdict",),
+            formatters={"body": "text", "verdict": "status"},
+        ),
+        PresentationSpec(
+            key="claim",
+            category="研究",
+            palette_token="claim",
+            icon="claim",
+            card_fields=("body",),
+            inspector_fields=("body", "status"),
+            badges=("status",),
+            formatters={"body": "text", "status": "status"},
+        ),
+        PresentationSpec(
+            key="evidence",
+            category="研究",
+            palette_token="evidence",
+            icon="evidence",
+            card_fields=("metrics", "body"),
+            inspector_fields=("metrics", "body"),
+            formatters={"metrics": "metrics", "body": "text"},
+        ),
+        PresentationSpec(
+            key="experiment",
+            category="研究",
+            palette_token="experiment",
+            icon="experiment",
+            card_fields=("goal",),
+            inspector_fields=("goal", "status"),
+            badges=("status",),
+            formatters={"goal": "text", "status": "status"},
+        ),
+        PresentationSpec(
+            key="note",
+            category="研究",
+            palette_token="note",
+            icon="note",
+            card_fields=("body",),
+            inspector_fields=("body", "kind", "status"),
+            badges=("kind", "status"),
+            formatters={"body": "text", "kind": "status", "status": "status"},
+        ),
+        PresentationSpec(
+            key="task",
+            category="研究",
+            palette_token="task",
+            icon="task",
+            card_fields=("goal", "allowed_outputs", "acceptance_command"),
+            inspector_fields=(
+                "goal",
+                "status",
+                "acceptance_command",
+                "allowed_outputs",
+                "budget_time_seconds",
+            ),
+            badges=("status", "budget_time_seconds"),
+            formatters={
+                "goal": "text",
+                "status": "status",
+                "budget_time_seconds": "duration",
+                "allowed_outputs": "count",
+                "acceptance_command": "command",
+            },
+        ),
+        PresentationSpec(
+            key="run",
+            category="运行",
+            palette_token="run",
+            icon="run",
+            card_fields=("duration_seconds", "exit_code"),
+            inspector_fields=(
+                "status",
+                "duration_seconds",
+                "exit_code",
+                "stdout_path",
+                "stderr_path",
+                "metrics_path",
+            ),
+            badges=("status", "contract_check.status"),
+            formatters={
+                "status": "status",
+                "contract_check.status": "status",
+                "duration_seconds": "duration",
+                "exit_code": "exit-code",
+            },
+        ),
+    )
+}
+
 
 def _node_profile(key: str) -> NodeProfileSpec:
     legacy = _LEGACY_NODE_TYPES[key]
@@ -177,6 +318,7 @@ def _node_profile(key: str) -> NodeProfileSpec:
         key=key,
         capabilities=frozenset(capabilities),
         allow_parents=legacy.allow_parents,
+        presentation=key,
     )
 
 
@@ -376,6 +518,7 @@ CORE_PACKAGE = RegistryPackage(
 FILESYSTEM_PACKAGE = RegistryPackage(
     name="filesystem",
     node_profiles=tuple(_node_profile(key) for key in ("directory", "file")),
+    presentations=tuple(_PRESENTATIONS[key] for key in ("directory", "file")),
     templates=(
         TemplateSpec(
             key="filesystem.directory",
@@ -389,6 +532,7 @@ FILESYSTEM_PACKAGE = RegistryPackage(
 ML_TORCH_PACKAGE = RegistryPackage(
     name="ml-torch",
     node_profiles=tuple(_node_profile(key) for key in ("model", "module")),
+    presentations=tuple(_PRESENTATIONS[key] for key in ("model", "module")),
     port_types=frozenset({"tensor", "scalar"}),
     templates=(
         *_TORCH_NN_TEMPLATES,
@@ -436,6 +580,18 @@ RESEARCH_PACKAGE = RegistryPackage(
             "task",
         )
     ),
+    presentations=tuple(
+        _PRESENTATIONS[key]
+        for key in (
+            "question",
+            "hypothesis",
+            "claim",
+            "evidence",
+            "experiment",
+            "note",
+            "task",
+        )
+    ),
     edge_profiles=tuple(
         _edge_profile(key)
         for key in (
@@ -451,6 +607,7 @@ RESEARCH_PACKAGE = RegistryPackage(
 RUNTIME_PACKAGE = RegistryPackage(
     name="runtime",
     node_profiles=(_node_profile("run"),),
+    presentations=(_PRESENTATIONS["run"],),
     edge_profiles=tuple(
         _edge_profile(key) for key in ("produces", "part_of", "uses", "fulfills")
     ),

@@ -167,7 +167,7 @@
             status = `delete edge failed: ${(err as Error).message}`
           })
         },
-      }, viewPositions)
+      }, viewPositions, registryDescriptor)
       if (lgcanvas) {
         lgcanvas.setGraph(graph)
       } else {
@@ -1673,6 +1673,7 @@
   <NodeInspector
     node={selectedNode}
     {portsById}
+    {registryDescriptor}
     onOpenFile={(req) => (fileRequest = req)}
     onJumpTo={(id) => void jumpToEntity(id)}
     onResolveNote={(id) => void resolveEscalate(id)}
