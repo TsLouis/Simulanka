@@ -1,10 +1,10 @@
 ## 0. 用户可目验门
 
-- [ ] U1 Registry 可见：前端可查看当前 registry version/digest、Profiles、capabilities 和 Templates，现有图展示不回退
-- [ ] U2 非科研扩展：加载 software service 示例后，可创建、连接、选择、检查和执行通用动作，核心 kernel/frontend 无 service 名称分支
-- [ ] U3 能力驱动动作：task/model/module 等菜单不再硬编码；启用、禁用和拒绝原因来自 server affordances
-- [ ] U4 声明式展示：现有研究/模型卡片保持信息密度；无 PresentationSpec 的未知 Profile 使用通用卡片和 raw attrs Inspector
-- [ ] U5 兼容迁移：registry v1→v2 不重写实体，现有项目 migrate 后 doctor/导入/前端行为保持一致
+- [x] U1 Registry 可见：前端可查看当前 registry version/digest、Profiles、capabilities 和 Templates，现有图展示不回退
+- [x] U2 非科研扩展：加载 software service 示例后，可创建、连接、选择、检查和执行通用动作，核心 kernel/frontend 无 service 名称分支
+- [x] U3 能力驱动动作：task/model/module 等菜单不再硬编码；启用、禁用和拒绝原因来自 server affordances
+- [x] U4 声明式展示：现有研究/模型卡片保持信息密度；无 PresentationSpec 的未知 Profile 使用通用卡片和 raw attrs Inspector
+- [x] U5 兼容迁移：registry v1→v2 不重写实体，现有项目 migrate 后 doctor/导入/前端行为保持一致
 
 ## 1. Registry v2 核心
 
@@ -56,4 +56,4 @@
 - [x] 6.4 ruff、mypy --strict、pytest 全绿并记录精确命令/计数
 - [x] 6.5 更新 overview.md、kernel.md、frontend.md；同一时段由本 change 独占这些文档
 - [x] 6.6 `openspec validate generalize-graph-profile-registry --strict` 通过，完成 Codex 最终 diff 复核并记录证据
-- [ ] 6.7 用户按 U1-U5 目验后再同步/归档
+- [x] 6.7 用户按 U1-U5 目验后再同步/归档
