@@ -51,6 +51,7 @@
   import EdgeMenu from './lib/EdgeMenu.svelte'
   import FileViewer from './lib/FileViewer.svelte'
   import NodeInspector from './lib/NodeInspector.svelte'
+  import RegistryPanel from './lib/RegistryPanel.svelte'
   import SessionRecovery from './lib/SessionRecovery.svelte'
   import type {
     AffordanceDTO,
@@ -107,10 +108,11 @@
   } | null = null
   let customTemplates: Record<string, CustomTemplateDTO> = {}
   let registryDescriptor: RegistryDescriptorDTO | null = null
+  let registryOpen = false
   let createAffordance: AffordanceDTO | null = null
   // Type of the container the view is inside (null = top-level). The add-node
-  // menu only offers templates the kernel's containment matrix would accept
-  // here — torch modules inside model/module, containers inside directories.
+  // menu filters server-described Profiles/Templates against the resolved
+  // parent rule; server/kernel remain the final authority.
   let currentRootType: string | null = null
   $: templateGroups = buildGroups(
     registryDescriptor,
@@ -1767,6 +1769,14 @@
     {/each}
   </nav>
   <button on:click={load}>Reload</button>
+  <button
+    on:click={() => (registryOpen = !registryOpen)}
+    class:active-tool={registryOpen}
+    aria-expanded={registryOpen}
+    title="查看当前 Profile/Capability Registry"
+  >
+    Registry
+  </button>
   <button on:click={() => void openRecovery()} title="查看未分配或损坏的会话树">
     会话恢复区
   </button>
@@ -1927,6 +1937,12 @@
       onClose={() => (recoveryOpen = false)}
     />
   {/if}
+  {#if registryOpen}
+    <RegistryPanel
+      descriptor={registryDescriptor}
+      onClose={() => (registryOpen = false)}
+    />
+  {/if}
 </main>
 
 <style>
@@ -2001,6 +2017,11 @@
   header button:hover {
     border-color: var(--gold-dim);
     color: var(--ivory);
+  }
+  header button.active-tool {
+    border-color: var(--gold);
+    color: var(--gold-bright);
+    box-shadow: 0 0 10px rgba(217, 186, 125, 0.14);
   }
   .nav-btns {
     display: flex;

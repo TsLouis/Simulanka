@@ -5,7 +5,7 @@
 
 ## 技术栈与启动
 
-- 后端：FastAPI（`simulanka serve`），单用户本地服务；启动时激活 `.simulanka/` 内嵌 git 检查点仓（agent 写权只从 server 进入，安全网先于风险就位）。
+- 后端：FastAPI（`simulanka serve`），单用户本地服务；启动时组合不可变 Registry、构造权威 action resolver，并激活 `.simulanka/` 内嵌 git 检查点仓（agent 写权只从 server 进入，安全网先于风险就位）。
 - 前端：Svelte + Vite + LiteGraph.js；dev 模式 vite 代理 API（**注意：新增后端路由必须同步加进 vite proxy 名单**——`/ui`、`/discussion` 两次踩坑；**且 proxy 键是前缀匹配**：`'/node'` 会吞掉 `/node_modules/**` 打死全部模块加载，短路由名必须写正则键 `'^/node(/|$)'`——2026-07-12 第三坑）。
 - 实时：SSE（`/events`），轮询事件日志，按 commit 推送受影响实体 id，前端只刷相关视图。
 
@@ -13,7 +13,9 @@
 
 | 端点 | 用途 |
 | --- | --- |
-| `GET /graph?root` | 单容器视图载荷：nodes=root 的**直接孩子**（含 `child_count`；root 本人永不入 nodes，其名片在 `root_info`）、edges、**boundary_edges**（恰一端在视图内，contains 除外——root 端口连向孩子的边落在此，即子图输入/输出括号；**视图内节点连向自身后代的隧道边被滤除**——那是该孩子内部布线，投影在孩子自己的视图括号上，不该污染父视图）、external_nodes、ports、ancestors（面包屑）。无 depth 旋钮：视图永不混层（2026-07-12 定） |
+| `GET /registry` | 当前不可变 Registry descriptor：version/digest、packages、capabilities、resolved Node/Edge Profiles、port types、Presentations、Templates、Actions 与 aliases |
+| `GET /graph?root` | 单容器视图载荷：nodes=root 的**直接孩子**（含 `child_count`；root 本人永不入 nodes，其名片在 `root_info`）、edges、**boundary_edges**、external_nodes、ports、ancestors。载荷携带 `registry_digest`；每个实体带 resolved capabilities、`unknown_profile` 与 server affordances。恰一端在视图内的非 contains 边投影为 boundary；视图内节点连向自身后代的隧道边不污染父视图。无 depth 旋钮：视图永不混层（2026-07-12 定） |
+| `POST /actions/resolve` | 对当前 node/edge/port RefSet 解析统一 affordances；ActionSpec target predicate、actor、source/state policy 与 executor support 在 server 求交，返回 enabled/reason/reason_code/input_schema |
 | `GET /events` | SSE：每 commit 一条 `{graph_version, actor, nodes/edges/ports}` 受影响集 |
 | `GET/POST /ui/positions` | 节点位置持久化（按视图分桶，`.simulanka/ui/positions.json`） |
 | `POST /edge` · `DELETE /edge/{id}` | 人画/删 data_flow 边（`source=user`，可带画线时 `shape_check`） |
@@ -22,9 +24,9 @@
 | `POST /edge/{id}/discuss` | 手动拉边进/出讨论集 |
 | `GET /disagreements` | 分歧集（共享模块 `disagreements.py`，与 brief 同一计算）：人拒的 ghost / agent 打 wrong-uncertain 的人边 / disputed / 手动 |
 | `GET /file/content?node|path` | S4 文件查看器：按 file 节点读内容（node=节点 id / path=fs_path 反查，二选一）；未登记路径 404（图是「什么可读」的权威）；binary/truncated 如实标记，上限 1 MiB |
-| `POST /node` | 画布加节点（右键菜单）：`{type, name, parent?, attrs?, ports?}`，actor=user；parent=当前视图 root；同胞重名自动 `_2` 后缀（菜单连放三个 Conv2d 必须直接成）；ports 走第二个 patch（resolver 看不见未提交节点，与 importer 同型）；kernel 容器矩阵违规→422 |
-| `POST /node/{id}/rename` | 改名（RenameNodeOp）；file/directory 拒改（name ↔ fs_path 是 FileRegistry 领地）；重名冲突 422 |
-| `DELETE /node/{id}` | 删**空**节点（kernel DeleteNodeOp：级联自身端口+关联边+父 contains——后者是建点双写的合法逆操作；有孩子 422 先清空）；画布策略=仅 module/model（file/directory 绑磁盘、研究原子血缘不可断）。Delete 键与右键「删除」同走此路——画布永不本地假删 |
+| `POST /node` | 画布按 Registry Profile/Template 创建节点：`{type, name, parent?, attrs?, ports?}`，actor=user；server 先重验当前容器 `node.create` affordance，再由 kernel Profile parent rule 作最终 422 硬闸；同胞重名自动 `_2` 后缀 |
+| `POST /node/{id}/rename` | 改名（RenameNodeOp）；`renamable` capability 只是候选，server 仍按来源/锁状态重验；FileRegistry Profile 不暴露该能力；重名冲突由 kernel 返回 422 |
+| `DELETE /node/{id}` | 删**空**节点（kernel DeleteNodeOp：级联自身端口、关联边与父 contains）；`deletable` capability 与 server state/source policy 决定当前资格，有孩子仍由 kernel 422。Delete 键与右键动作同走服务端——画布永不本地假删 |
 | `GET/POST /ui/templates` · `DELETE /ui/templates/{name}` | 自定义节点模板（`.simulanka/ui/templates.json`，按名 keyed、可覆写）；UI 态非图实体——图只记真正放置过的东西 |
 | `GET /node/{id}` | slim locator `{id,type,name,parent_id}`——「跳转并选中」原语的服务端半边：选中一个实体先得打开它父容器的视图（S6 血缘链逐跳 / S7 卡片点击共用） |
 | `GET /node/{id}/provenance` | S6 血缘链：固定边集回溯（claim/hypothesis ← supports/contradicts ← evidence ←(produces/parent)← run →fulfills→ task →parent→ experiment →plan_file→ 计划文件节点），每跳 `{id,type,name,trust,via_edge,via_edge_trust}`，节点与边分别定级；查询时算不落盘；visited 防环、按 id 排序 |
@@ -33,17 +35,18 @@
 
 ## 渲染器（litegraph-adapter）
 
-- **统一 node-edge-port 渲染**：任何类型的节点同一套画法；**任意节点双击可进入**（叶子的内部=合法空视图，右键加节点即在其中生长——空容器由此可填充；child_count 是徽记不是闸门），面包屑由服务端 ancestors + root_info 重建（下钻/跳转/深链一致）。
+- **统一 node-edge-port 渲染**：任何 Profile 的节点同一套画法；PresentationSpec 只声明受控 card fields/badges/palette/Inspector fields 与 formatter key。缺少 Presentation 或 Profile 未知时使用稳定通用卡片并在 Inspector 展示 raw type/name/attrs，不丢实体、不白屏。**任意节点双击可进入**（叶子的内部=合法空视图；child_count 是徽记不是闸门），面包屑由服务端 ancestors + root_info 重建。
 - **跨层边界端口投影**（§12.4）：恰一端在视图内的边投影到虚拟 boundary 节点——纯渲染，虚拟节点永不进图。**root 自身端口=子图声明的 IO，常驻投影为左右括号**（左=in 朝内、右=out；model/module 层空括号也显示=「尚无声明 IO」）；跨界边落在括号槽位或按 (external, direction) 聚合的 boundary 节点上。**括号可连线（2026-07-14）**：槽位携带 root 真端口 id，画线走 POST /edge，kernel **隧道规则**放行（父.in→子.in、子.out→父.out，恰一层；validator 与 doctor 同一规则）。**importer 自动连括号（2026-07-15，彩排反馈#2）**：真图 data_flow 曾全是同层兄弟边、括号永远悬空、数据流读作断裂——现在 trace 补齐**垂直隧道边**（原始输入盖 root producer 印记→逐层 parent.in→child.in；每个 post-hook 在 producer 重印前记录 child.out→parent.out），下钻进任一容器，输入括号已连到第一个消费者、输出括号已连到产出节点。隧道边同样 `source=trace`，走 kernel 隧道规则落库。
 - **布局**：dagre 自动布局，人工拖动的位置持久化并覆盖 dagre 结果。
 - **边语义染色**（夜空主题 theme.ts）：user=金、agent=紫、ghost（proposed 未决）=灰蓝虚线、人拒=绯红；trace 边与「constructed 可信」同源同色（星蓝）。
-- 画线时即时 shape 校验（match/mismatch/unknown），人的确认意图随边记录。
-- **右键菜单**（2026-07-12，自绘 Svelte 层，LiteGraph 内建菜单/搜索框已灭）：空白处=加节点（搜索 + 分类目录：torch.nn 精选约 45 项按卷积/线性/归一化/激活/池化/注意力/循环/损失/形状/张量运算分组 + 通用容器 + 我的模板）；节点上=进入子图/重命名/存为模板/删除（仅 module/model 出现此项）。菜单收起=window 捕获相 mousedown（LiteGraph 在画布层吃掉冒泡，常规监听收不到——2026-07-14 修）。
-- **鼠标/导航（2026-07-14）**：视图历史前进/后退（顶栏 ‹ › + Alt+←/→ + 鼠标侧键；一切导航走 navigateTo 单入口）；框选=引擎原生 **Ctrl+拖**、加选=Shift+点。更成熟的整套手感（左键框选、reroute 等）归引擎换血片（@comfyorg/litegraph）。菜单按 **kernel 容器矩阵过滤**（前端镜像 `registry/builtin.py` 的 allow_parents：module 只在 model/module 内出现、model 只在 directory 内、顶层只有 directory）——kernel 422 仍是硬闸，菜单只是不出注定被拒的项。手放节点=与 importer 同种（type=module + class_name/class_module 约定），端口无 confidence（诚实标注：草图没有观测）。落点=右键处（先记位置再等 SSE 重载）。**研究原子不进菜单**——它们的正路是 plan ingest（§14）。
+- 画线时先按 Edge Profile descriptor 的 alias、端点 Profile/capabilities、port type、方向与 needs_ports 预过滤，再做 shape 校验（match/mismatch/unknown）；未知 descriptor 不猜测，放行到 server，由同一 Registry 返回最终 422/reason。
+- **右键菜单**（自绘 Svelte 层，LiteGraph 内建菜单/搜索框已灭）：空白处的 Profiles/Templates 目录来自 Registry descriptor，并以当前容器 `node.create` affordance 作为入口；节点、边、端口及多选菜单只渲染 server affordances，不按 task/model/module 或 Provider 名称分支。禁用项直接展示 server reason。菜单收起仍使用 window 捕获相 mousedown。
+- **鼠标/导航（2026-07-14）**：视图历史前进/后退（顶栏 ‹ › + Alt+←/→ + 鼠标侧键；一切导航走 navigateTo 单入口）；框选=引擎原生 **Ctrl+拖**、加选=Shift+点。创建目录以 descriptor 的 Profile parent rule 预过滤，server/kernel 仍是硬闸；手放节点的模板 attrs/ports 由 TemplateSpec 给出，落点先持久化再等 SSE 重载。研究原子默认模板仍不进目录，其正路是 plan ingest（§14）。
 
 ## 面板
 
-- **NodeInspector**：属性侧栏，选中实体的全部 attrs。
+- **RegistryPanel**：顶栏 `Registry` 打开只读语义浏览器，直接显示当前 version/digest、可信 packages、capabilities/consumers、Node/Edge Profiles 与 Templates；内容只来自已经过 digest 对齐的 server descriptor。
+- **NodeInspector**：按 PresentationSpec 分组显示声明字段，并始终保留 attrs 检查能力；未知 Profile 显示 raw attrs。端口附加与节点上下文动作读取 affordances，不按类型判断。
 - **消息面（S8 通用会话壳）**：设计原则=**不出现领域工作流按钮，agent→人的一切都是消息**。底部常驻 ChatDock 只负责给当前选中的 ChatNode/新树草稿发送消息和管理用户显式附加的 node/edge/port refs；所在层级、当前选择与祖先都不会自动注入。每棵 conversation tree 投影为一个可拖动 ChatNode UI sidecar，fork 只在节点内部增加分支；真正的新根 Session 才增加 ChatNode。ChatNode 不是 Node/Edge/Port/Profile，不进入语义图。首条消息懒创建 Provider Session；消息与工具事件持久化在 JSONL sidecar，刷新从历史恢复。
 - **VerifyPanel / DiscussPanel——已删除（2026-07-14）**：顶栏「核对」按钮一并退役。就地裁决/跳转选中已随 S7 余项落地（2026-07-15，见下）。
 
@@ -96,8 +99,8 @@
 - **run 日志（stdout/stderr file 节点）由此免费前端可读**（inspector 上 stdout/stderr 按钮）——人肉彩排「全程前端可见」的闭环件；evidence 的 metrics 按钮同理（未登记则如实报 404）。
 - **不做**：编辑、双向同步、逐条精确锚定（匹配不到退化开顶部）；跳编辑器按钮不预做。
 
-**S5 按轮下钻 + 卡片化信息密度 ✅**（实现：`cards.ts` 字段清单 + `litegraph-adapter.ts` 单一绘制骨架）：ingest 按计划建轮次目录（`research/<plan-stem>/`），下钻机制现成。呈现要求（2026-07-09 用户定为硬需求）：**日常所需信息大多数不点开侧栏就能从画布读到**。首版字段清单（可调项，彩排中按用户反馈迭代）：question=正文摘要、hypothesis=verdict 徽记+正文、claim=status 徽记+正文、experiment=status 徽记+goal、task=预算徽记+goal+契约摘要（globs 数·acceptance）、run=status/contract_check 双徽记+时长·exit code、evidence=关键 metrics 数值（至多 3 行）、escalate note=ESCALATE/RESOLVED 徽记+正文。徽记语义色：玉=好结果 / 琥珀=待定 / 绯红=坏结果 / 紫=进行中 / 灰=未判；未知状态词落灰不猜语义。
-卡片的实现边界（2026-07-10 定，已照办）：卡片＝统一渲染器里 **attr 驱动的展示模板**——同一套节点画法与卡片骨架（`cards.ts` 是唯一的字段清单来源，dagre 布局同源取高），每类原子只是字段清单不同；不做 per-type 分叉渲染，渲染器原则不破，信息密度靠模板。正文截断=CJK 感知字符预算（全角算 2），不逐节点 measureText。
+**S5 按轮下钻 + 卡片化信息密度 ✅**（实现：Registry `PresentationSpec` + `cards.ts` 受控 formatter/generic fallback + `litegraph-adapter.ts` 单一绘制骨架）：ingest 按计划建轮次目录（`research/<plan-stem>/`），下钻机制现成。呈现要求（2026-07-09 用户定为硬需求）：**日常所需信息大多数不点开侧栏就能从画布读到**。内置 research Presentations 保持既有信息密度：question=正文摘要、hypothesis=verdict 徽记+正文、claim=status 徽记+正文、experiment=status 徽记+goal、task=预算徽记+goal+契约摘要（globs 数·acceptance）、run=status/contract_check 双徽记+时长·exit code、evidence=关键 metrics 数值（至多 3 行）、escalate note=ESCALATE/RESOLVED 徽记+正文。徽记语义色：玉=好结果 / 琥珀=待定 / 绯红=坏结果 / 紫=进行中 / 灰=未判；未知状态词落灰不猜语义。
+卡片边界仍是统一渲染器中的 **attr 驱动展示模板**：字段、badge、palette 与 formatter key 来自 server descriptor，`cards.ts` 只执行受控格式化和确定性通用降级，不保存 Profile 类型表；不加载任意脚本，也不做 per-type 分叉渲染。正文截断=CJK 感知字符预算（全角算 2），不逐节点 measureText。
 
 **S6 可信度染色 + 血缘链** ✅（2026-07-15 落地：`src/simulanka/trust.py` + view payload `trust` 字段 + `GET /node/{id}/provenance`；前端＝节点体 trust 描边（`litegraph-adapter` 与卡片共用 foreground 钩子，unreviewed 刻意最淡）+ NodeInspector 可信徽记与血缘链逐跳可点。**配套铭章**：系统造的血缘边（`fulfills`/`produces`，共 6 处创建点）自此盖 `source="machine"`——否则机器记录的执行事实在链里读作「未定」是不诚实的；旧图未盖章的边如实落灰。实测于 `tests/test_trust.py` + `tests/test_server_trust.py`）：
 
@@ -114,7 +117,7 @@
 | unreviewed | 以上皆无 | 灰（「未定」应显眼地不显眼） |
 
 - 血缘链查询 `GET /node/{id}/provenance`：claim/hypothesis 沿固定边集回溯（supports/contradicts → evidence →（parent/produces 逆）→ run → fulfills → task →（parent）→ experiment → plan_file → 计划文件节点），每跳 `{id, type, name, trust, via_edge, via_edge_trust}`——边与节点分别定级（supports 边是分析者判断、evidence 是机器测量，可信级常不同，这正是不折叠的理由）。visited 防环，按 id 排序保证确定性。
-- 研究域节点 view payload 带 `trust` 字段（服务端算）；NodeInspector 加可信级徽记 + 血缘链列表（逐跳可点跳转）。
+- 具备 `trust_subject` capability 的节点 view payload 带 `trust` 字段（服务端算）；research provenance 的遍历算法仍留在领域模块。NodeInspector 加可信级徽记 + 血缘链列表（逐跳可点跳转）。
 - 配套铭章：`reviewed_in`（plan ingest 已盖✅）；`checked_by/checked_at/check_note`（快检工具属动态线，铭章词表先定）。
 - v1 不做：数值分数（伪精度）、跨实体折叠聚合、question 可信级（提问不是断言）、快检章的矩阵强制。
 - 边的染色归属（2026-07-10 定）：画布上边仍按既有 source/verdict 语义染色；trust 染色只作用于**节点体**；边的 trust 仅在血缘链视图逐跳展示——画布不叠两套边色。

@@ -1,6 +1,6 @@
 # 图内核
 
-> 分篇之一（入口见 `overview.md`）。图状态的唯一权威：三原语、类型注册表、唯一写路径、存储与自检。
+> 分篇之一（入口见 `overview.md`）。图状态的唯一权威：三原语、Profile/Capability Registry、唯一写路径、存储与自检。
 > 本篇对着 `src/simulanka/{schema,kernel,storage,layout,registry}` 与其测试写成，只写现行结论。
 
 ## 三原语
@@ -11,11 +11,15 @@
 | **Port** | `id` `node_id` `name` `direction(in/out)` `port_type` `attrs` … | 同节点内端口名唯一 |
 | **Edge** | `id` `type` `source_id` `target_id` `source_port_id?` `target_port_id?` `attrs` … | 端口仅 `data_flow` 类边使用 |
 
-`attrs` 是自由字典：内核不硬校验其内容（研究字段演化快，硬 schema 是摩擦）。语义全靠 attrs 约定，约定见图汇编语言篇的铭章表。
+`attrs` 默认是开放字典，领域扩展字段原样保留。Profile 可声明已知字段、选择 closed attrs，并挂载只读 validator；kernel apply 与 doctor 使用同一组 resolved rules。validator 只接收冻结实体和只读图视图，不得写图。
 
-## 类型注册表
+## Profile/Capability Registry v2
 
-**节点类型**（右列 = 允许的父类型）：
+实体持久化的 `type` 就是唯一主 Profile key；Capability 只由 Registry 解析，不复制进 attrs。应用启动时按固定顺序组合 `core`、`filesystem`、`ml-torch`、`research`、`runtime` 可信包，得到进程内不可变 Registry。单继承在构建期展开；重复 key、未知 base/capability、继承或 alias 环、悬空引用均 fail closed。Registry descriptor 含 version、digest、canonical keys 与 aliases。
+
+Capability 表达会被 validation、action、context 或 presentation 消费的正交能力，不等同权限。权限与来源/锁状态在 server action resolver 中另行求交。
+
+**当前内置 Node Profiles**（右列 = resolved parent rule）：
 
 | 类型 | 允许父 |
 | --- | --- |
@@ -32,7 +36,7 @@
 | note | directory、experiment、run |
 | task | directory、experiment |
 
-**边类型**（源 → 目标的类型约束）：
+**当前内置 Edge Profiles**（源 → 目标的 resolved endpoint rule）：
 
 | 类型 | 源 → 目标 | 端口 |
 | --- | --- | --- |
@@ -46,7 +50,9 @@
 | uses | run → model/file | 无 |
 | fulfills | run → task | 无 |
 
-端口类型：`any` / `tensor` / `scalar`。所有约束在建时校验，doctor 全量复检。
+端口类型：`any` / `tensor` / `scalar`。Node parent、Edge endpoint/port direction 和 Port type 在建时由同一 Registry 校验，doctor 全量复检。PresentationSpec 和 TemplateSpec 分别属于展示声明与实例蓝图；Conv2d/Linear 等模板仍创建 `module` Profile，不扩大内核 Profile 词表。
+
+`registry_version=2` 保持 Node/Edge/Port 物理 schema 与既有 type key 不变。v1→v2 migration 只更新 manifest 并记录 migration event，不重写实体文件。
 
 ## 唯一写路径
 
@@ -60,7 +66,7 @@
 | update_attrs | **浅 merge** attrs（无删键语义）；目标是节点 selector 或边 id（`edg_…`） |
 | rename_node | 改名，同父之下兄弟唯一 |
 | delete_edge | 按 id 删边；拒删 `contains`（它背书层级） |
-| delete_node | 删**空**节点（有孩子拒——子树删除必须显式自底向上）；级联删自身端口与全部关联边，含父 `contains`（建点双写的合法逆操作，2026-07-14 加）；哪些**类型**可删是调用方策略（画布限 module/model），kernel 只守结构完整性 |
+| delete_node | 删**空**节点（有孩子拒——子树删除必须显式自底向上）；级联删自身端口与全部关联边，含父 `contains`（建点双写的合法逆操作，2026-07-14 加）；是否可删由 Profile capability 与 server state/source policy 决定，kernel 只守结构完整性 |
 
 - **隧道规则（§12.4 子图 IO，2026-07-14）**：`data_flow` 的方向校验（source=out、target=in）有唯一豁免——**父.in → 子.in** 与 **子.out → 父.out**（恰一个包含层级，ComfyUI/UE5 子图边界语义）；validator 与 doctor 同一规则。
 - **原子性**：全部 op 先校验后落盘，任一错 = 整个 intent 拒，报错带 `op[i]` 定位。
@@ -120,7 +126,7 @@
 | content_hash 漂移（带外改动/损坏） | error |
 | parent_id 缓存 ↔ contains 边不一致 | warn |
 | 悬空端口/边端点 | error |
-| 未注册类型、边端点类型违约、data_flow 缺端口/方向错 | error |
+| 未注册 Profile/Edge/Port type、parent/endpoint rule 违约、data_flow 缺端口/方向错、Profile validator 失败 | error |
 | file 节点缺 fs_path / 盘上文件消失 / 内容哈希漂移（reference 只查存在） | error |
 | 受管目录下未登记的文件 | warn |
 | SQLite 索引计数漂移 | warn，`--repair` 自动重建 |

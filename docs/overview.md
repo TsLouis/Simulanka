@@ -5,7 +5,7 @@
 
 ## Simulanka 是什么
 
-把一个科研项目的全部要素——问题、假设、实验、任务、运行、证据、结论，以及被研究的模型结构本身——放进一张可检查、可追溯的图。研究的过程就是这张图的演化，人始终能在画布上看见并裁决每一步。
+Simulanka 是以 Node / Edge / Port 为物理底座的通用项目图平台。版本化 Profile/Capability Registry 负责组合可信领域语义；科研问题、假设、实验、运行、证据、结论与模型结构是当前内置领域包，而不是写死在 kernel 或前端里的身份。项目过程就是这张可检查、可追溯图的演化，人始终能在画布上看见并裁决每一步。
 
 三条全系统不变量：
 
@@ -28,7 +28,7 @@
 图状态的唯一权威。
 
 - 三原语 node / edge / port；内容寻址存储 + manifest + 事件日志（全历史可查）。
-- 研究原子词表（question / hypothesis / experiment / task / run / evidence / claim / note）与语义边（addresses / tests / supports / contradicts / fulfills / produces …）。
+- Registry v2 从 core、filesystem、ml/torch、research、runtime 可信包确定组合 Profile、Capability、边/端口规则与别名；研究原子和模型结构只是其中两组领域语义。
 - 唯一写路径（PatchIntent → apply_patch）+ 写权矩阵；`graph` 查询/变更 CLI；`doctor` 图健康自检。
 
 ### 2. 图汇编语言（外部原文 ↔ 图的确定性转换）
@@ -64,7 +64,7 @@
 
 人的唯一检查面与裁决面——把关人不读代码，读画布。
 
-- 统一 node-edge-port 渲染器、双击下钻、跨层边界端口投影、属性侧栏、SSE 实时刷新。
+- 统一 node-edge-port 渲染器、双击下钻、跨层边界端口投影、属性侧栏、SSE 实时刷新；创建目录、卡片、Inspector、连接候选与动作菜单均消费 server Registry descriptor/affordances。
 - 人画连线（结构图缺的数据流边由人补画、人终裁）、锚定核对（就地裁决 + 导航清单；核对/讨论面板 2026-07-10 定退役）、锚定式讨论（对话必锚定画布选择集，批次＝多选锚；消息不进图，留在会话文件）。
 - 研究轮次视图：按轮下钻（每计划一目录）、节点一键深链文档出处。
 - 可信度染色 + 血缘链展示（摆链条给人看，不折叠成分数替人判断）。
