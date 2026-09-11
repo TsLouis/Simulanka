@@ -1,9 +1,9 @@
 <script lang="ts">
-  // S7 就地裁决：点选一条 data_flow 边（LiteGraph 链接中心点）在原地弹出
-  // 人侧动作。动作本身由宿主执行（写权矩阵的 user 行走 server 端点）——
-  // 本组件只是锚定在选择处的菜单壳。
   import type { AffordanceDTO, EdgeDTO } from './types'
 
+  // The server still owns the exact verdict/write-authority contract. This
+  // component deliberately translates that machinery into lightweight product
+  // language: keep, dismiss, needs attention, and explicit Agent context.
   export let x: number
   export let y: number
   export let edge: EdgeDTO
@@ -21,6 +21,7 @@
   $: inDiscuss = edge.attrs.discuss === true
   $: verdict = str('verdict')
   $: verdictBy = str('verdict_by')
+  $: source = str('source') ?? 'user'
   $: verdictAction = edge.affordances.find(action => action.id === 'edge.verdict') ?? null
   $: acceptAction = edge.affordances.find(action => action.id === 'edge.accept') ?? null
   $: discussAction = edge.affordances.find(action => action.id === 'edge.discuss') ?? null
@@ -29,9 +30,14 @@
   const disabledTitle = (action: AffordanceDTO): string =>
     action.enabled ? action.label : action.reason
 
-  let menuEl: HTMLDivElement
+  const reviewLabel = (value: string | null): string | null => {
+    if (value === 'correct') return 'kept'
+    if (value === 'wrong') return 'dismissed'
+    if (value === 'disputed' || value === 'uncertain') return 'needs attention'
+    return null
+  }
 
-  // 视口内钳位（菜单约 260 宽 / 240 高）。
+  let menuEl: HTMLDivElement
   $: left = Math.min(x, window.innerWidth - 270)
   $: top = Math.min(y, window.innerHeight - 250)
 
@@ -47,165 +53,164 @@
   }
 </script>
 
-<!-- capture 相：LiteGraph 在画布 mousedown 里吃掉冒泡（与 ContextMenu 同坑） -->
 <svelte:window on:keydown={onKeydown} on:mousedown|capture={onGlobalPointerDown} />
 
 <div class="menu" bind:this={menuEl} style="left: {left}px; top: {top}px;" role="menu">
   <div class="head">
-    <span class="chip src-{str('source') ?? 'user'}">{str('source') ?? '?'}</span>
+    <span class="source source-{source}">{source === 'agent' ? 'draft' : source}</span>
     <span class="ends" title={edge.id}>{srcName} → {dstName}</span>
   </div>
-  {#if verdictAction}
-    {#if verdict}
-      <div class="state">
-        裁决: <b class="v-{verdict}">{verdict}</b>{#if verdictBy}&nbsp;by {verdictBy}{/if}
-      </div>
-    {/if}
 
-    {#if verdictAction.enabled}
-      <button class="row good" on:click={() => onVerdict('correct')}>✓ 裁决：正确</button>
-      <button class="row bad" on:click={() => onVerdict('wrong')}>✗ 裁决：错误</button>
-      <button class="row" on:click={() => onVerdict('disputed')}>⚖ 裁决：存疑</button>
-    {:else}
-      <button class="row disabled" disabled title={disabledTitle(verdictAction)}>
-        {verdictAction.label}<span class="reason">{verdictAction.reason}</span>
-      </button>
-    {/if}
+  {#if reviewLabel(verdict)}
+    <div class="state">
+      {reviewLabel(verdict)}{#if verdictBy}<span> · {verdictBy}</span>{/if}
+    </div>
   {/if}
+
   {#if acceptAction}
     <button
-      class="row good"
+      class="row keep"
       class:disabled={!acceptAction.enabled}
       disabled={!acceptAction.enabled}
       title={disabledTitle(acceptAction)}
       on:click={onAccept}
-    >✓ {acceptAction.label}
+    >✓ Keep suggestion
       {#if !acceptAction.enabled}<span class="reason">{acceptAction.reason}</span>{/if}
     </button>
   {/if}
-  {#if discussAction}
-    <button
-      class="row"
-      class:disabled={!discussAction.enabled}
-      disabled={!discussAction.enabled}
-      title={disabledTitle(discussAction)}
-      on:click={onToggleDiscuss}
-    >⇄ {inDiscuss ? '移出讨论' : '拉入讨论'}
-      {#if !discussAction.enabled}<span class="reason">{discussAction.reason}</span>{/if}
-    </button>
+
+  {#if verdictAction}
+    {#if verdictAction.enabled}
+      {#if !acceptAction}
+        <button class="row keep" on:click={() => onVerdict('correct')}>✓ Looks right</button>
+      {/if}
+      <button class="row dismiss" on:click={() => onVerdict('wrong')}>
+        × {source === 'agent' ? 'Dismiss suggestion' : 'Looks wrong'}
+      </button>
+      <button class="row" on:click={() => onVerdict('disputed')}>◇ Needs attention</button>
+    {:else}
+      <button class="row disabled" disabled title={disabledTitle(verdictAction)}>
+        Review unavailable<span class="reason">{verdictAction.reason}</span>
+      </button>
+    {/if}
   {/if}
+
   {#if attachAction}
     <button
-      class="row"
+      class="row agent"
       class:disabled={!attachAction.enabled}
       disabled={!attachAction.enabled}
       title={disabledTitle(attachAction)}
       on:click={onAttach}
-    >{attachAction.label} ＋
+    >Ask Agent about this
       {#if !attachAction.enabled}<span class="reason">{attachAction.reason}</span>{/if}
+    </button>
+  {/if}
+
+  {#if discussAction}
+    <button
+      class="row quiet"
+      class:disabled={!discussAction.enabled}
+      disabled={!discussAction.enabled}
+      title={disabledTitle(discussAction)}
+      on:click={onToggleDiscuss}
+    >{inDiscuss ? 'Remove attention mark' : 'Mark for attention'}
+      {#if !discussAction.enabled}<span class="reason">{discussAction.reason}</span>{/if}
     </button>
   {/if}
 </div>
 
 <style>
-  /* 星图册: 夜漆浮层 + 金缘，与 ContextMenu 同一调色板 */
   .menu {
     position: fixed;
     z-index: 50;
     width: 260px;
-    background: linear-gradient(180deg, #1a2642 0%, #141e36 100%);
-    border: 1px solid var(--hairline);
-    border-radius: 8px;
-    box-shadow:
-      0 6px 24px rgba(0, 0, 0, 0.5),
-      0 0 0 1px rgba(217, 186, 125, 0.08);
-    padding: 6px;
-    font-size: 13px;
+    box-sizing: border-box;
+    padding: 5px;
     display: flex;
     flex-direction: column;
+    border: 1px solid var(--hairline);
+    border-radius: 6px;
+    background: rgba(12, 23, 38, 0.98);
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.38);
+    font-size: 12px;
   }
+
   .head {
     display: flex;
     align-items: center;
     gap: 7px;
-    padding: 6px 8px 8px;
-    border-bottom: 1px solid var(--hairline);
-    margin-bottom: 5px;
+    padding: 6px 7px 8px;
+    border-bottom: 1px solid var(--hairline-2);
+    margin-bottom: 4px;
   }
-  .chip {
-    border-radius: 8px;
-    font-size: 10px;
-    padding: 1px 7px;
+
+  .source {
+    flex: 0 0 auto;
+    padding: 1px 5px;
     border: 1px solid currentColor;
-    background: var(--panel-3);
+    border-radius: 3px;
+    color: var(--muted);
+    font: 9px var(--font-mono);
+    text-transform: uppercase;
   }
-  .src-user {
-    color: var(--amber);
-  }
-  .src-agent {
-    color: var(--violet);
-  }
-  .src-trace {
-    color: var(--star);
-  }
+  .source-user { color: var(--amber); }
+  .source-agent { color: var(--violet); }
+  .source-trace { color: var(--star); }
+
   .ends {
-    color: var(--ivory);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    color: var(--ivory);
   }
+
   .state {
+    padding: 3px 8px 5px;
     color: var(--muted);
-    font-size: 11px;
-    padding: 2px 8px 6px;
+    font: 9px var(--font-mono);
+    text-transform: uppercase;
   }
-  .v-correct {
-    color: var(--jade);
-  }
-  .v-wrong,
-  .v-disputed {
-    color: var(--crimson);
-  }
-  .v-uncertain {
-    color: var(--gold);
-  }
+  .state span { text-transform: none; }
+
   .row {
     display: flex;
     align-items: center;
     width: 100%;
+    min-height: 32px;
+    padding: 6px 8px;
+    border: 0;
+    border-radius: 4px;
     background: transparent;
-    border: none;
     color: var(--text);
     text-align: left;
-    padding: 7px 10px;
-    border-radius: 5px;
     cursor: pointer;
     font: inherit;
   }
-  .row:hover {
+
+  .row:hover:not(.disabled) {
     background: var(--panel-2);
     color: var(--ivory);
   }
-  .good:hover {
-    color: var(--jade);
-    background: rgba(126, 207, 165, 0.1);
-  }
-  .bad:hover {
-    color: var(--crimson);
-    background: rgba(224, 122, 104, 0.1);
-  }
+  .row.keep:hover { color: var(--jade); }
+  .row.dismiss:hover { color: var(--crimson); }
+  .row.agent { color: var(--violet); }
+  .row.quiet { color: var(--muted); }
+
   .disabled,
   .disabled:hover {
     color: var(--muted);
     background: transparent;
     cursor: not-allowed;
   }
+
   .reason {
     margin-left: auto;
-    max-width: 120px;
+    max-width: 110px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: 10px;
+    color: var(--muted);
+    font-size: 9px;
   }
 </style>
