@@ -1,8 +1,8 @@
 ## 1. Spec and impact preparation
 
 - [x] 1.1 Finalize proposal/design/spec deltas for Frontend v2.
-- [~] 1.2 GitNexus impact analysis explicitly waived by the user for this iteration; keep review-before-merge.
-- [~] 1.3 GitNexus HIGH/CRITICAL escalation therefore not run; no server/write-authority contract is changed in this slice.
+- [ ] 1.2 GitNexus impact analysis explicitly waived by the user for this iteration; keep review-before-merge.
+- [ ] 1.3 GitNexus HIGH/CRITICAL escalation therefore not run; no server/write-authority contract is changed in this slice.
 
 ## 2. Quiet workspace shell
 
@@ -21,10 +21,10 @@
 
 ## 4. Contextual object interaction
 
-- [~] 4.1 Node selection has lightweight `Ask / Why / Open`; overflow/general affordance projection still pending.
+- [ ] 4.1 Node selection has lightweight `Ask / Why / Open`; overflow/general affordance projection still pending.
 - [ ] 4.2 Single selection highlights directly related graph structure without entering a named mode.
 - [x] 4.3 Full Inspector opens only on explicit request and remains Registry/affordance-driven.
-- [~] 4.4 Edge uses simplified contextual actions; Port parity still pending.
+- [ ] 4.4 Edge uses simplified contextual actions; Port parity still pending.
 
 ## 5. Agent Companion and explicit context
 
@@ -52,7 +52,7 @@
 
 - [ ] 8.1 Run frontend type/build checks and relevant tests (repository currently has no PR CI; local dependency-backed check still required).
 - [ ] 8.2 Run backend regression tests for Registry/affordance/session/context contracts touched by the UI integration.
-- [~] 8.3 GitNexus detect-changes skipped for this user-authorized iteration.
+- [ ] 8.3 GitNexus detect-changes skipped for this user-authorized iteration.
 - [ ] 8.4 Manually verify default canvas, zoom/ports, selection actions, Agent context, and Draft presentation.
 - [ ] 8.5 Update `docs/frontend.md` to the accepted implementation and archive/sync the OpenSpec change after acceptance.
 
