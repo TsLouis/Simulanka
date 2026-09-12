@@ -65,7 +65,7 @@ test('a selected RefSet roundtrips as explicit context and deduplicates repeated
     { kind: 'node', ref_id: 'n1', label: 'duplicate label' },
   ])
 
-  assert.equal(transfer.getData('text/plain'), '3 Simulanka objects')
+  assert.equal(transfer.getData('text/plain'), '2 Simulanka objects')
   assert.deepEqual(readAgentDragRefs(event), [
     { kind: 'node', ref_id: 'n1', label: 'experiment · E1' },
     { kind: 'node', ref_id: 'n2', label: 'evidence · V1' },
