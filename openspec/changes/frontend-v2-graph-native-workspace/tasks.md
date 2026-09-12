@@ -20,11 +20,12 @@
 - [x] 3.5 Preserve root boundary IO/tunnel semantics and connection eligibility; zoom treatment applies only to textual/card density.
 - [x] 3.6 Treat ComfyUI as the baseline for ordinary Node Editor behavior (search, ports, links, selection, drag); diverge only where Simulanka graph/research semantics require it.
 - [ ] 3.7 Prevent any optional node-collapse treatment from collapsing multiple semantic Ports into shared visual anchors; hiding text is allowed, hiding topology is not.
+- [x] 3.8 Add a restrained datatype connection palette for common Port types (`tensor`, `scalar`, `any`, etc.) using LiteGraph's native connection palette hooks.
 
 ## 4. Contextual object interaction
 
 - [ ] 4.1 Node selection has lightweight `Ask / Why / Open`; overflow/general affordance projection still pending.
-- [ ] 4.2 Single selection highlights directly related graph structure without entering a named mode.
+- [x] 4.2 Single selection quietly emphasizes the selected Node, one-hop neighbours and direct links; unrelated graph content recedes without entering a named mode. Multi-select disables this attention treatment.
 - [x] 4.3 Full Inspector opens only on explicit request and remains Registry/affordance-driven.
 - [ ] 4.4 Edge uses simplified contextual actions; Port parity still pending.
 
@@ -38,7 +39,7 @@
 
 ## 6. Graph-native Agent expression
 
-- [ ] 6.1 Implement temporary attention/highlight projection that never writes the semantic graph.
+- [ ] 6.1 Implement Agent-driven temporary attention/highlight projection that never writes the semantic graph.
 - [ ] 6.2 Implement object-attached annotation presentation tied to session/conversation state rather than Node attrs by default.
 - [x] 6.3 Present existing proposed/ghost Agent edges (and future proposed nodes) as visually distinct `DRAFT` objects.
 - [x] 6.4 Map Keep/Dismiss/Needs attention product actions to the existing authoritative server actions; do not bypass write-matrix checks.
@@ -61,7 +62,7 @@
 - [ ] 9.1 Run frontend type/build checks and relevant tests (repository currently has no PR CI; local dependency-backed check still required).
 - [ ] 9.2 Run backend regression tests for Registry/affordance/session/context contracts touched by the UI integration.
 - [ ] 9.3 GitNexus detect-changes skipped for this user-authorized iteration.
-- [ ] 9.4 Manually verify default canvas, persistent independent ports across zoom, search gestures, selection actions, Agent context, and Draft presentation.
+- [ ] 9.4 Manually verify default canvas, persistent independent ports across zoom, datatype link colours, search gestures, selection attention, selection actions, Agent context, and Draft presentation.
 - [ ] 9.5 Update `docs/frontend.md` to the accepted implementation and archive/sync the OpenSpec change after acceptance.
 
 ## Deferred follow-up
