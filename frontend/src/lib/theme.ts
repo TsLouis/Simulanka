@@ -175,6 +175,42 @@ function installZoomAwareNodeRendering(canvas: LGraphCanvas): void {
 }
 
 /**
+ * ComfyUI uses double-click on empty canvas as a primary node-search affordance.
+ * Reuse Simulanka's existing persisted add-node path by translating that gesture
+ * into the same synthetic contextmenu event already handled by App.svelte.
+ * Double-clicking an existing node is left untouched so drill-down keeps working.
+ */
+function installDoubleClickNodeSearch(canvas: LGraphCanvas): void {
+  const target = canvas as unknown as {
+    canvas?: HTMLCanvasElement
+    graph?: {
+      getNodeOnPos?: (x: number, y: number) => LGraphNode | null
+    } | null
+    convertEventToCanvasOffset?: (event: MouseEvent) => [number, number]
+  }
+  const element = target.canvas
+  if (!element || element.dataset.simulankaNodeSearch === '1') return
+  element.dataset.simulankaNodeSearch = '1'
+
+  element.addEventListener('dblclick', event => {
+    const pos = target.convertEventToCanvasOffset?.(event)
+    if (!pos) return
+    const hit = target.graph?.getNodeOnPos?.(pos[0], pos[1]) ?? null
+    if (hit) return
+
+    event.preventDefault()
+    event.stopPropagation()
+    element.dispatchEvent(new MouseEvent('contextmenu', {
+      bubbles: true,
+      cancelable: true,
+      clientX: event.clientX,
+      clientY: event.clientY,
+      button: 2,
+    }))
+  })
+}
+
+/**
  * Add a tiny DRAFT tag at the center of existing proposed/ghost links. The App
  * already wraps renderLink to add the dashed stroke and continues to own the
  * authoritative accept/verdict actions. Patching the prototype here is useful:
@@ -237,6 +273,7 @@ export function applyNightSky(canvas: LGraphCanvas): void {
 
   installDraftLinkMarkers()
   installZoomAwareNodeRendering(canvas)
+  installDoubleClickNodeSearch(canvas)
 
   const fonts = (document as Document & { fonts?: FontFaceSet }).fonts
   void fonts?.ready.then(() => canvas.setDirty(true, true))
