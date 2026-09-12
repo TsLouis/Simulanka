@@ -111,11 +111,10 @@
     </div>
     <div class="hint">↑↓ select · Enter add · Esc close</div>
     <div class="list">
-      {@const indexed = new Map(flatItems.map((item, index) => [item, index]))}
       {#each filtered as g (g.category)}
         <div class="cat">{g.category}</div>
         {#each g.items as t (t.category + '/' + t.label)}
-          {@const index = indexed.get(t) ?? 0}
+          {@const index = flatItems.indexOf(t)}
           <button
             class="row add-row"
             class:active={index === activeIndex}
@@ -209,9 +208,7 @@
     font: 12px var(--font-mono);
   }
 
-  .search-row:focus-within {
-    border-color: var(--star);
-  }
+  .search-row:focus-within { border-color: var(--star); }
 
   .hint {
     padding: 5px 7px 4px;
