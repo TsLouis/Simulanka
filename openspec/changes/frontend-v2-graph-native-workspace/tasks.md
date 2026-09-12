@@ -19,7 +19,7 @@
 - [x] 3.4 Detail zoom restores Port names/directions plus PresentationSpec-selected card fields; Inspector presents port type/shape/confidence as interface metadata.
 - [x] 3.5 Preserve root boundary IO/tunnel semantics and connection eligibility; zoom treatment applies only to textual/card density.
 - [x] 3.6 Treat ComfyUI as the baseline for ordinary Node Editor behavior (search, ports, links, selection, drag); diverge only where Simulanka graph/research semantics require it.
-- [ ] 3.7 Prevent any optional node-collapse treatment from collapsing multiple semantic Ports into shared visual anchors; hiding text is allowed, hiding topology is not.
+- [x] 3.7 Prevent native node collapse from collapsing multiple semantic Ports into shared visual anchors; semantic node classes opt out of LiteGraph collapse while boundary projections keep library defaults.
 - [x] 3.8 Add a restrained datatype connection palette for common Port types (`tensor`, `scalar`, `any`, etc.) using LiteGraph's native connection palette hooks.
 
 ## 4. Contextual object interaction
@@ -33,7 +33,7 @@
 
 - [x] 5.1 Add an unobtrusive Agent Companion UI sidecar; it does not become a semantic graph entity.
 - [x] 5.2 `Ask` on a node attaches the explicit ref through the existing supplemental-context contract and opens the Companion composer.
-- [x] 5.3 Support an explicit pointer/drag-style attachment path for node/edge/port refs: draggable object surfaces emit a typed Simulanka ref and only the Agent Pet accepts it. Graph entity position/state is not changed by the gesture.
+- [x] 5.3 Support explicit drag-style attachment for node/edge/port and multi-node RefSets: object surfaces emit a validated, deduplicated typed Simulanka payload and only the Agent Pet accepts it. Graph position/state is not changed by the gesture; ordinary text drags are not context.
 - [x] 5.4 Show pending refs and preserve context preview before sending.
 - [x] 5.5 Keep long transcript/history accessible on demand from the Agent Companion; do not project Session trees as canvas windows.
 - [x] 5.6 Keep harness/compiler detail progressively disclosed: normal preview shows delivery/source/omission summary while raw compiled payload stays under Technical details.
@@ -41,8 +41,8 @@
 
 ## 6. Graph-native Agent expression
 
-- [ ] 6.1 Implement Agent-driven temporary attention/highlight projection that never writes the semantic graph.
-- [ ] 6.2 Implement object-attached annotation presentation tied to session/conversation state rather than Node attrs by default.
+- [ ] 6.1 Implement Agent-driven temporary attention/highlight projection that never writes the semantic graph. Do not infer targets from text/current selection; wait for structured projection refs.
+- [ ] 6.2 Implement object-attached annotation presentation tied to Session/discussion sidecar state. Do not anchor plain `agent_text` heuristically; require structured target refs.
 - [x] 6.3 Present existing proposed/ghost Agent edges (and future proposed nodes) as visually distinct `DRAFT` objects.
 - [x] 6.4 Map Keep/Dismiss/Needs attention product actions to the existing authoritative server actions; do not bypass write-matrix checks.
 - [x] 6.5 Use redundant visual cues (dash + explicit DRAFT tag + source styling), not color alone.
@@ -61,10 +61,10 @@
 
 ## 9. Verification and docs
 
-- [ ] 9.1 Re-run frontend tests/type/build checks after the latest Companion/DnD/object-surface changes. Cleanup checkpoint passed earlier, but current head needs fresh verification.
+- [ ] 9.1 Re-run frontend tests/type/build checks after the latest Companion/DnD/object-surface/collapse changes. Cleanup checkpoint passed earlier, but current head needs fresh verification.
 - [ ] 9.2 Run backend regression tests for Registry/affordance/session/context contracts touched by the UI integration.
 - [x] 9.3 GitNexus detect-changes skipped for this user-authorized iteration.
-- [ ] 9.4 Manually verify default canvas, persistent independent ports across zoom, datatype link colours, search gestures, selection attention, selection actions, Agent context, object drag-to-Agent, and Draft presentation.
+- [ ] 9.4 Manually verify default canvas, persistent independent ports across zoom, no semantic-node port collapse, datatype link colours, search gestures, selection attention, selection actions, Agent context, single/RefSet drag-to-Agent, and Draft presentation.
 - [x] 9.5 Update frontend boundary README to the accepted graph-native model.
 - [ ] 9.6 Update the long-form `docs/frontend.md` S8 wording so it no longer describes Agent output as message-first; retain server API/domain terminology where it is authoritative.
 - [x] 9.7 Add unit coverage for typed Agent drag payloads; ordinary text drags and malformed refs must not become context.
