@@ -62,11 +62,11 @@ export function styleNode(node: LGraphNode, paletteToken: string): void {
 
 const CANVAS_FONT = "ui-monospace, 'SFMono-Regular', 'Cascadia Mono', Consolas, monospace"
 
-// Density thresholds intentionally leave a wide stable working band. LiteGraph
-// itself switches to low-quality rendering below ~0.6, so overview begins just
-// above that boundary instead of fighting its renderer.
-const OVERVIEW_MAX_SCALE = 0.62
+// Port handles are structural information and therefore never disappear.
+// Zoom only controls textual density: below detail scale we hide labels/card
+// fields, while every real input/output remains independently positioned.
 const DETAIL_MIN_SCALE = 0.98
+const DRAFT_LABEL_MIN_SCALE = 0.62
 
 type SlotLike = { label?: string | null }
 type SemanticNodeView = { attrs?: Record<string, unknown> }
@@ -75,6 +75,11 @@ type DensityNode = LGraphNode & {
   inputs?: SlotLike[]
   outputs?: SlotLike[]
   onDrawForeground?: (...args: unknown[]) => void
+  getConnectionPos?: (
+    isInput: boolean,
+    slotIndex: number,
+    out?: Float32Array | number[],
+  ) => Float32Array | number[]
 }
 
 type DensityCanvas = LGraphCanvas & {
@@ -120,16 +125,46 @@ function isDraftNode(node: DensityNode): boolean {
 }
 
 /**
+ * LiteGraph may simplify native slot decoration at very small scales. Overlay a
+ * crisp pixel handle at each real connection position so ports never collapse
+ * visually into the node body. The overlay uses the real slot index, therefore
+ * a node with N ports always reads as N distinct ports even when labels vanish.
+ */
+function drawPersistentPortHandles(
+  ctx: CanvasRenderingContext2D,
+  node: DensityNode,
+  inputCount: number,
+  outputCount: number,
+): void {
+  if (!node.getConnectionPos) return
+
+  const drawSide = (isInput: boolean, count: number, color: string) => {
+    ctx.fillStyle = color
+    ctx.strokeStyle = SKY
+    ctx.lineWidth = 1
+    for (let index = 0; index < count; index++) {
+      const pos = node.getConnectionPos?.(isInput, index)
+      if (!pos) continue
+      const x = Number(pos[0])
+      const y = Number(pos[1])
+      ctx.fillRect(x - 3, y - 3, 6, 6)
+      ctx.strokeRect(x - 3.5, y - 3.5, 7, 7)
+    }
+  }
+
+  ctx.save()
+  drawSide(true, inputCount, '#68b8f2')
+  drawSide(false, outputCount, '#e6bf62')
+  ctx.restore()
+}
+
+/**
  * Render-only progressive disclosure for Node/Port density.
  *
- * We never mutate the semantic graph or persisted port arrays. For the duration
- * of one draw call only:
- * - overview: hide port handles + labels and custom card details;
- * - working: keep real port handles but hide their text + custom card details;
- * - detail: render the full node exactly as the adapter built it.
- *
- * Links and hit testing continue to use the real slots outside this paint call,
- * so zooming cannot disconnect or rewrite anything.
+ * Port handles are always structural and always visible. Below detail zoom we
+ * only suppress textual labels and custom card details. We never remove or
+ * merge slot arrays, so multiple ports retain distinct rows, link anchors and
+ * hit targets at every zoom level.
  */
 function installZoomAwareNodeRendering(canvas: LGraphCanvas): void {
   const target = canvas as unknown as DensityCanvas
@@ -144,6 +179,8 @@ function installZoomAwareNodeRendering(canvas: LGraphCanvas): void {
     }
 
     const scale = target.ds?.scale ?? 1
+    const inputCount = densityNode.inputs?.length ?? 0
+    const outputCount = densityNode.outputs?.length ?? 0
     const drawDraft = () => {
       if (!isDraftNode(densityNode)) return
       drawDraftTag(ctx, node.size[0] - 24, -13, scale < DETAIL_MIN_SCALE)
@@ -155,36 +192,25 @@ function installZoomAwareNodeRendering(canvas: LGraphCanvas): void {
       return
     }
 
-    const originalInputs = densityNode.inputs
-    const originalOutputs = densityNode.outputs
     const originalForeground = densityNode.onDrawForeground
-    const inputLabels = originalInputs?.map(slot => slot.label)
-    const outputLabels = originalOutputs?.map(slot => slot.label)
+    const inputLabels = densityNode.inputs?.map(slot => slot.label)
+    const outputLabels = densityNode.outputs?.map(slot => slot.label)
 
     try {
-      // Cards/trust rings are detail material. The native title remains visible
-      // at every scale and acts as the overview identity.
+      // Card/trust details are detail material; identity and every port remain.
       densityNode.onDrawForeground = undefined
-
-      if (scale < OVERVIEW_MAX_SCALE) {
-        // Drawing-only hide: the arrays are restored immediately after paint.
-        densityNode.inputs = []
-        densityNode.outputs = []
-      } else {
-        // Working distance exposes actual connection handles without turning the
-        // node into a dense table of names.
-        originalInputs?.forEach(slot => { slot.label = '' })
-        originalOutputs?.forEach(slot => { slot.label = '' })
-      }
+      // A non-empty whitespace label prevents LiteGraph from falling back to
+      // the slot name while leaving the actual slot/handle untouched.
+      densityNode.inputs?.forEach(slot => { slot.label = '\u00a0' })
+      densityNode.outputs?.forEach(slot => { slot.label = '\u00a0' })
 
       baseDrawNode(node, ctx)
+      drawPersistentPortHandles(ctx, densityNode, inputCount, outputCount)
       drawDraft()
     } finally {
-      densityNode.inputs = originalInputs
-      densityNode.outputs = originalOutputs
       densityNode.onDrawForeground = originalForeground
-      originalInputs?.forEach((slot, index) => { slot.label = inputLabels?.[index] })
-      originalOutputs?.forEach((slot, index) => { slot.label = outputLabels?.[index] })
+      densityNode.inputs?.forEach((slot, index) => { slot.label = inputLabels?.[index] })
+      densityNode.outputs?.forEach((slot, index) => { slot.label = outputLabels?.[index] })
     }
   }
 }
@@ -210,7 +236,7 @@ function installDraftLinkMarkers(): void {
     const ctx = args[0] as CanvasRenderingContext2D | undefined
     const link = args[3] as DraftLink | undefined
     const scale = (this as unknown as { ds?: { scale?: number } }).ds?.scale ?? 1
-    if (!ctx || !link?.simulanka_ghost || !link._pos || scale < OVERVIEW_MAX_SCALE) return
+    if (!ctx || !link?.simulanka_ghost || !link._pos || scale < DRAFT_LABEL_MIN_SCALE) return
     drawDraftTag(ctx, link._pos[0], link._pos[1] - 10, scale < DETAIL_MIN_SCALE)
   }
 }
