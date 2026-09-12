@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { AgentSessionController } from './agent-session'
+  import { hasAgentDragRef, readAgentDragRef } from './agent-dnd'
   import SessionHistory from './SessionHistory.svelte'
   import SessionRecovery from './SessionRecovery.svelte'
 
@@ -21,6 +22,7 @@
   let text = ''
   let open = false
   let lastRefCount = 0
+  let dragActive = false
 
   $: hasContext = refs.length > 0
 
@@ -56,6 +58,38 @@
       send()
     }
     if (e.key === 'Escape') close()
+  }
+
+  function onDragEnter(event: DragEvent) {
+    if (!hasAgentDragRef(event)) return
+    event.preventDefault()
+    dragActive = true
+  }
+
+  function onDragOver(event: DragEvent) {
+    if (!hasAgentDragRef(event)) return
+    event.preventDefault()
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
+    dragActive = true
+  }
+
+  function onDragLeave(event: DragEvent) {
+    const current = event.currentTarget as HTMLElement | null
+    const next = event.relatedTarget as Node | null
+    if (current && next && current.contains(next)) return
+    dragActive = false
+  }
+
+  function onDrop(event: DragEvent) {
+    const ref = readAgentDragRef(event)
+    dragActive = false
+    if (!ref) return
+    event.preventDefault()
+    controller.addPendingRef(
+      { kind: ref.kind, ref_id: ref.ref_id },
+      ref.label,
+    )
+    open = true
   }
 </script>
 
@@ -202,12 +236,17 @@
   <button
     class="pet"
     class:busy
+    class:drag-active={dragActive}
     class:has-context={hasContext}
     class:has-suggestion={hasSuggestion}
     class:active={open}
     data-agent-drop-target
     aria-label={open ? '收起 Agent' : '打开 Agent'}
-    title={open ? '收起 Agent' : 'Agent · 只看你明确指给它的对象'}
+    title={dragActive ? 'Drop to show this object to the Agent' : open ? '收起 Agent' : 'Agent · 只看你明确指给它的对象'}
+    on:dragenter={onDragEnter}
+    on:dragover={onDragOver}
+    on:dragleave={onDragLeave}
+    on:drop={onDrop}
     on:click={() => { if (open) close(); else open = true }}
   >
     <span class="pet-face" aria-hidden="true">
@@ -292,11 +331,17 @@
     color: var(--text);
     cursor: pointer;
     box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28);
+    transition: border-color 0.12s, transform 0.12s, box-shadow 0.12s;
   }
   .pet:hover,
   .pet.active,
   .pet.has-context,
   .pet.has-suggestion { border-color: var(--violet); }
+  .pet.drag-active {
+    border-color: var(--violet);
+    transform: scale(1.08);
+    box-shadow: 0 0 0 4px rgba(177, 138, 243, 0.12), 0 8px 24px rgba(0, 0, 0, 0.34);
+  }
   .pet.busy .pet-face { animation: pet-think 0.8s steps(2, end) infinite; }
 
   @keyframes pet-think { 50% { transform: translateY(-2px); } }
