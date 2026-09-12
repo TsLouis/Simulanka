@@ -38,7 +38,7 @@
 - **统一 node-edge-port 渲染**：任何 Profile 的节点同一套画法；PresentationSpec 只声明受控 card fields/badges/palette/Inspector fields 与 formatter key。缺少 Presentation 或 Profile 未知时使用稳定通用卡片并在 Inspector 展示 raw type/name/attrs，不丢实体、不白屏。**任意节点双击可进入**（叶子的内部=合法空视图；child_count 是徽记不是闸门），面包屑由服务端 ancestors + root_info 重建。
 - **跨层边界端口投影**（§12.4）：恰一端在视图内的边投影到虚拟 boundary 节点——纯渲染，虚拟节点永不进图。**root 自身端口=子图声明的 IO，常驻投影为左右括号**（左=in 朝内、右=out；model/module 层空括号也显示=「尚无声明 IO」）；跨界边落在括号槽位或按 (external, direction) 聚合的 boundary 节点上。**括号可连线（2026-07-14）**：槽位携带 root 真端口 id，画线走 POST /edge，kernel **隧道规则**放行（父.in→子.in、子.out→父.out，恰一层；validator 与 doctor 同一规则）。**importer 自动连括号（2026-07-15，彩排反馈#2）**：真图 data_flow 曾全是同层兄弟边、括号永远悬空、数据流读作断裂——现在 trace 补齐**垂直隧道边**（原始输入盖 root producer 印记→逐层 parent.in→child.in；每个 post-hook 在 producer 重印前记录 child.out→parent.out），下钻进任一容器，输入括号已连到第一个消费者、输出括号已连到产出节点。隧道边同样 `source=trace`，走 kernel 隧道规则落库。
 - **布局**：dagre 自动布局，人工拖动的位置持久化并覆盖 dagre 结果。
-- **边语义染色**（夜空主题 theme.ts）：user=金、agent=紫、ghost（proposed 未决）=灰蓝虚线、人拒=绯红；trace 边与「constructed 可信」同源同色（星蓝）。
+- **边语义染色**（workspace palette，见 `theme.ts`）：user=金、agent=紫、ghost（proposed 未决）=灰蓝虚线、人拒=绯红；trace 边与「constructed 可信」同源同色（蓝）。
 - 画线时先按 Edge Profile descriptor 的 alias、端点 Profile/capabilities、port type、方向与 needs_ports 预过滤，再做 shape 校验（match/mismatch/unknown）；未知 descriptor 不猜测，放行到 server，由同一 Registry 返回最终 422/reason。
 - **右键菜单**（自绘 Svelte 层，LiteGraph 内建菜单/搜索框已灭）：空白处的 Profiles/Templates 目录来自 Registry descriptor，并以当前容器 `node.create` affordance 作为入口；节点、边、端口及多选菜单只渲染 server affordances，不按 task/model/module 或 Provider 名称分支。禁用项直接展示 server reason。菜单收起仍使用 window 捕获相 mousedown。
 - **鼠标/导航（2026-07-14）**：视图历史前进/后退（顶栏 ‹ › + Alt+←/→ + 鼠标侧键；一切导航走 navigateTo 单入口）；框选=引擎原生 **Ctrl+拖**、加选=Shift+点。创建目录以 descriptor 的 Profile parent rule 预过滤，server/kernel 仍是硬闸；手放节点的模板 attrs/ports 由 TemplateSpec 给出，落点先持久化再等 SSE 重载。研究原子默认模板仍不进目录，其正路是 plan ingest（§14）。
@@ -47,7 +47,7 @@
 
 - **RegistryPanel**：顶栏 `Registry` 打开只读语义浏览器，直接显示当前 version/digest、可信 packages、capabilities/consumers、Node/Edge Profiles 与 Templates；内容只来自已经过 digest 对齐的 server descriptor。
 - **NodeInspector**：按 PresentationSpec 分组显示声明字段，并始终保留 attrs 检查能力；未知 Profile 显示 raw attrs。端口附加与节点上下文动作读取 affordances，不按类型判断。
-- **消息面（S8 通用会话壳）**：设计原则=**不出现领域工作流按钮，agent→人的一切都是消息**。底部常驻 ChatDock 只负责给当前选中的 ChatNode/新树草稿发送消息和管理用户显式附加的 node/edge/port refs；所在层级、当前选择与祖先都不会自动注入。每棵 conversation tree 投影为一个可拖动 ChatNode UI sidecar，fork 只在节点内部增加分支；真正的新根 Session 才增加 ChatNode。ChatNode 不是 Node/Edge/Port/Profile，不进入语义图。首条消息懒创建 Provider Session；消息与工具事件持久化在 JSONL sidecar，刷新从历史恢复。
+- **消息面（S8 Agent Companion）**：设计原则=**不出现领域工作流按钮，agent→人的一切都是消息**。`AgentCompanion.svelte` 负责当前 scope 的新树草稿、显式附加 node/edge/port refs，以及同一 Session 的发送/状态反馈；`agent-session.ts` controller 负责 tree/branch、provider、streaming、history、recovery 和生命周期动作。当前层级、当前选择与祖先都不会自动注入。Session tree 只保留 server scope 归属，不投影成 Canvas 窗口；fork 在按需展开的 history surface 内切换分支。首条消息懒创建 Provider Session；消息与工具事件持久化在 JSONL sidecar，刷新从 history 恢复。
 - **VerifyPanel / DiscussPanel——已删除（2026-07-14）**：顶栏「核对」按钮一并退役。就地裁决/跳转选中已随 S7 余项落地（2026-07-15，见下）。
 
 ## 写权矩阵（执行点在此层）
@@ -73,9 +73,9 @@
 
 ## 交互定案：scoped conversation tree + 显式补充上下文
 
-- **一树一节点**：一个根 Session 开始一棵 conversation tree，其 id 是不可变 tree id；该树在创建层投影恰好一个 `chat:<tree_id>`。fork 是同一 ChatNode 内的分支，不创建第二个节点。
-- **层级只管可见性**：top 与每个子图 root 各自只挂载本层 ChatNode；下钻/返回不创建 Session、Turn 或 ContextBundle。ChatNode 位置复用 `.simulanka/ui/positions.json` 的 per-view bucket，每树活动分支用 localStorage 恢复。
-- **上下文必须显式**：node/edge/port 只有经右键或 Inspector 附加后才进入 `RefSet`；用户可在 ChatDock 查看标签、固定、删除并预览 canonical payload。零 refs 时用户消息逐字发送，当前 root、祖先、选择集都不自动进入 prompt。
+- **一树一 scope**：一个根 Session 开始一棵 conversation tree，其 id 是不可变 tree id，并绑定创建时的 graph-view scope；fork 是同一 tree 的分支，不创建新的 scope 或图实体。
+- **层级只管可见性**：top 与每个子图 root 各自只列出本层 Session tree；下钻/返回不创建 Session、Turn 或 ContextBundle。树与活动分支在 `AgentCompanion` 的 history surface 内恢复，Canvas 位置状态只属于真实图节点。
+- **上下文必须显式**：node/edge/port 只有经右键或 Inspector 附加后才进入 `RefSet`；用户可在 Agent Companion 查看标签、固定、删除并预览 canonical payload。零 refs 时用户消息逐字发送，当前 root、祖先、选择集都不自动进入 prompt。
 - **Provider 原生状态优先**：继续会话走 Provider 原生 session/thread resume，不把 Simulanka transcript 或祖先消息 replay 回 prompt。JSONL 转录用于恢复 UI 与审计，不取代 Provider 历史；相同 supplemental bundle 的 sent digest 按 native session id 记账。
 - **中断与导航隔离**：流式 turn 捕获发送时的 scope/tree/session；生成途中下钻不会把事件写入新层或别树。暂停只中断当前 TurnHandle 并保留原生 session id、转录和工作区，下一轮仍从原生会话续接。
 - **恢复区**：旧 created 事件没有 scope、scope 节点已删除、父链缺失或成环的树不混入正常 graph view，统一从 `unassigned` 恢复入口查看。
@@ -130,11 +130,11 @@
 - **escalate 就地「已处理」**：NodeInspector 在未解决 escalate note 上出按钮 → `POST /node/{id}/resolve`（可附说明）；卡片 RESOLVED 徽记与 S3 brief「只列 open」由此闭环。
 - 人肉彩排的「人终裁」步骤走本件。
 
-**S8 内嵌 agent 会话（通用插座）** 🔲：前端提供领域无关的 Session/Turn/Event 与 ChatNode 壳；讨论、实验、审查等以后都是在这套语言上加载的程序，不是核心模式。当前实现已覆盖 scoped conversation tree、节点内 fork、JSONL 历史恢复、显式 supplemental context、Provider adapter 与流式工具事件；停止/恢复完整验收仍按 S8 OpenSpec tasks 收口。
+**S8 内嵌 agent 会话（通用插座）** 🔲：前端提供领域无关的 Session/Turn/Event 与 Agent Companion surface；讨论、实验、审查等以后都是在这套语言上加载的程序，不是核心模式。当前实现已覆盖 scoped conversation tree、按需 history 内 fork、JSONL 历史恢复、显式 supplemental context、Provider adapter 与流式工具事件；停止/恢复完整验收仍按 S8 OpenSpec tasks 收口。
 
-**验收重点**：同层可有多棵树且一树一个 ChatNode；进入另一子图只看该层的树，返回后位置与活动分支恢复；fork 后节点数不变；刷新不丢会话 id/历史；零 refs 的消息逐字发送；生成途中切层不串流；归档只影响当前分支。界面没有“派工、讨论/干活、开始实验”等领域动作。
+**验收重点**：同层可有多棵树且每树保留独立 scope；进入另一子图只看该层的树，返回后恢复活动分支；fork 不增加图节点；刷新不丢会话 id/历史；零 refs 的消息逐字发送；生成途中切层不串流；归档只影响当前分支。默认工作区只显示轻量 Agent Companion，完整 transcript/history 按需展开。界面没有“派工、讨论/干活、开始实验”等领域动作。
 
-**死端勿再试**：PTY 终端透传（xterm.js 嵌 TUI）作主路线；把 transcript/祖先历史 replay 到每轮 prompt；把 scope 或当前选择静默当上下文；为不同业务复制 ChatNode 类型。
+**死端勿再试**：PTY 终端透传（xterm.js 嵌 TUI）作主路线；把 transcript/祖先历史 replay 到每轮 prompt；把 scope 或当前选择静默当上下文；为不同业务复制 Agent surface 类型。
 
 **S9 配套（前端侧）** 🔲（2026-07-18 Reparent 场 grill 定；规格主篇见 assembly.md「手稿层改造」）：①**删除预览确认框**——清单列明 N 手稿文件、M 原子、K 档案、断链提示，确认后盘＋图一笔事务清除；②**失效态渲染**——手稿被系统外删的原子灰显＋删除线、关联边保留标疑，doctor 如实报、不静默清；③**圈选打包 v1（照片域）**——模型零件等圈选 → 新建纯图组容器（directory 类型、无盘身份）＋kernel `ReparentOp` 迁入，跨层边界端口投影是现成机制；研究原子不走画布拖拽（位置由手稿派生）；文件/轮次文件夹进分组（07-17 已定原则「不动真文件」）v1 不施工，首撞再开。
 

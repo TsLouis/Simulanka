@@ -1,9 +1,7 @@
-// Frontend v2 canvas theme. The exported names stay stable so the renderer and
-// older components do not need to know that the visual language changed from
-// ornate "starlit atlas" to a quiet pixel workspace.
+// Canvas appearance and existing Node Editor presentation hooks.
 import { LGraphCanvas, LiteGraph, type LGraphNode } from 'litegraph.js'
 
-export const SKY = '#081421'
+export const CANVAS_BACKGROUND = '#081421'
 
 // Provenance still matters, but it is communicated with a restrained palette.
 export const EDGE_COLORS: Record<string, string> = {
@@ -370,13 +368,8 @@ function installPortTypePalette(canvas: LGraphCanvas): void {
   Object.assign(canvasType.link_type_colors, PORT_TYPE_COLORS)
 }
 
-/**
- * Keep the historical function name because App.svelte already calls it.
- * The v2 implementation intentionally removes decorative stars and glow: the
- * graph is the product, not a backdrop. Pixel character comes from crisp lines,
- * small radii and monospace text rather than game-like ornament.
- */
-export function applyNightSky(canvas: LGraphCanvas): void {
+/** Apply the workspace palette and established Node/Port/Edge interactions. */
+export function applyWorkspaceTheme(canvas: LGraphCanvas): void {
   const lg = LiteGraph as unknown as Record<string, unknown>
   lg.NODE_TITLE_COLOR = '#edf4ff'
   lg.NODE_SELECTED_TITLE_COLOR = '#ffffff'
@@ -393,7 +386,7 @@ export function applyNightSky(canvas: LGraphCanvas): void {
   const target = canvas as unknown as Record<string, unknown>
   target.background_image = null
   target.show_info = false
-  target.clear_background_color = SKY
+  target.clear_background_color = CANVAS_BACKGROUND
   target.render_canvas_border = false
   target.render_connections_border = false
   target.default_link_color = LINEAGE_COLOR

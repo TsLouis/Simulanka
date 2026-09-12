@@ -35,7 +35,7 @@
 - [x] 5.2 `Ask` on a node attaches the explicit ref through the existing supplemental-context contract and opens the Companion composer.
 - [ ] 5.3 Support an explicit pointer/drag-style attachment path for selected node/edge/port refs where technically practical.
 - [x] 5.4 Show pending refs and preserve context preview before sending.
-- [x] 5.5 Keep long transcript/history accessible on demand; inactive ChatNodes collapse to sidecar tabs instead of permanently occupying canvas space.
+- [x] 5.5 Keep long transcript/history accessible on demand from the Agent Companion; do not project Session trees as canvas windows.
 
 ## 6. Graph-native Agent expression
 
@@ -59,11 +59,19 @@
 
 ## 9. Verification and docs
 
-- [ ] 9.1 Run frontend type/build checks and relevant tests (repository currently has no PR CI; local dependency-backed check still required).
+- [x] 9.1 Run frontend type/build checks and relevant tests (repository currently has no PR CI; local dependency-backed check still required).
 - [ ] 9.2 Run backend regression tests for Registry/affordance/session/context contracts touched by the UI integration.
-- [ ] 9.3 GitNexus detect-changes skipped for this user-authorized iteration.
+- [x] 9.3 GitNexus detect-changes skipped for this user-authorized iteration.
 - [ ] 9.4 Manually verify default canvas, persistent independent ports across zoom, datatype link colours, search gestures, selection attention, selection actions, Agent context, and Draft presentation.
-- [ ] 9.5 Update `docs/frontend.md` to the accepted implementation and archive/sync the OpenSpec change after acceptance.
+- [x] 9.5 Update `docs/frontend.md` to the accepted implementation.
+- [ ] 9.6 Archive/sync the OpenSpec change after PR #15 acceptance; keep this Draft iteration apply-ready until then.
+
+## 10. Cleanup (#18, PR #15 branch)
+
+- [x] 10.1 Extract Session orchestration into `agent-session.ts`: scope/tree/branch selection, history/recovery, provider capabilities, streaming, lifecycle actions, explicit refs and preview.
+- [x] 10.2 Replace the old dock with `AgentCompanion.svelte` and one opt-in history surface; retain tool events, ContextBundle audit details and lifecycle controls.
+- [x] 10.3 Delete floating Session-window projection, drag/position wiring, the obsolete component and compatibility CSS; remove verified unused starter assets and obsolete visual names.
+- [x] 10.4 Verify Session/Context behavior, run `npm run check` / `npm run build`, and review the complete cleanup diff. Keep #17, Node Editor interactions, backend/domain/API contracts unchanged; keep PR #15 Draft.
 
 ## Deferred follow-up
 

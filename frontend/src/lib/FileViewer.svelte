@@ -110,7 +110,7 @@
 </aside>
 
 <style>
-  /* 星图册 · 典籍抽屉 —— 自右侧展开的一页书 */
+  /* File drawer opens from the right edge. */
   .viewer {
     position: absolute;
     top: 0;
@@ -220,7 +220,7 @@
     border-radius: 3px;
     box-shadow: 0 0 10px var(--gold-glow);
   }
-  /* markdown 排版（夜空上的一页书） */
+  /* Markdown document typography. */
   .markdown :global(h1),
   .markdown :global(h2),
   .markdown :global(h3) {

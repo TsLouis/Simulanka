@@ -156,7 +156,7 @@
   }
   .source-user { color: var(--amber); }
   .source-agent { color: var(--violet); }
-  .source-trace { color: var(--star); }
+  .source-trace { color: var(--blue); }
 
   .ends {
     overflow: hidden;

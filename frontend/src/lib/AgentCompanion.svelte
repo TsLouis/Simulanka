@@ -1,23 +1,32 @@
 <script lang="ts">
-  import type { ContextPreviewDTO, ContextRefDTO } from './api'
+  import type { AgentSessionController } from './agent-session'
+  import SessionHistory from './SessionHistory.svelte'
+  import SessionRecovery from './SessionRecovery.svelte'
 
-  // Frontend v2: the agent is a canvas companion, not a permanent chat bar.
-  // Context remains explicit: only refs supplied by the user enter the bundle.
-  export let contextLabel: string
-  export let busy = false
-  export let readOnly = false
-  export let panelOpen = false
-  export let refs: Array<
-    ContextRefDTO & { label: string; pinned: boolean }
-  > = []
-  export let preview: ContextPreviewDTO | null = null
-  export let previewBusy = false
-  export let previewError: string | null = null
-  export let onSend: (text: string) => void
-  export let onTogglePanel: () => void
-  export let onRemoveRef: (ref: ContextRefDTO) => void = () => {}
-  export let onTogglePin: (ref: ContextRefDTO) => void = () => {}
-  export let onPreview: () => void = () => {}
+  export let controller: AgentSessionController
+
+  $: contextLabel = $controller.contextLabel
+  $: busy = $controller.busy
+  $: readOnly = $controller.readOnly
+  $: refs = $controller.pendingRefs
+  $: preview = $controller.preview
+  $: previewBusy = $controller.previewBusy
+  $: previewError = $controller.previewError
+  $: feedback = $controller.events.findLast(
+    event => event.type === 'agent_text' || event.type === 'error',
+  )
+  let historyOpen = false
+  let recoveryOpen = false
+
+  function close() {
+    open = false
+    historyOpen = false
+  }
+
+  function openRecovery() {
+    recoveryOpen = true
+    void controller.openRecovery()
+  }
 
   let text = ''
   let open = false
@@ -38,7 +47,7 @@
     if (!text.trim() || busy || readOnly) return
     const message = text
     text = ''
-    onSend(message)
+    void controller.sendMessage(message)
   }
 
   function onKeydown(e: KeyboardEvent) {
@@ -47,34 +56,71 @@
       send()
     }
     if (e.key === 'Escape') {
-      open = false
+      close()
     }
   }
 </script>
 
 <div class="companion-shell" class:open>
   {#if open}
-    <section class="companion-panel" aria-label="Agent Companion">
+    <section class="companion-panel" class:with-history={historyOpen} aria-label="Agent Companion">
       <header class="panel-head">
         <div>
-          <strong>Agent</strong>
+          <strong>Agent <small>{$controller.providerId}</small></strong>
           <span>{busy ? 'thinking…' : readOnly ? 'read only' : hasContext ? `looking at ${refs.length} object${refs.length === 1 ? '' : 's'}` : 'ready'}</span>
         </div>
         <div class="panel-actions">
           <button
-            class:active={panelOpen}
-            on:click={onTogglePanel}
+            class:active={historyOpen}
+            aria-expanded={historyOpen}
+            on:click={() => (historyOpen = !historyOpen)}
+            title="展开或收起完整讨论与会话历史"
+          >History</button>
+          <button
+            on:click={() => controller.startNewSession()}
+            disabled={busy || $controller.actionBusy}
             title="在当前图层创建新的讨论"
+            aria-label="新建讨论"
           >＋</button>
-          <button on:click={() => (open = false)} title="收起">×</button>
+          <button on:click={close} title="收起" aria-label="收起 Agent">×</button>
         </div>
       </header>
+
+      {#if $controller.error}
+        <div class="preview error" role="alert">{$controller.error}</div>
+      {/if}
+
+      {#if historyOpen}
+        <SessionHistory {controller} onRecovery={openRecovery} />
+      {:else if feedback?.text}
+        <button class="feedback" class:error={feedback.type === 'error'} on:click={() => (historyOpen = true)} title="打开完整记录">
+          {feedback.text.length > 180 ? `${feedback.text.slice(0, 180)}…` : feedback.text}
+        </button>
+      {/if}
+
+      {#if $controller.activeSession?.status === 'running'}
+        <div class="session-status">
+          {#if $controller.capabilities?.interrupt === true && $controller.interruptReady}
+            <button
+              on:click={() => void controller.stopActiveSession($controller.selectedTreeId!)}
+              disabled={$controller.stopping || $controller.actionBusy}
+              title="暂停当前轮；后续消息继续同一原生会话"
+            >{$controller.stopping ? '暂停中…' : '暂停'}</button>
+          {:else if $controller.capabilities?.interrupt === true}
+            <span>等待原生会话标识</span>
+          {:else if $controller.capabilities?.interrupt === false}
+            <span>Provider 不支持暂停</span>
+          {:else}
+            <span>暂停能力未知</span>
+          {/if}
+        </div>
+      {/if}
 
       {#if refs.length > 0}
         <div class="context-block">
           <div class="context-head">
             <span>Context · {refs.length}</span>
-            <button class="text-button" on:click={onPreview} disabled={previewBusy}>
+            <button class="text-button" on:click={() => void controller.previewPendingRefs()} disabled={previewBusy}>
               {previewBusy ? 'checking…' : 'preview'}
             </button>
           </div>
@@ -88,13 +134,13 @@
                   class="pin"
                   title={ref.pinned ? '发送后继续保留' : '固定到后续轮次'}
                   aria-label={ref.pinned ? `取消固定 ${ref.label}` : `固定 ${ref.label}`}
-                  on:click={() => onTogglePin(ref)}
+                  on:click={() => controller.togglePendingPin(ref)}
                 >{ref.pinned ? '◆' : '◇'}</button>
                 <button
                   class="remove"
                   title="移除"
                   aria-label={`移除 ${ref.label}`}
-                  on:click={() => onRemoveRef(ref)}
+                  on:click={() => controller.removePendingRef(ref)}
                 >×</button>
               </span>
             {/each}
@@ -142,7 +188,7 @@
     class:active={open}
     aria-label={open ? '收起 Agent' : '打开 Agent'}
     title={open ? '收起 Agent' : 'Agent · 只看你明确指给它的对象'}
-    on:click={() => (open = !open)}
+    on:click={() => { if (open) close(); else open = true }}
   >
     <span class="pet-face" aria-hidden="true">
       <i></i><i></i>
@@ -152,7 +198,46 @@
   </button>
 </div>
 
+{#if recoveryOpen}
+  <SessionRecovery
+    sessions={$controller.recovery.sessions}
+    selectedSessionId={$controller.recovery.sessionId}
+    events={$controller.recovery.events}
+    loading={$controller.recovery.busy}
+    error={$controller.recovery.error}
+    onSelect={(sessionId) => void controller.openRecoverySession(sessionId)}
+    onRefresh={() => void controller.openRecovery()}
+    onClose={() => (recoveryOpen = false)}
+  />
+{/if}
+
 <style>
+  .companion-panel.with-history { width: min(680px, calc(100vw - 36px)); }
+  .panel-head small { color: var(--muted); font-size: 10px; font-weight: normal; }
+  .feedback {
+    display: block;
+    margin: 8px 10px 0;
+    padding: 7px;
+    max-height: 64px;
+    overflow: auto;
+    text-align: left;
+    overflow-wrap: anywhere;
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--hairline-2);
+    cursor: pointer;
+    font: inherit;
+    font-size: 11px;
+  }
+  .feedback.error { color: var(--red); }
+  .session-status { padding: 5px 10px; color: var(--muted); font-size: 10px; }
+  .session-status button {
+    border: 1px solid var(--hairline);
+    background: var(--panel-2);
+    color: var(--gold);
+    cursor: pointer;
+    font: inherit;
+  }
   .companion-shell {
     position: absolute;
     right: 18px;
@@ -244,7 +329,7 @@
     box-sizing: border-box;
     display: grid;
     place-items: center;
-    border: 1px solid var(--sky);
+    border: 1px solid var(--canvas-bg);
     border-radius: 4px;
     background: var(--violet);
     color: #08111f;
@@ -340,7 +425,7 @@
     padding: 2px 6px;
     border: 0;
     background: transparent;
-    color: var(--star);
+    color: var(--blue);
   }
 
   .chips {

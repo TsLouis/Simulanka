@@ -121,10 +121,35 @@ UI 默认使用：Draft、Keep、Dismiss、Context、Why、Related、Needs atten
 ## Migration Plan
 
 1. 建立 Frontend v2 shell 与设计 tokens，不改变 server API。
-2. 抽离默认常驻 Inspector/Chat 的布局依赖，保持旧组件可按需打开。
+2. 抽离默认常驻面板的布局依赖；完整 Inspector 按需打开，Session 历史迁入 Companion 的按需 discussion surface，删除旧聊天窗口组件。
 3. 对齐 ComfyUI-style Node/Port 基线：所有 Port handle 常驻、低 zoom 只隐藏 label/detail、Node 尺寸尊重 Port 数量、原生连线反馈优先保留。
 4. 增加 selection ContextPopover 与 Ask/Open 流程。
 5. 增加 Agent Companion，复用现有 session/context API。
 6. 增加 Attention/Annotation/Draft projection，优先映射现有 proposed semantics。
 7. 运行前端与后端回归，更新 authoritative `docs/frontend.md`。
 8. 再评估是否另开或扩展 trust/undo change；未验证前不放宽写权。
+
+
+## Cleanup slice (#18)
+
+The approved product model is Graph-native workspace + Agent Companion. The
+frontend Session controller owns scope/tree/branch selection, persisted-history
+loading, recovery, lifecycle actions, provider capabilities, normalized streaming,
+and explicit pending refs / preview. It has no canvas, graph-position, or node
+projection dependency. `App.svelte` retains graph navigation and passes scope and
+explicit object attachments into this controller.
+
+`AgentCompanion.svelte` is the only default Agent surface. It owns its compact
+composer and conditionally mounts the history/discussion surface on explicit
+request. The history surface preserves branch selection, tool input/output,
+ContextBundle references and audit details, usage, stop, fork and archive. Recovery
+remains an explicit, separate read-only view of unassigned sessions. No transcript
+opens automatically during restore or streaming, and no Session tree is projected
+as a canvas window. Old window positions may remain in existing UI data; cleanup
+does not migrate or rewrite stored graph/layout data.
+
+This slice deletes obsolete presentation code instead of retaining hidden window
+components or CSS suppression. It leaves all server endpoints and DTOs, provider
+semantics, Registry/write-authority contracts, graph persistence, and the accepted
+Node/Port/Edge interactions unchanged. Add Node correctness remains #17; new
+annotations, drag-to-Agent and broader shell features remain separate work.

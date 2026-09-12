@@ -193,7 +193,7 @@
 
   .search-icon {
     padding-left: 8px;
-    color: var(--star);
+    color: var(--blue);
     font: 700 13px var(--font-mono);
   }
 
@@ -208,7 +208,7 @@
     font: 12px var(--font-mono);
   }
 
-  .search-row:focus-within { border-color: var(--star); }
+  .search-row:focus-within { border-color: var(--blue); }
 
   .hint {
     padding: 5px 7px 4px;
@@ -303,7 +303,7 @@
 
   .type-chip {
     background: var(--panel-3);
-    color: var(--star);
+    color: var(--blue);
     border: 1px solid var(--hairline);
     border-radius: 3px;
     font-size: 9px;

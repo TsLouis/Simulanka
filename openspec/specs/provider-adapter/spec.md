@@ -25,7 +25,7 @@ Codex Adapter SHALL 以 `codex exec --json` 启动首轮，从 `thread.started` 
 - **THEN** 第二轮命令使用该 id 的原生 resume，且输入只含本轮用户消息和新增 supplemental context
 
 ### Requirement: Provider 事件隔离
-每个 Adapter SHALL 在单一边界内把 Provider 原始事件转换为 SessionEvent。Provider 格式变化 MUST NOT 要求修改 ChatNode 或通用 Session storage。
+每个 Adapter SHALL 在单一边界内把 Provider 原始事件转换为 SessionEvent。Provider 格式变化 MUST NOT 要求修改 Agent Companion 或通用 Session storage。
 
 #### Scenario: 新增 Provider
 - **WHEN** 实现一个满足合同的新 Provider Adapter

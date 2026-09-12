@@ -10,6 +10,10 @@
 ### Requirement: 动作菜单由 affordances 驱动
 节点、边、端口及多选菜单 SHALL 渲染 server 返回的 affordances。核心菜单 MUST NOT 为 task、model、module 或其他领域 type 设置专属动作分支。前端 MAY 将最常用的当前可用 affordance 投影为对象附近的轻量 contextual controls，但 MUST NOT 绕过 server resolver。
 
+#### Scenario: task 节点菜单
+- **WHEN** 用户右键 task 节点
+- **THEN** 菜单仅显示其当前 affordances，不出现硬编码派工入口
+
 #### Scenario: 选择普通节点
 - **WHEN** 用户单击一个有可用 affordances 的节点
 - **THEN** UI 可显示轻量 `Ask / Open / more` 控件，more 中的动作仍由 server affordances 决定

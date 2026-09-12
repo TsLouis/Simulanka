@@ -285,7 +285,7 @@
   .node-mark {
     width: 8px;
     height: 8px;
-    border: 1px solid var(--star);
+    border: 1px solid var(--blue);
     background: var(--panel-3);
   }
   .node-mark.trusted { background: var(--amber); border-color: var(--amber); }
@@ -322,7 +322,7 @@
   }
   button:hover:not(:disabled),
   button.active {
-    border-color: var(--star);
+    border-color: var(--blue);
     color: var(--ivory);
   }
   button.primary {
@@ -436,7 +436,7 @@
     height: 6px;
     border: 1px solid currentColor;
   }
-  .port-dot.in { color: var(--star); background: var(--star); }
+  .port-dot.in { color: var(--blue); background: var(--blue); }
   .port-dot.out { color: var(--amber); background: var(--amber); }
   .port-name {
     min-width: 0;

@@ -49,8 +49,7 @@ interface LiteLink {
 
 // Link colour by edge provenance (§13.5.2): machine-traced vs human-drawn vs
 // agent-asserted, so the three read apart at a glance. LiteGraph honours
-// `link.color` in renderLink. Palette lives in theme.ts (星图册: trace=星蓝,
-// user=金线, agent=紫晶; ghost=灰蓝低语, rejected=绯红).
+// `link.color` in renderLink. The provenance palette lives in theme.ts.
 
 const TYPE_PREFIX = 'simulanka/'
 const BOUNDARY_PREFIX = 'simulanka-boundary/'
@@ -336,7 +335,7 @@ function attachCard(
   }).onDrawForeground = drawCardForeground
 }
 
-// S6 trust 描边：环住整张星卡（含标题条）。unreviewed 刻意最淡——
+// S6 trust 描边：环住整张节点卡（含标题条）。unreviewed 刻意最淡——
 // 「未定」应显眼地不显眼；其余四级按 theme 五色发一圈微光。
 function drawTrustRing(
   ctx: CanvasRenderingContext2D,
