@@ -14,7 +14,9 @@ const {
   AGENT_REF_MIME,
   hasAgentDragRef,
   readAgentDragRef,
+  readAgentDragRefs,
   writeAgentDragRef,
+  writeAgentDragRefs,
 } = await server.ssrLoadModule('/src/lib/agent-dnd.ts')
 
 class FakeTransfer {
@@ -54,6 +56,22 @@ test('writes and reads a typed node/edge/port reference without implicit context
   }
 })
 
+test('a selected RefSet roundtrips as explicit context and deduplicates repeated refs', () => {
+  const transfer = new FakeTransfer()
+  const event = eventWith(transfer)
+  writeAgentDragRefs(event, [
+    { kind: 'node', ref_id: 'n1', label: 'experiment · E1' },
+    { kind: 'node', ref_id: 'n2', label: 'evidence · V1' },
+    { kind: 'node', ref_id: 'n1', label: 'duplicate label' },
+  ])
+
+  assert.equal(transfer.getData('text/plain'), '3 Simulanka objects')
+  assert.deepEqual(readAgentDragRefs(event), [
+    { kind: 'node', ref_id: 'n1', label: 'experiment · E1' },
+    { kind: 'node', ref_id: 'n2', label: 'evidence · V1' },
+  ])
+})
+
 test('ordinary text drags are not Agent context', () => {
   const transfer = new FakeTransfer()
   transfer.setData('text/plain', 'not a graph reference')
@@ -61,9 +79,10 @@ test('ordinary text drags are not Agent context', () => {
 
   assert.equal(hasAgentDragRef(event), false)
   assert.equal(readAgentDragRef(event), null)
+  assert.deepEqual(readAgentDragRefs(event), [])
 })
 
-test('malformed or unsupported typed payloads are rejected', () => {
+test('malformed or unsupported typed payload members are rejected', () => {
   for (const payload of [
     '{bad json',
     JSON.stringify({ kind: 'file', ref_id: 'x', label: 'x' }),
@@ -74,4 +93,14 @@ test('malformed or unsupported typed payloads are rejected', () => {
     transfer.setData(AGENT_REF_MIME, payload)
     assert.equal(readAgentDragRef(eventWith(transfer)), null)
   }
+
+  const mixed = new FakeTransfer()
+  mixed.setData(AGENT_REF_MIME, JSON.stringify([
+    { kind: 'node', ref_id: 'n1', label: 'valid' },
+    { kind: 'file', ref_id: 'f1', label: 'invalid kind' },
+    { kind: 'edge', ref_id: '', label: 'invalid id' },
+  ]))
+  assert.deepEqual(readAgentDragRefs(eventWith(mixed)), [
+    { kind: 'node', ref_id: 'n1', label: 'valid' },
+  ])
 })
