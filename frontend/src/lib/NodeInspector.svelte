@@ -1,5 +1,6 @@
 <script lang="ts">
   import { fetchProvenance, type FileOpenRequest, type ProvenanceHop } from './api'
+  import { writeAgentDragRef } from './agent-dnd'
   import { orderedAttributeEntries, resolveNodePresentation } from './presentation'
   import type { NodeDTO, PortDTO, RegistryDescriptorDTO } from './types'
 
@@ -91,11 +92,41 @@
       if (node?.id === id) contextBusy = false
     }
   }
+
+  function dragNodeToAgent(event: DragEvent) {
+    if (!node || nodeAttachAction?.enabled !== true) {
+      event.preventDefault()
+      return
+    }
+    writeAgentDragRef(event, {
+      kind: 'node',
+      ref_id: node.id,
+      label: `${node.type} · ${node.name}`,
+    })
+  }
+
+  function dragPortToAgent(event: DragEvent, port: PortDTO) {
+    if (portAttachAction(port)?.enabled !== true) {
+      event.preventDefault()
+      return
+    }
+    writeAgentDragRef(event, {
+      kind: 'port',
+      ref_id: port.id,
+      label: `port · ${node?.name ?? port.node_id}/${port.name}`,
+    })
+  }
 </script>
 
 {#if node}
   <div class="selection-ui" class:expanded>
-    <div class="selection-bar">
+    <div
+      class="selection-bar"
+      class:draggable={nodeAttachAction?.enabled === true}
+      draggable={nodeAttachAction?.enabled === true}
+      on:dragstart={dragNodeToAgent}
+      title={nodeAttachAction?.enabled ? 'Drag this object to the Agent, or use Ask' : undefined}
+    >
       <span class="node-mark" class:trusted={node.trust !== null} title={node.trust ?? node.type}></span>
       <div class="identity">
         <strong>{node.name}</strong>
@@ -156,7 +187,13 @@
                   {@const attachAction = portAttachAction(port)}
                   {@const shape = portShape(port)}
                   {@const confidence = portConfidence(port)}
-                  <div class="port-row">
+                  <div
+                    class="port-row"
+                    class:draggable={attachAction?.enabled === true}
+                    draggable={attachAction?.enabled === true}
+                    on:dragstart={(event) => dragPortToAgent(event, port)}
+                    title={attachAction?.enabled ? 'Drag this input to the Agent' : undefined}
+                  >
                     <span class="port-dot in"></span>
                     <div class="port-name">
                       <strong>{portLabel(port) ?? port.name}</strong>
@@ -183,7 +220,13 @@
                   {@const attachAction = portAttachAction(port)}
                   {@const shape = portShape(port)}
                   {@const confidence = portConfidence(port)}
-                  <div class="port-row">
+                  <div
+                    class="port-row"
+                    class:draggable={attachAction?.enabled === true}
+                    draggable={attachAction?.enabled === true}
+                    on:dragstart={(event) => dragPortToAgent(event, port)}
+                    title={attachAction?.enabled ? 'Drag this output to the Agent' : undefined}
+                  >
                     <span class="port-dot out"></span>
                     <div class="port-name">
                       <strong>{portLabel(port) ?? port.name}</strong>
@@ -287,6 +330,10 @@
     background: rgba(12, 23, 38, 0.94);
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
   }
+  .selection-bar.draggable,
+  .port-row.draggable { cursor: grab; }
+  .selection-bar.draggable:active,
+  .port-row.draggable:active { cursor: grabbing; }
   .node-mark {
     width: 8px;
     height: 8px;
