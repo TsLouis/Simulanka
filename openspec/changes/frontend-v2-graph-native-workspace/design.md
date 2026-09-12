@@ -9,7 +9,7 @@
 **Goals:**
 
 - 打开项目时主要看到 Graph，而不是工具面板。
-- Node 在不同 zoom 下显示恰当的信息密度；Port 是节点正常表达的一部分，但远距离可隐藏。
+- Node 在不同 zoom 下显示恰当的信息密度；Port 是节点正常结构的一部分，其 handle 始终可见，远距离只隐藏文字与非必要详情。
 - 选择对象后即可轻量 Ask/Open，不要求先打开永久 Inspector/Chat。
 - Agent 能围绕 node/edge/port/selection 工作，并用图上 Draft/annotation/attention 表达想法。
 - 产品语言简洁，内部安全、审计和来源信息仍可追溯。
@@ -35,15 +35,15 @@
 
 Node presentation 分三级，但用户不感知“模式”：
 
-- overview：类型/图标 + 名称；Port 与非必要字段隐藏。
-- working：显示可连接 Port 的视觉接口；关键状态可见。
+- overview：类型/图标 + 名称；每一个真实 input/output Port handle 仍独立可见，但隐藏 Port 名称和非必要字段。
+- working：保持全部 Port handle 独立可见；可继续隐藏长标签，仅展示结构和关键状态。
 - detail：显示 Port 名称及 input/output 语义、受控 PresentationSpec 字段和必要 badge。
 
 阈值由前端统一策略决定，不写进 Profile。具体字段仍由 PresentationSpec 决定；Port 列表来自真实 Graph payload/Registry contract，不复制领域类型规则。
 
 ### 3. Port is a first-class visual affordance
 
-Port 不是“详情属性”。在 working/detail zoom 下，输入 Port 固定投影在左侧、输出 Port 在右侧；方向、type 和连接 eligibility 继续由 Registry/Edge Profile 约束。远距离隐藏 Port 是视觉降噪，不代表 Port 不存在或不可追溯。
+Port 不是“详情属性”，而是 Node 的结构轮廓。所有 zoom 下，每个真实 input/output Port SHALL 保持独立 handle，不得为了降噪把多个 Port 合并、堆叠或整体隐藏。输入 Port 固定投影在左侧、输出 Port 在右侧；zoom 只控制 Port 的名称、type、shape 等文字密度。方向、type 和连接 eligibility 继续由 Registry/Edge Profile 约束。
 
 root boundary IO 仍遵守现有括号/隧道规则；本 change 只统一其视觉语言。
 
@@ -92,6 +92,7 @@ UI 默认使用：Draft、Keep、Dismiss、Context、Why、Related、Needs atten
 
 - [隐藏机制导致用户不知道发生了什么] → 关键变更提供局部反馈、Undo/详情入口和可追溯来源。
 - [zoom 信息密度抖动] → 使用带 hysteresis 的阈值或稳定区间，避免滚轮轻微变化反复切换。
+- [Port 在远景过密] → 只隐藏 Port 文字与细节，不隐藏 handle；通过节点尺寸、间距和像素级 handle 样式保持多个 Port 可分辨。
 - [Agent Companion 变成新聊天壳] → 默认小而安静；长 transcript 只在用户主动展开 Discussion 时出现。
 - [Draft 与正式图混淆] → 必须同时使用透明度/线型/标识，不只依赖颜色。
 - [显式 context 交互过重] → Ask selection 可作为一步 attach，但 UI 必须显示将发送的对象，并保留 preview。
@@ -101,7 +102,7 @@ UI 默认使用：Draft、Keep、Dismiss、Context、Why、Related、Needs atten
 
 1. 建立 Frontend v2 shell 与设计 tokens，不改变 server API。
 2. 抽离默认常驻 Inspector/Chat 的布局依赖，保持旧组件可按需打开。
-3. 在 LiteGraph adapter 增加 zoom-aware card/Port presentation，并做人工目验。
+3. 在 LiteGraph adapter/theme 增加 zoom-aware card/Port presentation：Port handle 始终可见，zoom 只控制 label/detail，并做人工目验。
 4. 增加 selection ContextPopover 与 Ask/Open 流程。
 5. 增加 Agent Companion，复用现有 session/context API。
 6. 增加 Attention/Annotation/Draft projection，优先映射现有 proposed semantics。
