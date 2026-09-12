@@ -62,9 +62,9 @@ export function styleNode(node: LGraphNode, paletteToken: string): void {
 
 const CANVAS_FONT = "ui-monospace, 'SFMono-Regular', 'Cascadia Mono', Consolas, monospace"
 
-// Port handles are structural information and therefore never disappear.
-// Zoom only controls textual density: below detail scale we hide labels/card
-// fields, while every real input/output remains independently positioned.
+// ComfyUI-inspired density rule: slots/ports are structural and never disappear.
+// Zoom only suppresses labels and card detail. Every input/output keeps its own
+// native LiteGraph row, anchor, shape and hit target at every scale.
 const DETAIL_MIN_SCALE = 0.98
 const DRAFT_LABEL_MIN_SCALE = 0.62
 
@@ -75,11 +75,6 @@ type DensityNode = LGraphNode & {
   inputs?: SlotLike[]
   outputs?: SlotLike[]
   onDrawForeground?: (...args: unknown[]) => void
-  getConnectionPos?: (
-    isInput: boolean,
-    slotIndex: number,
-    out?: Float32Array | number[],
-  ) => Float32Array | number[]
 }
 
 type DensityCanvas = LGraphCanvas & {
@@ -125,46 +120,12 @@ function isDraftNode(node: DensityNode): boolean {
 }
 
 /**
- * LiteGraph may simplify native slot decoration at very small scales. Overlay a
- * crisp pixel handle at each real connection position so ports never collapse
- * visually into the node body. The overlay uses the real slot index, therefore
- * a node with N ports always reads as N distinct ports even when labels vanish.
- */
-function drawPersistentPortHandles(
-  ctx: CanvasRenderingContext2D,
-  node: DensityNode,
-  inputCount: number,
-  outputCount: number,
-): void {
-  if (!node.getConnectionPos) return
-
-  const drawSide = (isInput: boolean, count: number, color: string) => {
-    ctx.fillStyle = color
-    ctx.strokeStyle = SKY
-    ctx.lineWidth = 1
-    for (let index = 0; index < count; index++) {
-      const pos = node.getConnectionPos?.(isInput, index)
-      if (!pos) continue
-      const x = Number(pos[0])
-      const y = Number(pos[1])
-      ctx.fillRect(x - 3, y - 3, 6, 6)
-      ctx.strokeRect(x - 3.5, y - 3.5, 7, 7)
-    }
-  }
-
-  ctx.save()
-  drawSide(true, inputCount, '#68b8f2')
-  drawSide(false, outputCount, '#e6bf62')
-  ctx.restore()
-}
-
-/**
  * Render-only progressive disclosure for Node/Port density.
  *
- * Port handles are always structural and always visible. Below detail zoom we
- * only suppress textual labels and custom card details. We never remove or
- * merge slot arrays, so multiple ports retain distinct rows, link anchors and
- * hit targets at every zoom level.
+ * This follows ComfyUI's mature node-editor convention: slot geometry remains
+ * present in low-detail rendering, while labels are omitted. We therefore never
+ * remove, merge or overlay ports. The native LiteGraph renderer remains the only
+ * source of port position/shape; Simulanka changes only textual/card density.
  */
 function installZoomAwareNodeRendering(canvas: LGraphCanvas): void {
   const target = canvas as unknown as DensityCanvas
@@ -179,8 +140,6 @@ function installZoomAwareNodeRendering(canvas: LGraphCanvas): void {
     }
 
     const scale = target.ds?.scale ?? 1
-    const inputCount = densityNode.inputs?.length ?? 0
-    const outputCount = densityNode.outputs?.length ?? 0
     const drawDraft = () => {
       if (!isDraftNode(densityNode)) return
       drawDraftTag(ctx, node.size[0] - 24, -13, scale < DETAIL_MIN_SCALE)
@@ -197,15 +156,15 @@ function installZoomAwareNodeRendering(canvas: LGraphCanvas): void {
     const outputLabels = densityNode.outputs?.map(slot => slot.label)
 
     try {
-      // Card/trust details are detail material; identity and every port remain.
+      // Card/trust details are detail material; node identity and every native
+      // port handle remain visible and independently positioned.
       densityNode.onDrawForeground = undefined
-      // A non-empty whitespace label prevents LiteGraph from falling back to
-      // the slot name while leaving the actual slot/handle untouched.
+      // Non-empty whitespace prevents LiteGraph from falling back to slot.name.
+      // This mirrors ComfyUI's low-quality behaviour: keep slot, hide its label.
       densityNode.inputs?.forEach(slot => { slot.label = '\u00a0' })
       densityNode.outputs?.forEach(slot => { slot.label = '\u00a0' })
 
       baseDrawNode(node, ctx)
-      drawPersistentPortHandles(ctx, densityNode, inputCount, outputCount)
       drawDraft()
     } finally {
       densityNode.onDrawForeground = originalForeground
