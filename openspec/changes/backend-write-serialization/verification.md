@@ -3,6 +3,7 @@
 Base: `3a3e2638b761da929499ed5545d44a5db9dc0269`.
 Frontend reference: PR #15 at `410eaeff9035ebaf70d573171f789766c9782031`.
 Implementation: `codex/backend-write-serialization`, Issue #9.
+Delivery: [Draft PR #16](https://github.com/TsLouis/Simulanka/pull/16), implementation commit `9fda880aeb2b26a4f723087e57a2117829d216ea`.
 
 ## Outcome
 
@@ -38,7 +39,7 @@ Full mypy: **the same 10 errors in the same 5 files as unchanged main**. Missing
 - Version checks and live-version reads occur inside the lock. State-dependent server and Agent policy checks also occur inside it. Kernel continues to validate structure/record actor while server enforces authority.
 - No Provider execution, event-stream loop, Session lifecycle or UI projection code is inside a new lock. Multi-Patch operations retain their previous partial-failure semantics; no crash recovery or Undo claim is made.
 - GitNexus 1.6.11 upstream impact was run before existing symbol edits. Graph commits/checkpoint were CRITICAL; dynamically registered HTTP handlers returned UNKNOWN with no static callers, so their routes and server tests were inspected explicitly.
-- After index refresh, the structured `detect_changes(scope=all)` result mapped **97 symbols in 16 files and 116 indexed flows**, risk critical, without `error`, `partial` or `truncated` flags. The complete symbol set was reviewed, not only the CLI's shortened display. The global process index still reports trace-budget omissions and FTS is unavailable; source-call searches and AST comparison supplement it. No absence-of-flow claim is used as safety evidence.
+- After index refresh, the structured `detect_changes(scope=all)` result mapped **97 symbols and 116 indexed flows**, risk critical, without `error`, `partial` or `truncated` flags; the final staged review covered 17 files including this verification record. The complete symbol set was reviewed, not only the CLI's shortened display. The global process index still reports trace-budget omissions and FTS is unavailable; source-call searches and AST comparison supplement it. No absence-of-flow claim is used as safety evidence.
 - PR #15 received concrete feedback about agent-source badges and disabled accept affordances. Issues #10–#13 received the design dependencies from this change. Their implementations and the frontend task's files were not changed.
 
 ## Next acceptance step

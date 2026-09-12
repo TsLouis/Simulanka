@@ -14,5 +14,5 @@
 
 - [x] 3.1 Update docs/kernel.md and send concrete PR #15/backend follow-up notes; verify references and preserve the frontend task's file ownership.
 - [x] 3.2 Run ruff, mypy --strict, targeted and full pytest, OpenSpec validation, and GitNexus detect-changes; record baseline/environment failures separately.
-- [ ] 3.3 Review the final diff, publish the branch/PR and update #9 with verification evidence; sync/archive only after acceptance gates pass.
+- [x] 3.3 Review the final diff, publish the branch/PR and update #9 with verification evidence; delivered as Draft PR #16, with sync/archive awaiting acceptance.
 - [ ] 3.4 Resolve the remaining full-suite/type-check environment gates documented in verification.md, rerun them successfully, then merge and sync/archive after acceptance.
