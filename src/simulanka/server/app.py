@@ -88,6 +88,7 @@ from simulanka.storage.entity_store import (
     load_port,
     node_exists,
 )
+from simulanka.storage.write_lock import project_write_lock
 from simulanka.trust import node_trust, provenance_chain
 
 DEV_ORIGINS = (
@@ -480,82 +481,85 @@ def create_app(
         a second patch: the disk resolver can't see pending nodes by design,
         and the importer commits node-then-ports the same way.
         """
-        node_type = body.get("type")
-        name = body.get("name")
-        if not isinstance(node_type, str) or not node_type.strip():
-            raise HTTPException(status_code=422, detail="type is required")
-        if not isinstance(name, str) or not name.strip():
-            raise HTTPException(status_code=422, detail="name is required")
-        parent = body.get("parent")
-        if parent is not None and not isinstance(parent, str):
-            raise HTTPException(status_code=422, detail="parent must be a node id")
-        attrs = body.get("attrs") or {}
-        if not isinstance(attrs, dict):
-            raise HTTPException(status_code=422, detail="attrs must be an object")
-        ports = _parse_ports(body.get("ports"))
+        with project_write_lock(layout.root):
+            node_type = body.get("type")
+            name = body.get("name")
+            if not isinstance(node_type, str) or not node_type.strip():
+                raise HTTPException(status_code=422, detail="type is required")
+            if not isinstance(name, str) or not name.strip():
+                raise HTTPException(status_code=422, detail="name is required")
+            parent = body.get("parent")
+            if parent is not None and not isinstance(parent, str):
+                raise HTTPException(status_code=422, detail="parent must be a node id")
+            attrs = body.get("attrs") or {}
+            if not isinstance(attrs, dict):
+                raise HTTPException(status_code=422, detail="attrs must be an object")
+            ports = _parse_ports(body.get("ports"))
 
-        nodes_by_id = {n.id: n for n in iter_nodes(layout)}
-        if parent is not None and parent not in nodes_by_id:
-            raise HTTPException(status_code=404, detail=f"parent {parent!r} not found")
-        targets = (
-            ()
-            if parent is None
-            else (_node_action_target(nodes_by_id[parent], registry),)
-        )
-        _require_action(
-            action_resolver,
-            "node.create",
-            targets,
-            actor="user",
-        )
-        siblings = {n.name for n in nodes_by_id.values() if n.parent_id == parent}
-        base = name.strip()
-        final = base
-        suffix = 2
-        while final in siblings:
-            final = f"{base}_{suffix}"
-            suffix += 1
-
-        try:
-            receipt = apply_patch_now(
-                layout,
-                ops=[CreateNodeOp(type=node_type.strip(), name=final, parent=parent, attrs=attrs)],
-                actor="user",
-                note=f"frontend: add node {final}",
-                registry=registry,
+            nodes_by_id = {n.id: n for n in iter_nodes(layout)}
+            if parent is not None and parent not in nodes_by_id:
+                raise HTTPException(status_code=404, detail=f"parent {parent!r} not found")
+            targets = (
+                ()
+                if parent is None
+                else (_node_action_target(nodes_by_id[parent], registry),)
             )
-        except ValidationError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        node_id = receipt.nodes[0]
+            _require_action(
+                action_resolver,
+                "node.create",
+                targets,
+                actor="user",
+            )
+            siblings = {n.name for n in nodes_by_id.values() if n.parent_id == parent}
+            base = name.strip()
+            final = base
+            suffix = 2
+            while final in siblings:
+                final = f"{base}_{suffix}"
+                suffix += 1
 
-        port_ids: list[str] = []
-        if ports:
             try:
                 receipt = apply_patch_now(
                     layout,
-                    ops=[
-                        CreatePortOp(
-                            node=node_id,
-                            name=p["name"],
-                            direction=p["direction"],
-                            port_type=p["port_type"],
-                        )
-                        for p in ports
-                    ],
+                    ops=[CreateNodeOp(
+                        type=node_type.strip(), name=final, parent=parent, attrs=attrs,
+                    )],
                     actor="user",
-                    note=f"frontend: ports for {final}",
+                    note=f"frontend: add node {final}",
                     registry=registry,
                 )
             except ValidationError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
-            port_ids = receipt.ports
+            node_id = receipt.nodes[0]
 
-        return {
-            "node_id": node_id,
-            "name": final,
-            "port_ids": port_ids,
-            "graph_version": receipt.graph_version,
-        }
+            port_ids: list[str] = []
+            if ports:
+                try:
+                    receipt = apply_patch_now(
+                        layout,
+                        ops=[
+                            CreatePortOp(
+                                node=node_id,
+                                name=p["name"],
+                                direction=p["direction"],
+                                port_type=p["port_type"],
+                            )
+                            for p in ports
+                        ],
+                        actor="user",
+                        note=f"frontend: ports for {final}",
+                        registry=registry,
+                    )
+                except ValidationError as exc:
+                    raise HTTPException(status_code=422, detail=str(exc)) from exc
+                port_ids = receipt.ports
+
+            return {
+                "node_id": node_id,
+                "name": final,
+                "port_ids": port_ids,
+                "graph_version": receipt.graph_version,
+            }
 
     @app.post("/node/{node_id}/rename")
     def rename_node(
@@ -568,29 +572,30 @@ def create_app(
         nodes) omit that capability. Sibling conflicts remain the kernel's
         state-policy 422.
         """
-        new_name = body.get("new_name")
-        if not isinstance(new_name, str) or not new_name.strip():
-            raise HTTPException(status_code=422, detail="new_name is required")
-        node = next((n for n in iter_nodes(layout) if n.id == node_id), None)
-        if node is None:
-            raise HTTPException(status_code=404, detail=f"node {node_id!r} not found")
-        _require_action(
-            action_resolver,
-            "node.rename",
-            (_node_action_target(node, registry),),
-            actor="user",
-        )
-        try:
-            receipt = apply_patch_now(
-                layout,
-                ops=[RenameNodeOp(target=node_id, new_name=new_name.strip())],
+        with project_write_lock(layout.root):
+            new_name = body.get("new_name")
+            if not isinstance(new_name, str) or not new_name.strip():
+                raise HTTPException(status_code=422, detail="new_name is required")
+            node = next((n for n in iter_nodes(layout) if n.id == node_id), None)
+            if node is None:
+                raise HTTPException(status_code=404, detail=f"node {node_id!r} not found")
+            _require_action(
+                action_resolver,
+                "node.rename",
+                (_node_action_target(node, registry),),
                 actor="user",
-                note=f"frontend: rename {node.name} → {new_name.strip()}",
-                registry=registry,
             )
-        except ValidationError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return {"node_id": node_id, "graph_version": receipt.graph_version}
+            try:
+                receipt = apply_patch_now(
+                    layout,
+                    ops=[RenameNodeOp(target=node_id, new_name=new_name.strip())],
+                    actor="user",
+                    note=f"frontend: rename {node.name} → {new_name.strip()}",
+                    registry=registry,
+                )
+            except ValidationError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            return {"node_id": node_id, "graph_version": receipt.graph_version}
 
     @app.delete("/node/{node_id}")
     def delete_node_endpoint(node_id: str) -> dict[str, Any]:
@@ -599,30 +604,31 @@ def create_app(
         Capability selects structural candidates; the kernel still enforces
         current graph state (children, incident structure, and integrity).
         """
-        node = next((n for n in iter_nodes(layout) if n.id == node_id), None)
-        if node is None:
-            raise HTTPException(status_code=404, detail=f"node {node_id!r} not found")
-        _require_action(
-            action_resolver,
-            "node.delete",
-            (_node_action_target(node, registry),),
-            actor="user",
-        )
-        try:
-            receipt = apply_patch_now(
-                layout,
-                ops=[DeleteNodeOp(node=node_id)],
+        with project_write_lock(layout.root):
+            node = next((n for n in iter_nodes(layout) if n.id == node_id), None)
+            if node is None:
+                raise HTTPException(status_code=404, detail=f"node {node_id!r} not found")
+            _require_action(
+                action_resolver,
+                "node.delete",
+                (_node_action_target(node, registry),),
                 actor="user",
-                note=f"frontend: delete node {node.name}",
-                registry=registry,
             )
-        except ValidationError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return {
-            "deleted": receipt.deleted_nodes,
-            "deleted_edges": receipt.deleted_edges,
-            "graph_version": receipt.graph_version,
-        }
+            try:
+                receipt = apply_patch_now(
+                    layout,
+                    ops=[DeleteNodeOp(node=node_id)],
+                    actor="user",
+                    note=f"frontend: delete node {node.name}",
+                    registry=registry,
+                )
+            except ValidationError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            return {
+                "deleted": receipt.deleted_nodes,
+                "deleted_edges": receipt.deleted_edges,
+                "graph_version": receipt.graph_version,
+            }
 
     @app.get("/node/{node_id}")
     def get_node_info(node_id: str) -> dict[str, Any]:
@@ -663,19 +669,20 @@ def create_app(
         explicit human act clears a stop signal (``status→resolved``,
         ``actor=user``) — a later plan ingest never auto-mutes it. Body:
         ``{resolve_note?}``. Non-escalate targets are the wrapped 422."""
-        raw = body.get("resolve_note")
-        if raw is not None and not isinstance(raw, str):
-            raise HTTPException(status_code=422, detail="resolve_note must be a string")
-        note = raw.strip() if isinstance(raw, str) and raw.strip() else None
-        try:
-            node = resolve_escalate(layout, node_id, resolve_note=note)
-        except PlanError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return {
-            "node_id": node.id,
-            "status": node.attrs.get("status"),
-            "graph_version": load_manifest(layout).graph_version,
-        }
+        with project_write_lock(layout.root):
+            raw = body.get("resolve_note")
+            if raw is not None and not isinstance(raw, str):
+                raise HTTPException(status_code=422, detail="resolve_note must be a string")
+            note = raw.strip() if isinstance(raw, str) and raw.strip() else None
+            try:
+                node = resolve_escalate(layout, node_id, resolve_note=note)
+            except PlanError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            return {
+                "node_id": node.id,
+                "status": node.attrs.get("status"),
+                "graph_version": load_manifest(layout).graph_version,
+            }
 
     # --- §13.6 verify-discuss: human-side edge ops -------------------------
     # All four are thin UpdateAttrsOp wrappers; the kernel stays the only
@@ -698,78 +705,80 @@ def create_app(
         ``status`` stays ``proposed`` so it enters the disagreement queue;
         deletion happens only after discussion via DELETE /edge/{id}.
         """
-        edge = _require_data_flow(layout, edge_id)
-        _require_action(
-            action_resolver,
-            "edge.verdict",
-            (_entity_action_target(
-                registry,
-                kind="edge",
-                entity_id=edge.id,
-                profile=edge.type,
-                attrs=edge.attrs,
-            ),),
-            actor="user",
-        )
-        verdict = body.get("verdict")
-        note = body.get("note")
-        if verdict not in ("correct", "wrong", "disputed"):
-            raise HTTPException(
-                status_code=422,
-                detail="verdict must be one of: correct, wrong, disputed",
+        with project_write_lock(layout.root):
+            edge = _require_data_flow(layout, edge_id)
+            _require_action(
+                action_resolver,
+                "edge.verdict",
+                (_entity_action_target(
+                    registry,
+                    kind="edge",
+                    entity_id=edge.id,
+                    profile=edge.type,
+                    attrs=edge.attrs,
+                ),),
+                actor="user",
             )
-        if not isinstance(note, str) or not note.strip():
-            raise HTTPException(
-                status_code=422,
-                detail="note is required — defend the judgment (我认为…因为…)",
+            verdict = body.get("verdict")
+            note = body.get("note")
+            if verdict not in ("correct", "wrong", "disputed"):
+                raise HTTPException(
+                    status_code=422,
+                    detail="verdict must be one of: correct, wrong, disputed",
+                )
+            if not isinstance(note, str) or not note.strip():
+                raise HTTPException(
+                    status_code=422,
+                    detail="note is required — defend the judgment (我认为…因为…)",
+                )
+            receipt = _apply_user_op(
+                layout,
+                UpdateAttrsOp(
+                    target=edge_id,
+                    attrs={
+                        "verdict": verdict,
+                        "verdict_by": "user",
+                        "verdict_note": note.strip(),
+                    },
+                ),
+                note="frontend: human verdict",
+                registry=registry,
             )
-        receipt = _apply_user_op(
-            layout,
-            UpdateAttrsOp(
-                target=edge_id,
-                attrs={
-                    "verdict": verdict,
-                    "verdict_by": "user",
-                    "verdict_note": note.strip(),
-                },
-            ),
-            note="frontend: human verdict",
-            registry=registry,
-        )
-        return {"edge_id": edge_id, "graph_version": receipt.graph_version}
+            return {"edge_id": edge_id, "graph_version": receipt.graph_version}
 
     @app.post("/edge/{edge_id}/accept")
     def accept_ghost(edge_id: str) -> dict[str, Any]:
         """Accept a proposed ghost edge (§13.5.3 同意即连). Agreement needs no
         defense, so no note. Only the human may do this (write matrix)."""
-        edge = _require_data_flow(layout, edge_id)
-        _require_action(
-            action_resolver,
-            "edge.accept",
-            (_entity_action_target(
-                registry,
-                kind="edge",
-                entity_id=edge.id,
-                profile=edge.type,
-                attrs=edge.attrs,
-            ),),
-            actor="user",
-            structured_detail=False,
-        )
-        receipt = _apply_user_op(
-            layout,
-            UpdateAttrsOp(
-                target=edge_id,
-                attrs={
-                    "status": "accepted",
-                    "verdict": "correct",
-                    "verdict_by": "user",
-                },
-            ),
-            note="frontend: accept ghost",
-            registry=registry,
-        )
-        return {"edge_id": edge_id, "graph_version": receipt.graph_version}
+        with project_write_lock(layout.root):
+            edge = _require_data_flow(layout, edge_id)
+            _require_action(
+                action_resolver,
+                "edge.accept",
+                (_entity_action_target(
+                    registry,
+                    kind="edge",
+                    entity_id=edge.id,
+                    profile=edge.type,
+                    attrs=edge.attrs,
+                ),),
+                actor="user",
+                structured_detail=False,
+            )
+            receipt = _apply_user_op(
+                layout,
+                UpdateAttrsOp(
+                    target=edge_id,
+                    attrs={
+                        "status": "accepted",
+                        "verdict": "correct",
+                        "verdict_by": "user",
+                    },
+                ),
+                note="frontend: accept ghost",
+                registry=registry,
+            )
+            return {"edge_id": edge_id, "graph_version": receipt.graph_version}
 
     @app.post("/edge/{edge_id}/discuss")
     def set_discuss(
@@ -778,29 +787,30 @@ def create_app(
     ) -> dict[str, Any]:
         """Pull any edge into (or out of) the discussion set by hand.
         Body: ``{discuss: bool}``, defaults to true."""
-        edge = _require_data_flow(layout, edge_id)
-        _require_action(
-            action_resolver,
-            "edge.discuss",
-            (_entity_action_target(
-                registry,
-                kind="edge",
-                entity_id=edge.id,
-                profile=edge.type,
-                attrs=edge.attrs,
-            ),),
-            actor="user",
-        )
-        flag = body.get("discuss", True)
-        if not isinstance(flag, bool):
-            raise HTTPException(status_code=422, detail="discuss must be a boolean")
-        receipt = _apply_user_op(
-            layout,
-            UpdateAttrsOp(target=edge_id, attrs={"discuss": flag}),
-            note="frontend: toggle discuss",
-            registry=registry,
-        )
-        return {"edge_id": edge_id, "graph_version": receipt.graph_version}
+        with project_write_lock(layout.root):
+            edge = _require_data_flow(layout, edge_id)
+            _require_action(
+                action_resolver,
+                "edge.discuss",
+                (_entity_action_target(
+                    registry,
+                    kind="edge",
+                    entity_id=edge.id,
+                    profile=edge.type,
+                    attrs=edge.attrs,
+                ),),
+                actor="user",
+            )
+            flag = body.get("discuss", True)
+            if not isinstance(flag, bool):
+                raise HTTPException(status_code=422, detail="discuss must be a boolean")
+            receipt = _apply_user_op(
+                layout,
+                UpdateAttrsOp(target=edge_id, attrs={"discuss": flag}),
+                note="frontend: toggle discuss",
+                registry=registry,
+            )
+            return {"edge_id": edge_id, "graph_version": receipt.graph_version}
 
     @app.get("/file/content")
     def get_file_content(

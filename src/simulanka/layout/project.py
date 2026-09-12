@@ -16,6 +16,7 @@ from simulanka.kernel.manifest import (
     load_manifest,
     write_manifest,
 )
+from simulanka.storage.write_lock import project_write_lock
 
 DIR_NAME = ".simulanka"
 
@@ -31,6 +32,7 @@ logs/
 ROOT_GITIGNORE_FRAGMENT = """\
 # Simulanka internals
 .simulanka/
+.simulanka.write.lock
 """
 
 
@@ -128,52 +130,53 @@ def init_project(root: Path, *, with_scaffold: bool = True) -> InitResult:
     root.mkdir(parents=True, exist_ok=True)
     layout = ProjectLayout(root)
 
-    if layout.exists():
-        return InitResult(
-            layout=layout,
-            status="already_initialized",
-            manifest=layout.load_manifest(),
+    with project_write_lock(layout.root):
+        if layout.exists():
+            return InitResult(
+                layout=layout,
+                status="already_initialized",
+                manifest=layout.load_manifest(),
+            )
+
+        for d in (
+            layout.dot_dir,
+            layout.graph_dir,
+            layout.nodes_dir,
+            layout.edges_dir,
+            layout.ports_dir,
+            layout.events_dir,
+            layout.indexes_dir,
+            layout.logs_dir,
+            layout.cache_dir,
+        ):
+            d.mkdir(parents=True, exist_ok=True)
+
+        manifest = Manifest(
+            schema_version=SCHEMA_VERSION,
+            registry_version=REGISTRY_VERSION,
+            graph_version=0,
+            kernel_version=__version__,
+            project_id=new_id("prj"),
+            created_at=datetime.now(timezone.utc),
+            content_hash=EMPTY_CONTENT_HASH,
         )
+        write_manifest(layout, manifest)
 
-    for d in (
-        layout.dot_dir,
-        layout.graph_dir,
-        layout.nodes_dir,
-        layout.edges_dir,
-        layout.ports_dir,
-        layout.events_dir,
-        layout.indexes_dir,
-        layout.logs_dir,
-        layout.cache_dir,
-    ):
-        d.mkdir(parents=True, exist_ok=True)
+        gitignore = layout.dot_dir / ".gitignore"
+        if not gitignore.exists():
+            gitignore.write_text(GITIGNORE_BODY, encoding="utf-8")
 
-    manifest = Manifest(
-        schema_version=SCHEMA_VERSION,
-        registry_version=REGISTRY_VERSION,
-        graph_version=0,
-        kernel_version=__version__,
-        project_id=new_id("prj"),
-        created_at=datetime.now(timezone.utc),
-        content_hash=EMPTY_CONTENT_HASH,
-    )
-    write_manifest(layout, manifest)
+        # `.simulanka/` hosts its own checkpoint git repo (§13.6), so the user's
+        # repo can't track it as plain files anyway — ignore it at the root.
+        root_gitignore = root / ".gitignore"
+        if not root_gitignore.exists():
+            root_gitignore.write_text(ROOT_GITIGNORE_FRAGMENT, encoding="utf-8")
 
-    gitignore = layout.dot_dir / ".gitignore"
-    if not gitignore.exists():
-        gitignore.write_text(GITIGNORE_BODY, encoding="utf-8")
+        if with_scaffold:
+            _scaffold_managed_layout(layout)
+            manifest = layout.load_manifest()  # refresh after the commit
 
-    # `.simulanka/` hosts its own checkpoint git repo (§13.6), so the user's
-    # repo can't track it as plain files anyway — ignore it at the root.
-    root_gitignore = root / ".gitignore"
-    if not root_gitignore.exists():
-        root_gitignore.write_text(ROOT_GITIGNORE_FRAGMENT, encoding="utf-8")
-
-    if with_scaffold:
-        _scaffold_managed_layout(layout)
-        manifest = layout.load_manifest()  # refresh after the commit
-
-    return InitResult(layout=layout, status="created", manifest=manifest)
+        return InitResult(layout=layout, status="created", manifest=manifest)
 
 
 def _scaffold_managed_layout(layout: ProjectLayout) -> None:
