@@ -67,24 +67,89 @@ const CANVAS_FONT = "ui-monospace, 'SFMono-Regular', 'Cascadia Mono', Consolas, 
 // native LiteGraph row, anchor, shape and hit target at every scale.
 const DETAIL_MIN_SCALE = 0.98
 const DRAFT_LABEL_MIN_SCALE = 0.62
+const UNRELATED_NODE_ALPHA = 0.24
+const UNRELATED_LINK_ALPHA = 0.14
 
 type SlotLike = { label?: string | null }
 type SemanticNodeView = { attrs?: Record<string, unknown> }
 type DensityNode = LGraphNode & {
+  id?: number | string
   simulanka?: SemanticNodeView
   inputs?: SlotLike[]
   outputs?: SlotLike[]
   onDrawForeground?: (...args: unknown[]) => void
 }
 
+type AttentionLink = {
+  origin_id?: number | string
+  target_id?: number | string
+  simulanka_ghost?: boolean
+  _pos?: [number, number]
+}
+
+type AttentionGraph = {
+  links?: Record<string, AttentionLink> | Map<unknown, AttentionLink>
+}
+
 type DensityCanvas = LGraphCanvas & {
   ds?: { scale?: number }
+  selected_nodes?: Record<string, LGraphNode>
+  graph?: AttentionGraph | null
   drawNode: (node: LGraphNode, ctx: CanvasRenderingContext2D) => void
 }
 
-type DraftLink = {
-  simulanka_ghost?: boolean
-  _pos?: [number, number]
+type DraftLink = AttentionLink
+
+type AttentionState = {
+  graph: AttentionGraph | null | undefined
+  selectedId: string
+  relatedIds: Set<string>
+  directLinkIds: Set<string>
+}
+
+const attentionCache = new WeakMap<object, AttentionState>()
+
+function graphLinks(graph: AttentionGraph | null | undefined): AttentionLink[] {
+  const links = graph?.links
+  if (!links) return []
+  if (links instanceof Map) return [...links.values()]
+  return Object.values(links)
+}
+
+/**
+ * A single selection quietly answers "what is directly related to this?".
+ * This is not a named mode and it never writes state: selected node + one-hop
+ * neighbours remain prominent, everything else recedes. Multi-select deliberately
+ * disables the effect so ordinary box-selection/editor behaviour stays neutral.
+ */
+function selectionAttention(canvas: DensityCanvas): AttentionState | null {
+  const selected = Object.values(canvas.selected_nodes ?? {}).filter(
+    node => Boolean((node as unknown as DensityNode).simulanka),
+  )
+  if (selected.length !== 1) return null
+
+  const selectedId = String((selected[0] as unknown as DensityNode).id)
+  const graph = canvas.graph
+  const cached = attentionCache.get(canvas as unknown as object)
+  if (cached?.graph === graph && cached.selectedId === selectedId) return cached
+
+  const relatedIds = new Set<string>([selectedId])
+  const directLinkIds = new Set<string>()
+  for (const link of graphLinks(graph)) {
+    const origin = String(link.origin_id)
+    const target = String(link.target_id)
+    if (origin === selectedId) {
+      relatedIds.add(target)
+      directLinkIds.add(`${origin}->${target}`)
+    } else if (target === selectedId) {
+      relatedIds.add(origin)
+      directLinkIds.add(`${origin}->${target}`)
+    }
+  }
+
+  const next = { graph, selectedId, relatedIds, directLinkIds }
+  attentionCache.set(canvas as unknown as object, next)
+  return next
 }
 
 /** Draw a deliberately small, redundant marker for a graph Draft. */
@@ -126,6 +191,9 @@ function isDraftNode(node: DensityNode): boolean {
  * present in low-detail rendering, while labels are omitted. We therefore never
  * remove, merge or overlay ports. The native LiteGraph renderer remains the only
  * source of port position/shape; Simulanka changes only textual/card density.
+ *
+ * The same wrapper also applies Simulanka's quiet single-selection attention:
+ * unrelated nodes recede, but their ports still remain structurally visible.
  */
 function installZoomAwareNodeRendering(canvas: LGraphCanvas): void {
   const target = canvas as unknown as DensityCanvas
@@ -139,37 +207,48 @@ function installZoomAwareNodeRendering(canvas: LGraphCanvas): void {
       return
     }
 
-    const scale = target.ds?.scale ?? 1
-    const drawDraft = () => {
-      if (!isDraftNode(densityNode)) return
-      drawDraftTag(ctx, node.size[0] - 24, -13, scale < DETAIL_MIN_SCALE)
+    const attention = selectionAttention(target)
+    const dimmed = attention !== null && !attention.relatedIds.has(String(densityNode.id))
+    if (dimmed) {
+      ctx.save()
+      ctx.globalAlpha *= UNRELATED_NODE_ALPHA
     }
-
-    if (scale >= DETAIL_MIN_SCALE) {
-      baseDrawNode(node, ctx)
-      drawDraft()
-      return
-    }
-
-    const originalForeground = densityNode.onDrawForeground
-    const inputLabels = densityNode.inputs?.map(slot => slot.label)
-    const outputLabels = densityNode.outputs?.map(slot => slot.label)
 
     try {
-      // Card/trust details are detail material; node identity and every native
-      // port handle remain visible and independently positioned.
-      densityNode.onDrawForeground = undefined
-      // Non-empty whitespace prevents LiteGraph from falling back to slot.name.
-      // This mirrors ComfyUI's low-quality behaviour: keep slot, hide its label.
-      densityNode.inputs?.forEach(slot => { slot.label = '\u00a0' })
-      densityNode.outputs?.forEach(slot => { slot.label = '\u00a0' })
+      const scale = target.ds?.scale ?? 1
+      const drawDraft = () => {
+        if (!isDraftNode(densityNode)) return
+        drawDraftTag(ctx, node.size[0] - 24, -13, scale < DETAIL_MIN_SCALE)
+      }
 
-      baseDrawNode(node, ctx)
-      drawDraft()
+      if (scale >= DETAIL_MIN_SCALE) {
+        baseDrawNode(node, ctx)
+        drawDraft()
+        return
+      }
+
+      const originalForeground = densityNode.onDrawForeground
+      const inputLabels = densityNode.inputs?.map(slot => slot.label)
+      const outputLabels = densityNode.outputs?.map(slot => slot.label)
+
+      try {
+        // Card/trust details are detail material; node identity and every native
+        // port handle remain visible and independently positioned.
+        densityNode.onDrawForeground = undefined
+        // Non-empty whitespace prevents LiteGraph from falling back to slot.name.
+        // This mirrors ComfyUI's low-quality behaviour: keep slot, hide its label.
+        densityNode.inputs?.forEach(slot => { slot.label = '\u00a0' })
+        densityNode.outputs?.forEach(slot => { slot.label = '\u00a0' })
+
+        baseDrawNode(node, ctx)
+        drawDraft()
+      } finally {
+        densityNode.onDrawForeground = originalForeground
+        densityNode.inputs?.forEach((slot, index) => { slot.label = inputLabels?.[index] })
+        densityNode.outputs?.forEach((slot, index) => { slot.label = outputLabels?.[index] })
+      }
     } finally {
-      densityNode.onDrawForeground = originalForeground
-      densityNode.inputs?.forEach((slot, index) => { slot.label = inputLabels?.[index] })
-      densityNode.outputs?.forEach((slot, index) => { slot.label = outputLabels?.[index] })
+      if (dimmed) ctx.restore()
     }
   }
 }
@@ -216,6 +295,9 @@ function installDoubleClickNodeSearch(canvas: LGraphCanvas): void {
  * authoritative accept/verdict actions. Patching the prototype here is useful:
  * App's wrapper captures this decorated renderer and therefore composes with it
  * rather than replacing the marker.
+ *
+ * This wrapper also applies selection attention to links: only links touching
+ * the selected semantic node stay at full opacity. It remains purely draw-time.
  */
 function installDraftLinkMarkers(): void {
   const proto = LGraphCanvas.prototype as unknown as {
@@ -227,12 +309,24 @@ function installDraftLinkMarkers(): void {
 
   const baseRenderLink = proto.renderLink
   proto.renderLink = function (this: LGraphCanvas, ...args: unknown[]): void {
-    baseRenderLink.apply(this, args)
     const ctx = args[0] as CanvasRenderingContext2D | undefined
     const link = args[3] as DraftLink | undefined
     const scale = (this as unknown as { ds?: { scale?: number } }).ds?.scale ?? 1
-    if (!ctx || !link?.simulanka_ghost || !link._pos || scale < DRAFT_LABEL_MIN_SCALE) return
-    drawDraftTag(ctx, link._pos[0], link._pos[1] - 10, scale < DETAIL_MIN_SCALE)
+    const attention = selectionAttention(this as unknown as DensityCanvas)
+    const linkKey = link ? `${String(link.origin_id)}->${String(link.target_id)}` : null
+    const dimmed = attention !== null && linkKey !== null && !attention.directLinkIds.has(linkKey)
+
+    if (ctx && dimmed) {
+      ctx.save()
+      ctx.globalAlpha *= UNRELATED_LINK_ALPHA
+    }
+    try {
+      baseRenderLink.apply(this, args)
+      if (!ctx || !link?.simulanka_ghost || !link._pos || scale < DRAFT_LABEL_MIN_SCALE) return
+      drawDraftTag(ctx, link._pos[0], link._pos[1] - 10, scale < DETAIL_MIN_SCALE)
+    } finally {
+      if (ctx && dimmed) ctx.restore()
+    }
   }
 }
 
