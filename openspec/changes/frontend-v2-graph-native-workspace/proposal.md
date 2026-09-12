@@ -9,7 +9,7 @@ Simulanka 已经具备 Registry 驱动的通用图工作台、Session、显式 s
 ## What Changes
 
 - 将默认工作区重构为 canvas-first shell：轻量顶栏、窄 Activity Bar、大面积 Graph Canvas；Inspector 与长对话按需出现而非常驻。
-- Node 展示改为随缩放渐进展开：远距离隐藏 Port 和详情；工作距离显示输入/输出 Port；近距离显示 Port 名称、关键字段与 PresentationSpec 详情。
+- Node 展示改为随缩放渐进展开：所有 zoom 下保留每个真实 input/output Port handle 的独立位置；远距离只隐藏 Port 文字与详情；近距离显示 Port 名称、关键字段与 PresentationSpec 详情。
 - 选择 Node/Edge/Port 后优先出现轻量上下文动作（如 Ask / Open / more），完整 Inspector 作为按需详情面。
 - 将 Agent 从永久 ChatDock/ChatNode 视觉中心降为轻量 Companion；用户可显式把 node/edge/port/selection 指给 Agent，继续遵守 supplemental-context 的显式附加合同。
 - Agent 的图上输出新增 Draft / annotation / attention 等呈现层；底层仍复用 server 现有安全写路径与 proposed/affordance 语义，不把临时 UI 表达伪装成已提交图事实。
@@ -31,7 +31,7 @@ Simulanka 已经具备 Registry 驱动的通用图工作台、Session、显式 s
 
 ## Impact
 
-- 前端：`App.svelte` 将逐步拆分 workspace shell；`ChatDock.svelte` / `ChatNode.svelte` 从默认视觉中心迁移为按需 discussion surface；`NodeInspector.svelte` 弱化为详情面；`litegraph-adapter.ts` 增加缩放信息密度与 Port 呈现策略；新增 Agent Companion、ContextPopover、CommandPalette 等组件。
+- 前端：`App.svelte` 将逐步拆分 workspace shell；`ChatDock.svelte` / `ChatNode.svelte` 从默认视觉中心迁移为按需 discussion surface；`NodeInspector.svelte` 弱化为详情面；`litegraph-adapter.ts` / `theme.ts` 增加缩放信息密度与 Port 呈现策略；新增 Agent Companion、ContextPopover、CommandPalette 等组件。
 - Server/kernel：首阶段不改变 frozen write matrix、Node/Edge/Port 持久化 schema 或 session/context API；如后续要放宽 Agent 自动写入，必须另开规格或更新本 change 并做 GitNexus/frozen-contract review。
 - 文档：落地后同步 `docs/frontend.md`；内部仍保留准确机制词，产品 UI 使用更轻的语言。
 - 验证：需要前端 build/typecheck、现有 server/frontend 行为回归，以及人工目验默认画布、Port zoom 层级、显式 Agent context 和 Draft 表达。
