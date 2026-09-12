@@ -11,13 +11,15 @@
 - [x] 2.3 Make Inspector and long discussion surfaces closed by default; preserve explicit reopen paths.
 - [x] 2.4 Keep Graph Canvas as the dominant default surface across supported desktop sizes.
 
-## 3. Zoom-aware Node and Port presentation
+## 3. ComfyUI-baseline Node and Port presentation
 
-- [x] 3.1 Add stable zoom-density thresholds with a broad working band around LiteGraph's own low-quality boundary.
-- [x] 3.2 Overview zoom keeps node identity while hiding port handles/details at draw time.
-- [x] 3.3 Working zoom shows actual input/output port handles without labels.
-- [x] 3.4 Detail zoom restores port names/directions plus PresentationSpec-selected card fields.
-- [x] 3.5 Preserve root boundary IO/tunnel semantics and connection eligibility; zoom treatment applies only to real semantic nodes and is render-only.
+- [x] 3.1 Use stable zoom-density thresholds while keeping native LiteGraph port geometry authoritative.
+- [x] 3.2 Overview zoom keeps node identity and every real input/output Port handle independently visible; hide Port labels and non-essential card detail only.
+- [x] 3.3 Working zoom preserves the same independent Port handles and connection anchors; do not merge/stack ports for visual simplification.
+- [x] 3.4 Detail zoom restores Port names/directions plus PresentationSpec-selected card fields.
+- [x] 3.5 Preserve root boundary IO/tunnel semantics and connection eligibility; zoom treatment applies only to textual/card density.
+- [x] 3.6 Treat ComfyUI as the baseline for ordinary Node Editor behavior (search, ports, links, selection, drag); diverge only where Simulanka graph/research semantics require it.
+- [ ] 3.7 Prevent any optional node-collapse treatment from collapsing multiple semantic Ports into shared visual anchors; hiding text is allowed, hiding topology is not.
 
 ## 4. Contextual object interaction
 
@@ -48,13 +50,19 @@
 - [x] 7.2 Establish restrained pixel tokens for borders, spacing, typography, palette, and Agent state.
 - [x] 7.3 Remove decorative starfield/glow treatment that competed with graph readability.
 
-## 8. Verification and docs
+## 8. Node search / creation UX
 
-- [ ] 8.1 Run frontend type/build checks and relevant tests (repository currently has no PR CI; local dependency-backed check still required).
-- [ ] 8.2 Run backend regression tests for Registry/affordance/session/context contracts touched by the UI integration.
-- [ ] 8.3 GitNexus detect-changes skipped for this user-authorized iteration.
-- [ ] 8.4 Manually verify default canvas, zoom/ports, selection actions, Agent context, and Draft presentation.
-- [ ] 8.5 Update `docs/frontend.md` to the accepted implementation and archive/sync the OpenSpec change after acceptance.
+- [x] 8.1 Keep right-click Add Node search and add ComfyUI-style double-click on empty canvas as an equivalent summon gesture.
+- [x] 8.2 Add keyboard result navigation (`↑/↓`, Enter, Esc) and show profile plus input/output count in results.
+- [ ] 8.3 Fix the Node + Ports + initial-position creation transaction separately in #17; Frontend v2 MUST NOT hide an incomplete creation failure behind presentation code.
+
+## 9. Verification and docs
+
+- [ ] 9.1 Run frontend type/build checks and relevant tests (repository currently has no PR CI; local dependency-backed check still required).
+- [ ] 9.2 Run backend regression tests for Registry/affordance/session/context contracts touched by the UI integration.
+- [ ] 9.3 GitNexus detect-changes skipped for this user-authorized iteration.
+- [ ] 9.4 Manually verify default canvas, persistent independent ports across zoom, search gestures, selection actions, Agent context, and Draft presentation.
+- [ ] 9.5 Update `docs/frontend.md` to the accepted implementation and archive/sync the OpenSpec change after acceptance.
 
 ## Deferred follow-up
 
