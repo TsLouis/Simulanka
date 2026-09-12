@@ -28,6 +28,8 @@ import type {
   TrustLevel,
 } from './types'
 
+// LiteGraph link object (untyped in @types). We stash our edge id on it so a
+// later disconnect knows which persisted edge to delete.
 interface LiteLink {
   id: number
   origin_id: number
@@ -35,28 +37,47 @@ interface LiteLink {
   target_id: number
   target_slot: number
   simulanka_edge_id?: string
+  // §13.5.3 ghost: an agent proposal not yet confirmed. Rendered gray + dashed
+  // so a draft never reads as a committed edge (App.svelte dashes these).
   simulanka_ghost?: boolean
+  // §13.5.6: the sub-slice this edge carries out of its source port (`[-1]` /
+  // `[:-1]`). When a module sends different outputs to different consumers from
+  // one port, the label is what tells the two edges apart (App.svelte draws it).
   simulanka_slice?: string
   color?: string
 }
 
+// Link colour by edge provenance (§13.5.2): machine-traced vs human-drawn vs
+// agent-asserted, so the three read apart at a glance. LiteGraph honours
+// `link.color` in renderLink. The provenance palette lives in theme.ts.
+
 const TYPE_PREFIX = 'simulanka/'
 const BOUNDARY_PREFIX = 'simulanka-boundary/'
+
+// Approximate per-node footprint for dagre layout. Real LiteGraph nodes
+// auto-size to title + slots, but dagre needs a number up front.
 const NODE_W = 200
 const NODE_H = 100
 
 export interface AdapterCallbacks {
   onDrillDown?: (nodeId: string, nodeName: string) => void
   onJumpExternal?: (externalId: string, externalName: string) => void
+  // User drew a connection (§13.5.2). Resolve true to keep it (it will be
+  // persisted), false to undo the canvas link (e.g. the user cancelled a
+  // shape-mismatch confirm).
   onCreateEdge?: (
     srcPortId: string,
     dstPortId: string,
     shapeCheck: ShapeCheck,
   ) => Promise<boolean>
+  // User removed a connection that maps to a persisted edge.
   onDeleteEdge?: (edgeId: string) => void
   onConnectionRejected?: (reason: string) => void
 }
 
+// A semantic edge with no ports (fulfills / produces / addresses / tests…).
+// LiteGraph links need slots, so these are painted as a background layer by
+// the App (wireLineageLayer) instead of connectViaPorts.
 export interface LineageEdge {
   src: LGraphNode
   dst: LGraphNode
@@ -75,11 +96,10 @@ function ensureRegistered(typeName: string, prefix: string = TYPE_PREFIX): strin
   function NodeCtor(this: LGraphNode) {}
   const meta = NodeCtor as unknown as { title: string; collapsable?: boolean }
   meta.title = typeName
-  // LiteGraph's native collapsed state compresses all slots into the title
-  // silhouette. That is fine for workflow nodes but wrong for Simulanka:
-  // independent Ports are semantic topology and must never visually merge.
-  // Keep boundary projections on LiteGraph defaults; only real semantic nodes
-  // opt out of collapse. Detail density is handled by zoom instead.
+  // Semantic Ports are graph topology, not optional detail. LiteGraph's normal
+  // collapsed state visually compresses slots into the title silhouette, so
+  // real Simulanka nodes opt out while virtual boundary projections keep the
+  // library default. Zoom still handles text/card density independently.
   if (prefix === TYPE_PREFIX) meta.collapsable = false
   LiteGraph.registerNodeType(full, NodeCtor as unknown as new () => LGraphNode)
   return full
@@ -98,9 +118,15 @@ export function buildLiteGraph(
   const outSlot = new Map<string, number>()
   const byNode = new Map<string, LGraphNode>()
 
+  // While the adapter wires up the payload's own edges, LiteGraph fires
+  // onConnectionsChange too — suppress handling until the initial build is done
+  // so only genuinely user-drawn connections reach the callbacks.
   let building = true
   const INPUT = (LiteGraph as unknown as { INPUT: number }).INPUT
 
+  // Installed on every real node. Acts only from the target (INPUT) side so a
+  // connection is handled exactly once. Connect → ask the host to persist
+  // (undo on a rejected confirm); disconnect → delete the mapped edge.
   function onConnectionsChange(
     this: LGraphNode,
     type: number,
@@ -121,6 +147,10 @@ export function buildLiteGraph(
         .simulanka_in_ports?.[slot]
       const create = callbacks.onCreateEdge
       if (!srcPortId || !dstPortId || !create) {
+        // Unresolvable endpoint — e.g. one end is a boundary-stub slot, which
+        // carries no simulanka ports. Undo the canvas link instead of leaving
+        // an unpersisted line that lies about graph state. Deferred: LiteGraph
+        // is still inside connect() when this handler fires.
         queueMicrotask(() => {
           (target as unknown as { disconnectInput: (s: number) => void }).disconnectInput(slot)
         })
@@ -182,6 +212,9 @@ export function buildLiteGraph(
     return false
   }
 
+  // Auto-layout: dagre runs over real nodes + their internal data-flow edges.
+  // Persisted positions in persistedPositions override the dagre result, so
+  // user-dragged nodes stick across reloads.
   const autoPos = computeAutoLayout(payload, descriptor)
 
   payload.nodes.forEach((n: NodeDTO) => {
@@ -194,11 +227,17 @@ export function buildLiteGraph(
 
     let inI = 0
     let outI = 0
+    // Slot-index → port-id, in slot order, so the connection handler can map a
+    // LiteGraph link back to our port ids.
     const inPorts: string[] = []
     const outPorts: string[] = []
     for (const portId of n.ports) {
       const p = portsById.get(portId)
       if (!p) continue
+      // Display the semantic label (param/kwarg/dict key) over the structural
+      // slot name when present, with the observed shape appended. Colour the
+      // slot dot by confidence so `inferred` (unverified) ports read as muted —
+      // the honest-labelling guarantee of §13.3.1 made visible.
       const extra = slotExtra(p)
       if (p.side === 'in') {
         lgnode.addInput(p.name, p.port_type || '*', extra)
@@ -219,12 +258,17 @@ export function buildLiteGraph(
     ;(lgnode as unknown as { onConnectInput: typeof onConnectInput }).onConnectInput = onConnectInput
     ;(lgnode as unknown as { onConnectOutput: typeof onConnectOutput }).onConnectOutput = onConnectOutput
 
+    // S5 卡片：attr 驱动的展示模板（cards.ts 是唯一的字段清单来源）。
+    // S6 trust 描边共用同一 foreground 钩子——只染节点体，边色不叠加。
     const card = cardLines(n, presentation)
     if (card.length > 0 || n.trust) attachCard(lgnode, card, n.trust)
 
     const pos = persistedPositions[n.id] ?? autoPos.get(n.id) ?? [80, 80]
     lgnode.pos = [pos[0], pos[1]]
 
+    // Any node can be entered — the inside of a leaf is a valid (empty) view
+    // where add-node works, which is how a fresh container gets its first
+    // child. Container-ness (child_count) is a badge, not a gate.
     if (callbacks.onDrillDown) {
       const cb = callbacks.onDrillDown
       ;(lgnode as unknown as { onDblClick: () => void }).onDblClick = () => {
@@ -236,6 +280,12 @@ export function buildLiteGraph(
     byNode.set(n.id, lgnode)
   })
 
+  // Internal edges: both endpoints inside. Data-flow-shaped edges (those with
+  // ports on both sides) render as LiteGraph connections; `contains` stays
+  // implicit in the subgraph nesting (§12.3). Portless semantic edges
+  // (fulfills / produces / …) used to be dropped with `contains` — rehearsal
+  // 2026-07-17 showed that hides the run→task lineage entirely, so they are
+  // collected for the App's painted lineage layer instead.
   const lineage: LineageEdge[] = []
   for (const e of payload.edges) {
     const link = connectViaPorts(e, byNode, inSlot, outSlot)
@@ -248,6 +298,10 @@ export function buildLiteGraph(
     }
   }
 
+  // Boundary rendering (§12.4): the root's own ports project as the view's
+  // input/output brackets (ComfyUI-subgraph IO semantics — present even with
+  // no crossing edge yet), and cross-boundary edges to *other* externals get
+  // one virtual boundary node per (externalId, direction) pair.
   if (payload.root !== null) {
     injectBoundary(graph, payload, byNode, inSlot, outSlot, portsById, onConnectionsChange, callbacks)
   }
@@ -255,6 +309,11 @@ export function buildLiteGraph(
   building = false
   return { graph, byNode, lineage }
 }
+
+// --- S5 card rendering -------------------------------------------------------
+// One drawing skeleton for every atom type; cards.ts owns the per-type field
+// lists. The card area sits below the slot rows; node height is expanded to
+// make room, and onDrawForeground paints the lines.
 
 interface CardStash {
   lines: CardLine[]
@@ -282,6 +341,8 @@ function attachCard(
   }).onDrawForeground = drawCardForeground
 }
 
+// S6 trust 描边：环住整张节点卡（含标题条）。unreviewed 刻意最淡——
+// 「未定」应显眼地不显眼；其余四级按 theme 五色发一圈微光。
 function drawTrustRing(
   ctx: CanvasRenderingContext2D,
   size: [number, number] | Float32Array,
@@ -353,6 +414,11 @@ function withAlpha(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`
 }
 
+// Stamp a LiteGraph link with the persisted edge's identity and provenance
+// styling. Applies to internal edges and boundary-stub projections alike
+// (§12.4): a stub link carries the real edge id, so disconnecting it deletes
+// the real edge instead of silently diverging from the store, and a proposed
+// cross-boundary edge still reads as a ghost inside a drill-down view.
 function decorateLink(link: LiteLink, e: EdgeDTO): void {
   link.simulanka_edge_id = e.id
   const src = typeof e.attrs.source === 'string' ? e.attrs.source : null
@@ -365,11 +431,15 @@ function decorateLink(link: LiteLink, e: EdgeDTO): void {
   } else if (src && EDGE_COLORS[src]) {
     link.color = EDGE_COLORS[src]
   }
+  // §13.5.6: carry the output-slice onto the link so two edges leaving the
+  // same port (e.g. image_encoder `[-1]` vs `[:-1]`) render distinguishably.
   if (typeof e.attrs.output_slice === 'string') {
     link.simulanka_slice = e.attrs.output_slice
   }
 }
 
+// Draw-time shape verdict (§13.5.2). Only verified↔verified ports with shapes
+// get a definite match/mismatch; anything inferred or shapeless is `unknown`.
 function computeShapeCheck(src?: PortDTO, dst?: PortDTO): ShapeCheck {
   if (!src || !dst) return 'unknown'
   const ss = Array.isArray(src.attrs.shape) ? (src.attrs.shape as number[]) : null
@@ -380,6 +450,14 @@ function computeShapeCheck(src?: PortDTO, dst?: PortDTO): ShapeCheck {
   return ss.length === ds.length && ss.every((v, i) => v === ds[i]) ? 'match' : 'mismatch'
 }
 
+// Confidence palette: verified slots read as live (jade), inferred as muted
+// grey-blue. Values from theme.ts so inspector chips and slot dots agree.
+
+// Build the LiteGraph slot `extra_info`: a display `label` (semantic name +
+// observed shape) and a confidence-coded dot colour. A port that declares no
+// `confidence` keeps LiteGraph's default dot — we never paint it green, since
+// green means "verified" and §13.3.1 forbids implying we observed a port we
+// didn't (non-importer ports created via CLI/agent fall here).
 function slotExtra(p: PortDTO): Record<string, unknown> {
   const label = typeof p.attrs.label === 'string' ? p.attrs.label : null
   const shape = Array.isArray(p.attrs.shape) ? (p.attrs.shape as number[]).join('×') : null
@@ -414,7 +492,7 @@ function connectViaPorts(
 interface BoundaryBucket {
   externalId: string
   externalName: string
-  direction: 'in' | 'out'
+  direction: 'in' | 'out' // 'in' = external feeds internal (left); 'out' = internal feeds external (right)
   edges: EdgeDTO[]
 }
 
@@ -440,6 +518,8 @@ function injectBoundary(
     payload.external_nodes.map(x => [x.id, x]),
   )
 
+  // Lay out boundary nodes in columns hugging the real-node bounding box.
+  // Left column for inbound (external → internal), right column for outbound.
   let minX = Infinity
   let maxX = -Infinity
   for (const ln of byNode.values()) {
@@ -451,6 +531,14 @@ function injectBoundary(
   const leftX = minX - 260
   const rightX = maxX + NODE_W + 40
 
+  // --- Root brackets: the container's own ports are the subgraph's declared
+  // IO (what ComfyUI shows as the left/right bracket ports). in-ports face
+  // inward as OUTPUT slots on the left, out-ports as INPUT slots on the
+  // right. In the ported domain (model/module) the bracket pair is always
+  // present — an empty bracket reads as "no declared IO yet". Slots carry the
+  // root's real port ids, so drawing bracket↔child persists like any edge;
+  // the kernel's tunnel rule (parent.in→child.in, child.out→parent.out)
+  // accepts it.
   const bracketSlots = new Map<string, { node: LGraphNode; slot: number }>()
   const rootPorts = payload.ports.filter(p => p.node_id === rootId)
   const rootType = payload.root_info?.type ?? ''
@@ -473,6 +561,8 @@ function injectBoundary(
       bracketSlots.set(p.id, { node, slot: i })
       slotIds[i] = p.id
     })
+    // Slot→port-id maps for the draw-edge handler: the in-bracket's OUTPUT
+    // slots and the out-bracket's INPUT slots are the root's own ports.
     if (side === 'in') {
       ;(node as unknown as { simulanka_out_ports: string[] }).simulanka_out_ports = slotIds
     } else {
@@ -491,6 +581,12 @@ function injectBoundary(
   mkBracket(`▷ ${rootName} 输入`, rootPorts.filter(p => p.side === 'in'), 'in')
   mkBracket(`${rootName} 输出 ▷`, rootPorts.filter(p => p.side === 'out'), 'out')
 
+  // Group the remaining cross-boundary edges by (external endpoint id,
+  // direction relative to subgraph). Only port-bearing edges qualify for
+  // boundary-port projection — structural edges cross the boundary too, but
+  // they have no port to project onto and the nesting already conveys them.
+  // Edges whose outside endpoint is the root itself wire straight onto the
+  // bracket slot for that root port.
   const buckets = new Map<string, BoundaryBucket>()
   for (const e of payload.boundary_edges) {
     if (!e.src_port || !e.dst_port) continue
@@ -548,9 +644,19 @@ function injectBoundary(
     styleNode(lgnode, 'boundary')
     ;(lgnode as unknown as { simulanka_boundary: BoundaryBucket }).simulanka_boundary =
       bucket
+    // Boundary nodes can't be moved or selected like real nodes — they're a
+    // rendering of the subgraph frame. LiteGraph doesn't expose a clean "lock"
+    // API; the visual fixed-column placement is enough for MVP.
+    // The connection handler must live here too: for outbound buckets the
+    // INPUT side of a stub link is the boundary node itself, so a disconnect
+    // there would otherwise never reach onDeleteEdge.
     ;(lgnode as unknown as { onConnectionsChange: typeof onConnectionsChange })
       .onConnectionsChange = onConnectionsChange
 
+    // Per-edge slots so the user can see which internal port each cross-edge
+    // attaches to. Slot direction is the boundary node's local view:
+    //   inbound  bucket: each edge has one OUTPUT slot (feeds an internal IN port)
+    //   outbound bucket: each edge has one INPUT slot  (receives from internal OUT port)
     bucket.edges.forEach((e, i) => {
       const otherPortId = bucket.direction === 'in' ? e.src_port : e.dst_port
       const label = otherPortId
@@ -563,6 +669,7 @@ function injectBoundary(
       }
     })
 
+    // Stack below the root brackets in the same column.
     lgnode.size = lgnode.computeSize()
     if (bucket.direction === 'in') {
       lgnode.pos = [leftX, inboundY]
@@ -582,15 +689,20 @@ function injectBoundary(
 
     graph.add(lgnode)
 
+    // Wire each boundary-node slot to the internal node's real port slot.
+    // Decorated like internal links: the stub link carries the real edge id
+    // (disconnect = persisted DELETE) and the edge's ghost/provenance styling.
     bucket.edges.forEach((e, i) => {
       let link: LiteLink | null = null
       if (bucket.direction === 'in') {
+        // boundary.out[i] → internal_dst.in[dst_port]
         const dstNode = byNode.get(e.dst)
         if (!dstNode || !e.dst_port) return
         const inp = inSlot.get(e.dst_port)
         if (inp === undefined) return
         link = lgnode.connect(i, dstNode, inp) as unknown as LiteLink | null
       } else {
+        // internal_src.out[src_port] → boundary.in[i]
         const srcNode = byNode.get(e.src)
         if (!srcNode || !e.src_port) return
         const out = outSlot.get(e.src_port)
@@ -602,6 +714,9 @@ function injectBoundary(
   }
 }
 
+// dagre lays out the real nodes left-to-right (LR), driven by data-flow edges.
+// Nodes with no edges fall into their own rank column. Returns absolute (x, y)
+// positions keyed by node id; the caller may override with persisted values.
 function computeAutoLayout(
   payload: GraphPayload,
   descriptor: RegistryDescriptorDTO | null,
@@ -611,12 +726,16 @@ function computeAutoLayout(
   g.setDefaultEdgeLabel(() => ({}))
 
   for (const n of payload.nodes) {
+    // Card lines grow the node vertically — feed dagre the real footprint so
+    // stacked (edge-less) atoms don't overlap.
     g.setNode(n.id, {
       width: NODE_W,
       height: NODE_H
         + cardLines(n, resolveNodePresentation(descriptor, n.type)).length * CARD_LINE_H,
     })
   }
+  // Only real (both-endpoints-in) edges drive layout. Contains/structural edges
+  // are implicit in nesting and shouldn't affect rank.
   for (const e of payload.edges) {
     if (e.type !== 'data_flow') continue
     if (!g.hasNode(e.src) || !g.hasNode(e.dst)) continue
@@ -629,6 +748,7 @@ function computeAutoLayout(
   for (const id of g.nodes()) {
     const node = g.node(id)
     if (!node) continue
+    // dagre reports the centre; LiteGraph node.pos is the top-left corner.
     out.set(id, [node.x - NODE_W / 2, node.y - NODE_H / 2])
   }
   return out
