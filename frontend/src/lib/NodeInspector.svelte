@@ -99,15 +99,15 @@
       <span class="node-mark" class:trusted={node.trust !== null} title={node.trust ?? node.type}></span>
       <div class="identity">
         <strong>{node.name}</strong>
-        <span>{node.type}</span>
+        <span>{node.type} · {inputPorts.length} in / {outputPorts.length} out</span>
       </div>
       {#if nodeAttachAction}
         <button
           class="primary"
           disabled={!nodeAttachAction.enabled}
-          title={nodeAttachAction.enabled ? '把这个节点明确指给 Agent' : nodeAttachAction.reason}
+          title={nodeAttachAction.enabled ? 'Point this node to the Agent' : nodeAttachAction.reason}
           on:click={() => onAttachNode(node!)}
-        >Ask</button>
+        >✦ Ask</button>
       {/if}
       <button class:active={contextOpen} on:click={() => void toggleContext()} title="Why / Context">Why</button>
       <button class:active={expanded} on:click={() => (expanded = !expanded)}>
@@ -147,50 +147,58 @@
 
         {#if inputPorts.length > 0 || outputPorts.length > 0}
           <section class="io-section">
-            <h3>Inputs / Outputs</h3>
+            <h3>Interface</h3>
             <div class="io-columns">
               <div>
-                <h4>IN</h4>
+                <h4>IN · {inputPorts.length}</h4>
                 {#if inputPorts.length === 0}<span class="muted">none</span>{/if}
                 {#each inputPorts as port (port.id)}
                   {@const attachAction = portAttachAction(port)}
+                  {@const shape = portShape(port)}
+                  {@const confidence = portConfidence(port)}
                   <div class="port-row">
                     <span class="port-dot in"></span>
                     <div class="port-name">
                       <strong>{portLabel(port) ?? port.name}</strong>
-                      {#if portLabel(port)}<small>{port.name}</small>{/if}
+                      <small>
+                        {portLabel(port) ? `${port.name} · ` : ''}{port.port_type || 'any'}{shape ? ` · ${shape}` : ''}{confidence ? ` · ${confidence}` : ''}
+                      </small>
                     </div>
-                    {#if portShape(port)}<code>{portShape(port)}</code>{/if}
                     {#if attachAction}
                       <button
                         class="icon-button"
                         disabled={!attachAction.enabled}
-                        title={attachAction.enabled ? '把这个输入指给 Agent' : attachAction.reason}
+                        title={attachAction.enabled ? 'Point this input to the Agent' : attachAction.reason}
+                        aria-label={`Ask Agent about input ${port.name}`}
                         on:click={() => onAttachPort(port)}
-                      >＋</button>
+                      >✦</button>
                     {/if}
                   </div>
                 {/each}
               </div>
               <div>
-                <h4>OUT</h4>
+                <h4>OUT · {outputPorts.length}</h4>
                 {#if outputPorts.length === 0}<span class="muted">none</span>{/if}
                 {#each outputPorts as port (port.id)}
                   {@const attachAction = portAttachAction(port)}
+                  {@const shape = portShape(port)}
+                  {@const confidence = portConfidence(port)}
                   <div class="port-row">
                     <span class="port-dot out"></span>
                     <div class="port-name">
                       <strong>{portLabel(port) ?? port.name}</strong>
-                      {#if portLabel(port)}<small>{port.name}</small>{/if}
+                      <small>
+                        {portLabel(port) ? `${port.name} · ` : ''}{port.port_type || 'any'}{shape ? ` · ${shape}` : ''}{confidence ? ` · ${confidence}` : ''}
+                      </small>
                     </div>
-                    {#if portShape(port)}<code>{portShape(port)}</code>{/if}
                     {#if attachAction}
                       <button
                         class="icon-button"
                         disabled={!attachAction.enabled}
-                        title={attachAction.enabled ? '把这个输出指给 Agent' : attachAction.reason}
+                        title={attachAction.enabled ? 'Point this output to the Agent' : attachAction.reason}
+                        aria-label={`Ask Agent about output ${port.name}`}
                         on:click={() => onAttachPort(port)}
-                      >＋</button>
+                      >✦</button>
                     {/if}
                   </div>
                 {/each}
@@ -261,14 +269,12 @@
     flex-direction: column;
     align-items: flex-end;
     gap: 6px;
-    max-width: min(390px, calc(100% - 28px));
+    max-width: min(430px, calc(100% - 28px));
     color: var(--text);
     font-size: 12px;
     pointer-events: none;
   }
-
   .selection-ui > * { pointer-events: auto; }
-
   .selection-bar {
     display: flex;
     align-items: center;
@@ -281,7 +287,6 @@
     background: rgba(12, 23, 38, 0.94);
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
   }
-
   .node-mark {
     width: 8px;
     height: 8px;
@@ -289,10 +294,9 @@
     background: var(--panel-3);
   }
   .node-mark.trusted { background: var(--amber); border-color: var(--amber); }
-
   .identity {
-    min-width: 110px;
-    max-width: 180px;
+    min-width: 120px;
+    max-width: 210px;
     display: flex;
     flex-direction: column;
     line-height: 1.15;
@@ -309,7 +313,6 @@
     color: var(--muted);
     font: 9px var(--font-mono);
   }
-
   button {
     min-height: 28px;
     padding: 3px 8px;
@@ -330,7 +333,6 @@
     color: var(--violet);
   }
   button:disabled { opacity: 0.45; cursor: default; }
-
   .context-strip,
   .details {
     width: 100%;
@@ -340,10 +342,7 @@
     background: rgba(12, 23, 38, 0.97);
     box-shadow: 0 12px 30px rgba(0, 0, 0, 0.34);
   }
-
-  .context-strip {
-    padding: 7px 8px;
-  }
+  .context-strip { padding: 7px 8px; }
   .context-label {
     display: block;
     margin-bottom: 5px;
@@ -351,11 +350,7 @@
     font: 9px var(--font-mono);
     text-transform: uppercase;
   }
-  .context-path {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-  }
+  .context-path { display: flex; flex-wrap: wrap; gap: 4px; }
   .context-hop {
     display: flex;
     flex-direction: column;
@@ -369,17 +364,12 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .context-hop small {
-    color: var(--muted);
-    font: 9px var(--font-mono);
-  }
-
+  .context-hop small { color: var(--muted); font: 9px var(--font-mono); }
   .details {
     max-height: calc(100vh - 120px);
     overflow: auto;
     padding: 12px;
   }
-
   .detail-head {
     display: flex;
     align-items: flex-start;
@@ -405,7 +395,6 @@
     color: var(--muted);
     font-size: 9px;
   }
-
   section { margin-top: 12px; }
   h3,
   h4 {
@@ -417,7 +406,6 @@
   }
   h3 { margin-bottom: 7px; }
   h4 { margin-bottom: 5px; font-size: 9px; }
-
   .io-columns {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -426,8 +414,8 @@
   .port-row {
     display: flex;
     align-items: center;
-    gap: 5px;
-    min-height: 28px;
+    gap: 6px;
+    min-height: 31px;
     border-bottom: 1px solid rgba(43, 59, 96, 0.35);
   }
   .port-dot {
@@ -452,8 +440,10 @@
     font-size: 10px;
     font-weight: 500;
   }
-  .port-name small,
-  .port-row code {
+  .port-name small {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     color: var(--muted);
     font: 8px var(--font-mono);
   }
@@ -461,14 +451,9 @@
     min-width: 22px;
     min-height: 22px;
     padding: 0;
+    color: var(--violet);
   }
-
-  .actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 5px;
-  }
-
+  .actions { display: flex; flex-wrap: wrap; gap: 5px; }
   .facts dl,
   .attrs-panel dl {
     display: grid;
@@ -476,23 +461,18 @@
     gap: 4px 8px;
     margin: 0;
   }
-  dt {
-    color: var(--muted);
-    font: 9px var(--font-mono);
-  }
+  dt { color: var(--muted); font: 9px var(--font-mono); }
   dd {
     min-width: 0;
     margin: 0;
     color: var(--text);
     overflow-wrap: anywhere;
   }
-
   .done {
     width: 100%;
     border-color: rgba(126, 207, 165, 0.5);
     color: var(--jade);
   }
-
   .attrs-panel {
     margin-top: 12px;
     padding-top: 9px;
@@ -515,9 +495,7 @@
     word-break: break-word;
     font: 9px/1.4 var(--font-mono);
   }
-
   .muted { color: var(--muted); font-size: 10px; }
-
   @media (max-width: 760px) {
     .selection-ui { left: 12px; right: 12px; max-width: none; }
     .selection-bar { width: 100%; }
