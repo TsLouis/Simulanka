@@ -21,10 +21,18 @@
 
   let text = ''
   let open = false
+  let lastRefCount = 0
 
-  // When the user explicitly attaches something, make the companion notice it
-  // without forcing a large panel open.
   $: hasContext = refs.length > 0
+
+  // "Ask" and explicit attach should feel like handing an object to the Agent,
+  // not like silently incrementing a badge. A newly attached ref therefore
+  // opens the small composer, while removals never force UI state.
+  $: {
+    const nextRefCount = refs.length
+    if (nextRefCount > lastRefCount) open = true
+    lastRefCount = nextRefCount
+  }
 
   function send() {
     if (!text.trim() || busy || readOnly) return
@@ -50,7 +58,7 @@
       <header class="panel-head">
         <div>
           <strong>Agent</strong>
-          <span>{busy ? 'thinking…' : readOnly ? 'read only' : 'ready'}</span>
+          <span>{busy ? 'thinking…' : readOnly ? 'read only' : hasContext ? `looking at ${refs.length} object${refs.length === 1 ? '' : 's'}` : 'ready'}</span>
         </div>
         <div class="panel-actions">
           <button
