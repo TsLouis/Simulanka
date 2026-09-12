@@ -23,27 +23,34 @@
 - **WHEN** 用户进入一个已有项目且没有恢复中的显式面板状态
 - **THEN** 页面主要显示 Graph Canvas，不自动展开 Inspector 或长对话面板
 
+### Requirement: Node/Port 基础交互采用成熟 node-editor 范式
+前端 SHOULD 以 ComfyUI/LiteGraph 的成熟交互作为 Node/Port/connection 基线，而 MUST NOT 为像素视觉风格重新定义基础拓扑编辑语法。input Port SHOULD 独立排列在节点左侧，output Port SHOULD 独立排列在右侧；Node 尺寸 SHALL 足以容纳实际 Port 数量；拖线、目标命中与可连接反馈 SHOULD 优先复用原生 LiteGraph 行为。
+
+#### Scenario: 节点拥有多个 Port
+- **WHEN** 一个 Node 有 4 个 input Port 和 3 个 output Port
+- **THEN** UI 显示 7 个独立的 Port handle/row/anchor，不将同侧多个 Port 合并、堆叠到同一位置或用单一聚合 handle 替代
+
 ### Requirement: Node 信息密度随 zoom 渐进展开
-前端 SHALL 根据 Canvas zoom 采用稳定的信息密度层级，而 MUST NOT 在所有缩放级别显示同样的卡片内容。层级切换 SHOULD 使用稳定阈值或 hysteresis，避免轻微缩放造成反复闪烁。
+前端 SHALL 根据 Canvas zoom 采用稳定的信息密度层级，而 MUST NOT 在所有缩放级别显示同样的卡片内容。Port handle MUST 独立于这些层级始终保留；zoom 只控制 Port label、卡片字段和其他文字细节。
 
 #### Scenario: 远距离浏览
 - **WHEN** zoom 处于 overview 区间
-- **THEN** Node 仅显示足以识别的图标/类型与名称，Port 名称和非必要字段隐藏
+- **THEN** Node 显示足以识别的名称/类型以及每一个真实 input/output Port handle；Port 名称和非必要字段隐藏
 
 #### Scenario: 工作距离浏览
 - **WHEN** zoom 进入 working 区间
-- **THEN** Node 显示真实可连接 input/output Port handle，但可继续省略长属性文本
+- **THEN** 全部真实 Port handle 继续独立可见，UI MAY 根据可读性显示短 label 或关键状态，但不得合并 Port
 
 #### Scenario: 近距离查看
 - **WHEN** zoom 进入 detail 区间
 - **THEN** Node 显示 Port 名称/方向与 PresentationSpec 选择的关键字段
 
 ### Requirement: Port 是节点正常视觉语义的一部分
-working/detail zoom 下，前端 SHALL 使用真实 Graph Port 数据表达节点输入与输出；input Port SHOULD 位于节点左侧，output Port SHOULD 位于右侧，且连接 eligibility 仍由 Registry/Edge Profile 与 server 最终校验决定。远距离隐藏 Port 只属于视觉降噪，不得改变图语义。
+所有 zoom 下，前端 SHALL 使用真实 Graph Port 数据表达节点输入与输出。每个 Port MUST 保持独立 handle、row、anchor 与 hit target；input Port SHOULD 位于节点左侧，output Port SHOULD 位于右侧。zoom MAY 隐藏 Port 名称、type、shape 等文字，但 MUST NOT 隐藏、合并或堆叠真实 Port。连接 eligibility 仍由 Registry/Edge Profile 与 server 最终校验决定。
 
 #### Scenario: Experiment 有多个输入输出
-- **WHEN** 一个节点存在 `data/config` 输入和 `result/log` 输出且用户放大到 detail 区间
-- **THEN** 这些 Port 以对应方向和名称展示，用户可从兼容 Port 建立连接
+- **WHEN** 一个节点存在 `data/config` 输入和 `result/log` 输出
+- **THEN** 在任意 zoom 下都能看见 4 个独立 Port handle；detail zoom 再显示对应 Port 名称和语义，用户可从兼容 Port 建立连接
 
 ### Requirement: 选择对象先显示轻量上下文
 单击 Node/Edge/Port SHALL 优先产生局部高亮与轻量 contextual controls，而不是自动展开完整 Inspector 或切换到独立模式。用户 MUST 可以显式打开完整详情。
