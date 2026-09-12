@@ -132,11 +132,11 @@ function isDraftNode(node: DensityNode): boolean {
  * so zooming cannot disconnect or rewrite anything.
  */
 function installZoomAwareNodeRendering(canvas: LGraphCanvas): void {
-  const target = canvas as DensityCanvas
+  const target = canvas as unknown as DensityCanvas
   const baseDrawNode = target.drawNode.bind(canvas)
 
   target.drawNode = (node: LGraphNode, ctx: CanvasRenderingContext2D): void => {
-    const densityNode = node as DensityNode
+    const densityNode = node as unknown as DensityNode
     // Boundary stubs intentionally keep their existing projection rendering.
     if (!densityNode.simulanka) {
       baseDrawNode(node, ctx)
