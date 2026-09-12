@@ -24,9 +24,17 @@
     'node.enter': '⤢',
     'node.rename': '✎',
     'node.delete': '✕',
-    'context.attach': '＋',
+    'context.attach': '✦',
     'template.save': '⧉',
   })[id] ?? '›'
+
+  // Affordance ids remain server-owned; only product-facing wording changes.
+  // `context.attach` means the deliberate act of pointing graph objects at the
+  // Agent, so expose that action directly instead of backend terminology.
+  const actionLabel = (action: AffordanceDTO): string =>
+    action.id === 'context.attach'
+      ? nodes.length > 1 ? `Ask Agent about ${nodes.length} objects` : 'Ask Agent'
+      : action.label
 
   let query = ''
   let searchEl: HTMLInputElement | null = null
@@ -37,8 +45,6 @@
   $: flatItems = filtered.flatMap(group => group.items)
   $: if (activeIndex >= flatItems.length) activeIndex = Math.max(0, flatItems.length - 1)
 
-  // Clamp inside the viewport. The wider search surface gives template names,
-  // profile and port structure enough room without becoming a side panel.
   $: left = Math.max(8, Math.min(x, window.innerWidth - 330))
   $: top = Math.max(8, Math.min(y, window.innerHeight - 470))
 
@@ -91,8 +97,6 @@
   }
 </script>
 
-<!-- capture 相:LiteGraph 在画布 mousedown 里吃掉冒泡,常规监听收不到,
-     菜单就收不起来——捕获相先于画布处理器,点画布任意处都能关。 -->
 <svelte:window on:keydown={onKeydown} on:mousedown|capture={onGlobalPointerDown} />
 
 <div class="menu" bind:this={menuEl} style="left: {left}px; top: {top}px;" role="menu">
@@ -145,23 +149,24 @@
     </div>
   {:else if node}
     <div class="node-head">
-      <span class="type-chip">{nodes.length > 1 ? `${nodes.length} 项` : node.type}</span>
-      <span class="node-name">{nodes.length > 1 ? '多选' : node.name}</span>
+      <span class="type-chip">{nodes.length > 1 ? `${nodes.length} objects` : node.type}</span>
+      <span class="node-name">{nodes.length > 1 ? 'Selection' : node.name}</span>
     </div>
     {#each affordances as action (action.id)}
       <button
         class="row action"
+        class:agent-action={action.id === 'context.attach'}
         class:danger={action.id === 'node.delete'}
         class:disabled={!action.enabled}
         disabled={!action.enabled}
-        title={action.enabled ? action.label : action.reason}
+        title={action.enabled ? actionLabel(action) : action.reason}
         on:click={() => onAction(action)}
       >
-        <span>{action.label} {actionIcon(action.id)}</span>
+        <span>{actionLabel(action)} {actionIcon(action.id)}</span>
         {#if !action.enabled}<span class="reason">{action.reason}</span>{/if}
       </button>
     {/each}
-    {#if affordances.length === 0}<div class="empty">无可用动作</div>{/if}
+    {#if affordances.length === 0}<div class="empty">No available actions</div>{/if}
   {/if}
 </div>
 
@@ -181,7 +186,6 @@
     display: flex;
     flex-direction: column;
   }
-
   .search-row {
     display: flex;
     align-items: center;
@@ -190,13 +194,11 @@
     border-radius: 3px;
     background: var(--panel-3);
   }
-
   .search-icon {
     padding-left: 8px;
     color: var(--blue);
     font: 700 13px var(--font-mono);
   }
-
   .search {
     min-width: 0;
     flex: 1;
@@ -207,20 +209,13 @@
     padding: 8px 8px 8px 0;
     font: 12px var(--font-mono);
   }
-
   .search-row:focus-within { border-color: var(--blue); }
-
   .hint {
     padding: 5px 7px 4px;
     color: var(--muted);
     font: 9px var(--font-mono);
   }
-
-  .list {
-    overflow-y: auto;
-    max-height: 370px;
-  }
-
+  .list { overflow-y: auto; max-height: 370px; }
   .cat {
     position: sticky;
     top: 0;
@@ -233,7 +228,6 @@
     padding: 8px 7px 3px;
     user-select: none;
   }
-
   .row {
     display: flex;
     align-items: center;
@@ -248,27 +242,24 @@
     cursor: pointer;
     font: inherit;
   }
-
   .row:hover,
   .add-row.active {
     background: var(--panel-2);
     color: var(--ivory);
   }
-
+  .agent-action { color: var(--violet); }
   .node-result {
     display: flex;
     flex-direction: column;
     min-width: 0;
     gap: 2px;
   }
-
   .node-result .label {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     color: var(--ivory);
   }
-
   .meta {
     overflow: hidden;
     text-overflow: ellipsis;
@@ -276,7 +267,6 @@
     color: var(--muted);
     font: 9px var(--font-mono);
   }
-
   .del {
     color: var(--muted);
     font-size: 11px;
@@ -284,14 +274,12 @@
     border-radius: 2px;
   }
   .del:hover { color: var(--crimson); }
-
   .empty {
     color: var(--muted);
     padding: 16px 10px;
     text-align: center;
     font: 10px var(--font-mono);
   }
-
   .node-head {
     display: flex;
     align-items: center;
@@ -300,7 +288,6 @@
     border-bottom: 1px solid var(--hairline);
     margin-bottom: 5px;
   }
-
   .type-chip {
     background: var(--panel-3);
     color: var(--blue);
@@ -309,14 +296,12 @@
     font-size: 9px;
     padding: 2px 6px;
   }
-
   .node-name {
     color: var(--ivory);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-
   .action { padding: 7px 8px; }
   .danger:hover {
     color: var(--crimson);
