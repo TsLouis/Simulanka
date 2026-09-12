@@ -19,6 +19,7 @@ from simulanka.storage.entity_store import (
     save_node,
     save_port,
 )
+from simulanka.storage.write_lock import project_write_lock
 
 BUNDLE_FORMAT: Literal["simulanka.bundle.v1"] = "simulanka.bundle.v1"
 
@@ -68,41 +69,44 @@ def import_bundle(bundle: Bundle, target_root: Path) -> ProjectLayout:
     target_root = target_root.resolve()
     target_root.mkdir(parents=True, exist_ok=True)
     layout = ProjectLayout(target_root)
-    if layout.dot_dir.exists():
-        raise ImportTargetNotEmpty(
-            f"Target `{layout.dot_dir}` already exists. "
-            "Choose a fresh path or remove it first."
+    with project_write_lock(layout.root):
+        if layout.dot_dir.exists():
+            raise ImportTargetNotEmpty(
+                f"Target `{layout.dot_dir}` already exists. "
+                "Choose a fresh path or remove it first."
+            )
+
+        for d in (
+            layout.dot_dir,
+            layout.graph_dir,
+            layout.nodes_dir,
+            layout.edges_dir,
+            layout.ports_dir,
+            layout.events_dir,
+            layout.indexes_dir,
+            layout.logs_dir,
+            layout.cache_dir,
+        ):
+            d.mkdir(parents=True, exist_ok=True)
+
+        for node in bundle.nodes:
+            save_node(layout, node)
+        for port in bundle.ports:
+            save_port(layout, port)
+        for edge in bundle.edges:
+            save_edge(layout, edge)
+        for event in bundle.events:
+            append_event(layout, event)
+
+        # Re-derive content_hash from disk so any benign reformat is corrected,
+        # and persist the manifest.
+        materialized = bundle.manifest.model_copy(
+            update={"content_hash": compute_content_hash(layout)}
         )
+        write_manifest(layout, materialized)
 
-    for d in (
-        layout.dot_dir,
-        layout.graph_dir,
-        layout.nodes_dir,
-        layout.edges_dir,
-        layout.ports_dir,
-        layout.events_dir,
-        layout.indexes_dir,
-        layout.logs_dir,
-        layout.cache_dir,
-    ):
-        d.mkdir(parents=True, exist_ok=True)
-
-    for node in bundle.nodes:
-        save_node(layout, node)
-    for port in bundle.ports:
-        save_port(layout, port)
-    for edge in bundle.edges:
-        save_edge(layout, edge)
-    for event in bundle.events:
-        append_event(layout, event)
-
-    # Re-derive content_hash from disk so any benign reformat is corrected,
-    # and persist the manifest.
-    materialized = bundle.manifest.model_copy(update={"content_hash": compute_content_hash(layout)})
-    write_manifest(layout, materialized)
-
-    (layout.dot_dir / ".gitignore").write_text(GITIGNORE_BODY, encoding="utf-8")
-    return layout
+        (layout.dot_dir / ".gitignore").write_text(GITIGNORE_BODY, encoding="utf-8")
+        return layout
 
 
 __all__ = [

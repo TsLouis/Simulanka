@@ -69,10 +69,24 @@ Capability 表达会被 validation、action、context 或 presentation 消费的
 | delete_node | 删**空**节点（有孩子拒——子树删除必须显式自底向上）；级联删自身端口与全部关联边，含父 `contains`（建点双写的合法逆操作，2026-07-14 加）；是否可删由 Profile capability 与 server state/source policy 决定，kernel 只守结构完整性 |
 
 - **隧道规则（§12.4 子图 IO，2026-07-14）**：`data_flow` 的方向校验（source=out、target=in）有唯一豁免——**父.in → 子.in** 与 **子.out → 父.out**（恰一个包含层级，ComfyUI/UE5 子图边界语义）；validator 与 doctor 同一规则。
-- **原子性**：全部 op 先校验后落盘，任一错 = 整个 intent 拒，报错带 `op[i]` 定位。
-- **乐观并发**：`base_graph_version` 与当前不符 = `VersionConflict`，重读重发。
+- **校验原子性**：全部 op 先校验后落盘，任一校验错 = 整个 intent 拒，报错带 `op[i]` 定位。多文件写入中途的 I/O 失败或进程崩溃不具备自动回滚保证（#10）。
+- **乐观并发与串行写入**：`base_graph_version` 与锁内读取的当前版本不符 = `VersionConflict`，调用方重读重发。`apply_patch_now` 在相同锁内读取 live version；不同进程的即时提交依次获得新版本。
 - **名字保留字**：`nod_`/`edg_`/`prt_` 前缀与 `@` 开头的名字拒收（会被 selector 语法劫持）。
 - **actor 铭章**：kernel 只记录 actor（进实体 `created_by` 与事件日志），**不裁权**——写权矩阵的执行点在 server 闸门（人侧端点 + agent op 闸，见前端篇）。CLI/库内约定的 actor 词表：`user`、`agent`、`analyst`、`operator`、`runner`、`importer:*`、`system:*`。
+
+### 项目写入边界
+
+`storage.write_lock.project_write_lock(root)` 按 canonical project root 协调同一主机上的线程与进程。同线程嵌套可重入；不同项目独立。锁覆盖图状态/版本检查、实体写入、event、manifest 与 best-effort checkpoint。初始化、迁移、bundle 导入及独立 checkpoint 的检查和写入同样遵守此边界。服务端纯图动作的当前状态/写权检查与提交共同持锁；Agent op 不会在通过政策检查后覆盖另一写者刚落地的人工结论。
+
+锁文件位于项目根 `.simulanka.write.lock`，不进入 graph hash、bundle 或 `.simulanka/` 内嵌 checkpoint。获取失败时不进入写区；竞争时等待；异常退出与进程终止后可再次获取，保留文件而不靠删除“解锁”。POSIX fork 不继承重入资格。新项目 root ignore 包含此文件，现有用户 gitignore 不被覆盖。
+
+该协议只协调遵循它的本地主机写者。升级时先停止旧版写进程，不能混用不加锁的旧代码。外部恢复工具也必须遵守同一边界，不得在写者运行时删除或替换锁文件。模型/PTY/外部任务运行、用户思考和 Session 的整个生命周期不持有图锁。读取仍非快照；串行写入不能替代 #10 的恢复/提交可见性协议，也不构成 action-level Undo。
+
+### Frontend v2 的后端衔接
+
+PR #15 复用现有 Session、ContextBundle 和 server affordances。Companion 位置、zoom 和临时 attention 是 UI/projection；对象旁的 annotation 后续归属 Session/conversation sidecar，不默认转为 attrs、note 或正式边。Ask 仅附加用户明确选择的 RefSet，Why/provenance 查询不自动成为模型上下文。真实 Port、连接 eligibility 与 root tunnel 规则保持原合同。
+
+Draft 标签须同时参考实体的实际状态：`source=agent` 是来源，accepted 后仍可保留；纯预览 Draft 与已持久化 proposed edge 也要区分。Keep 通过 `edge.accept` 执行并重查当前状态，Dismiss 仍是带 note 的 wrong verdict而非删除。持久 `edge.discuss` 标记与临时 Agent attention 不应混用。后续按既有 GraphCommand / SessionCommand / ProjectionCommand 分离服务；恢复与有版本前提的补偿动作就绪后，再单独设计 auto-apply/Undo，避免整图 reset 覆盖后来的人工作业。
 
 ## Selector（读侧寻址）
 

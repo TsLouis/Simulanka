@@ -21,6 +21,7 @@ import logging
 import subprocess
 
 from simulanka.layout.project import ProjectLayout
+from simulanka.storage.write_lock import project_write_lock
 
 logger = logging.getLogger(__name__)
 
@@ -47,13 +48,14 @@ def ensure_repo(layout: ProjectLayout) -> None:
 
     Identity is repo-local so we never touch the user's global git config.
     """
-    if repo_exists(layout):
-        return
-    _git(layout, "init", "-q")
-    _git(layout, "config", "user.name", "simulanka")
-    _git(layout, "config", "user.email", "simulanka@local")
-    _git(layout, "config", "commit.gpgsign", "false")
-    checkpoint(layout, "checkpoint: repo init")
+    with project_write_lock(layout.root):
+        if repo_exists(layout):
+            return
+        _git(layout, "init", "-q")
+        _git(layout, "config", "user.name", "simulanka")
+        _git(layout, "config", "user.email", "simulanka@local")
+        _git(layout, "config", "commit.gpgsign", "false")
+        checkpoint(layout, "checkpoint: repo init")
 
 
 def checkpoint(layout: ProjectLayout, message: str) -> bool:
@@ -62,15 +64,16 @@ def checkpoint(layout: ProjectLayout, message: str) -> bool:
     Commit first and ask questions on failure: apply_patch always mutates the
     graph, so the dirty path is the hot path — two subprocesses, not three.
     """
-    _git(layout, "add", "-A")
-    commit = _git(layout, "commit", "-q", "-m", message, check=False)
-    if commit.returncode == 0:
-        return True
-    # A clean tree is the only benign commit failure; confirm via status
-    # instead of parsing the locale-dependent commit message.
-    if _git(layout, "status", "--porcelain").stdout.strip():
-        commit.check_returncode()
-    return False
+    with project_write_lock(layout.root):
+        _git(layout, "add", "-A")
+        commit = _git(layout, "commit", "-q", "-m", message, check=False)
+        if commit.returncode == 0:
+            return True
+        # A clean tree is the only benign commit failure; confirm via status
+        # instead of parsing the locale-dependent commit message.
+        if _git(layout, "status", "--porcelain").stdout.strip():
+            commit.check_returncode()
+        return False
 
 
 def maybe_checkpoint(layout: ProjectLayout, message: str) -> None:
@@ -92,4 +95,5 @@ def maybe_checkpoint(layout: ProjectLayout, message: str) -> None:
 def tag_checkpoint(layout: ProjectLayout, name: str) -> None:
     """Mark the current snapshot (e.g. a discussion-round start). Idempotent:
     re-tagging moves the tag to the current commit."""
-    _git(layout, "tag", "-f", name)
+    with project_write_lock(layout.root):
+        _git(layout, "tag", "-f", name)

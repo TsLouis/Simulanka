@@ -18,3 +18,4 @@ references/
 
 # Live graph state from local dev/testing of the kernel itself
 .simulanka/
+.simulanka.write.lock

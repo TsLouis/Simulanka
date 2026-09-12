@@ -13,10 +13,9 @@ Everything else (accepting/deleting real edges, ``verdict_by``, real-domain
 attrs like ``shape_check``) is rejected with a reason that goes back into
 the chat. Protocol pinned with Codex in issue #2.
 
-Ops apply one by one: a bad op is reported, not fatal to the batch. The
-precondition read and the kernel write are separate steps — same
-single-user tolerance as the human-side endpoints (a vanished edge
-surfaces as a kernel rejection, not a crash).
+Ops apply one by one: a bad op is reported, not fatal to the batch. Policy
+reads and writes share the project lock, so an intervening human decision
+cannot be overwritten after an agent op has passed its policy check.
 """
 
 from __future__ import annotations
@@ -32,6 +31,7 @@ from simulanka.registry.builtin import DEFAULT_REGISTRY
 from simulanka.registry.profiles import Registry
 from simulanka.schema.entities import Edge
 from simulanka.storage.entity_store import load_edge
+from simulanka.storage.write_lock import project_write_lock
 
 AGENT_VERDICTS = ("correct", "wrong", "uncertain")
 PROPOSE_OPTIONAL_ATTRS = ("output_slice", "evidence_locality")
@@ -50,32 +50,33 @@ def apply_agent_ops(
     registry: Registry = DEFAULT_REGISTRY,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Filter + apply agent ops; returns ``(applied, rejected)`` summaries."""
-    applied: list[dict[str, Any]] = []
-    rejected: list[dict[str, Any]] = []
-    for op in ops:
-        try:
-            intent = _translate(layout, op)
-            receipt = apply_patch_now(
-                layout,
-                ops=[intent],
-                actor="agent",
-                note=f"discussion: {op.op}",
-                registry=registry,
+    with project_write_lock(layout.root):
+        applied: list[dict[str, Any]] = []
+        rejected: list[dict[str, Any]] = []
+        for op in ops:
+            try:
+                intent = _translate(layout, op)
+                receipt = apply_patch_now(
+                    layout,
+                    ops=[intent],
+                    actor="agent",
+                    note=f"discussion: {op.op}",
+                    registry=registry,
+                )
+            except _Reject as exc:
+                rejected.append({"op": op.raw, "reason": str(exc)})
+                continue
+            except ValidationError as exc:
+                rejected.append({"op": op.raw, "reason": f"kernel rejected: {exc}"})
+                continue
+            applied.append(
+                {
+                    "op": op.raw,
+                    "edge_id": (receipt.edges + receipt.updated_edges + receipt.deleted_edges)[0],
+                    "graph_version": receipt.graph_version,
+                }
             )
-        except _Reject as exc:
-            rejected.append({"op": op.raw, "reason": str(exc)})
-            continue
-        except ValidationError as exc:
-            rejected.append({"op": op.raw, "reason": f"kernel rejected: {exc}"})
-            continue
-        applied.append(
-            {
-                "op": op.raw,
-                "edge_id": (receipt.edges + receipt.updated_edges + receipt.deleted_edges)[0],
-                "graph_version": receipt.graph_version,
-            }
-        )
-    return applied, rejected
+        return applied, rejected
 
 
 def _translate(layout: ProjectLayout, op: DiscussionOp) -> IntentOp:

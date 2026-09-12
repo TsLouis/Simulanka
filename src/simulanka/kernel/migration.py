@@ -17,6 +17,7 @@ from simulanka.kernel.manifest import (
     write_manifest,
 )
 from simulanka.layout.project import ProjectLayout
+from simulanka.storage.write_lock import project_write_lock
 
 MigrationKind = Literal["schema", "registry"]
 
@@ -98,49 +99,50 @@ def plan_migrations(layout: ProjectLayout) -> MigrationPlan:
 
 
 def run_migrations(layout: ProjectLayout, *, actor: str = "system:migrate") -> MigrationPlan:
-    plan = plan_migrations(layout)
-    if plan.is_empty:
+    with project_write_lock(layout.root):
+        plan = plan_migrations(layout)
+        if plan.is_empty:
+            return plan
+
+        manifest = load_manifest(layout)
+        ops_log: list[dict[str, object]] = []
+
+        for step in plan.steps:
+            mig = _find(step.kind, step.from_version)
+            assert mig is not None, "plan_migrations should have caught this"
+            mig.apply(layout)
+            ops_log.append({
+                "kind": "migrate",
+                "name": mig.name,
+                "migration_kind": mig.kind,
+                "from": mig.from_version,
+                "to": mig.to_version,
+            })
+
+        new_graph_version = manifest.graph_version + 1
+        now = datetime.now(timezone.utc)
+        event = Event(
+            id=new_id("evt"),
+            at=now,
+            actor=actor,
+            kind="migrate",
+            base_graph_version=manifest.graph_version,
+            graph_version=new_graph_version,
+            note=None,
+            ops=ops_log,
+        )
+        append_event(layout, event)
+
+        write_manifest(
+            layout,
+            manifest.model_copy(update={
+                "schema_version": plan.target_schema,
+                "registry_version": plan.target_registry,
+                "graph_version": new_graph_version,
+                "content_hash": compute_content_hash(layout),
+            }),
+        )
         return plan
-
-    manifest = load_manifest(layout)
-    ops_log: list[dict[str, object]] = []
-
-    for step in plan.steps:
-        mig = _find(step.kind, step.from_version)
-        assert mig is not None, "plan_migrations should have caught this"
-        mig.apply(layout)
-        ops_log.append({
-            "kind": "migrate",
-            "name": mig.name,
-            "migration_kind": mig.kind,
-            "from": mig.from_version,
-            "to": mig.to_version,
-        })
-
-    new_graph_version = manifest.graph_version + 1
-    now = datetime.now(timezone.utc)
-    event = Event(
-        id=new_id("evt"),
-        at=now,
-        actor=actor,
-        kind="migrate",
-        base_graph_version=manifest.graph_version,
-        graph_version=new_graph_version,
-        note=None,
-        ops=ops_log,
-    )
-    append_event(layout, event)
-
-    write_manifest(
-        layout,
-        manifest.model_copy(update={
-            "schema_version": plan.target_schema,
-            "registry_version": plan.target_registry,
-            "graph_version": new_graph_version,
-            "content_hash": compute_content_hash(layout),
-        }),
-    )
-    return plan
 
 
 def _collect(steps: list[PlannedStep], kind: MigrationKind, current: int, target: int) -> None:

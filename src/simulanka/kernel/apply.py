@@ -49,6 +49,7 @@ from simulanka.storage.entity_store import (
     save_node,
     save_port,
 )
+from simulanka.storage.write_lock import project_write_lock
 
 
 class VersionConflict(RuntimeError):
@@ -110,20 +111,21 @@ def apply_patch_now(
     """Convenience wrapper: build a ``PatchIntent`` from the live ``graph_version``.
 
     Use when the caller has no reason to construct the intent itself and just
-    wants to land *ops* atomically against the current head. The single source
-    of the ``graph_version`` read prevents the off-by-one window that occurs
-    when callers load the manifest, build ops, then call apply_patch.
+    wants to land *ops* against the current head. Read the version under the
+    same reentrant project lock as validation and commit; explicit intents
+    passed to ``apply_patch`` still retain their optimistic precondition.
     """
-    return apply_patch(
-        layout,
-        PatchIntent(
-            ops=ops,
-            actor=actor,
-            base_graph_version=load_manifest(layout).graph_version,
-            note=note,
-        ),
-        registry=registry,
-    )
+    with project_write_lock(layout.root):
+        return apply_patch(
+            layout,
+            PatchIntent(
+                ops=ops,
+                actor=actor,
+                base_graph_version=load_manifest(layout).graph_version,
+                note=note,
+            ),
+            registry=registry,
+        )
 
 
 def apply_patch(
@@ -132,97 +134,98 @@ def apply_patch(
     *,
     registry: Registry = DEFAULT_REGISTRY,
 ) -> Receipt:
-    check_versions(layout)
-    manifest = load_manifest(layout)
-    if intent.base_graph_version != manifest.graph_version:
-        raise VersionConflict(
-            f"base_graph_version={intent.base_graph_version} but "
-            f"current graph_version={manifest.graph_version}. Re-read and retry."
-        )
-    if not intent.ops:
-        raise ValueError("PatchIntent.ops is empty.")
-
-    now = datetime.now(timezone.utc)
-    pending = _Pending(
-        nodes=[], edges=[], ports=[], updated_nodes=[], updated_edges=[],
-        canonical_ops=[], deleted_edges=[], deleted_nodes=[], deleted_ports=[],
-        refs={},
-    )
-    errors: list[str] = []
-
-    for idx, op in enumerate(intent.ops):
-        errors.extend(
-            _apply_op(
-                layout,
-                op,
-                intent.actor,
-                now,
-                pending,
-                registry,
-                op_index=idx,
+    with project_write_lock(layout.root):
+        check_versions(layout)
+        manifest = load_manifest(layout)
+        if intent.base_graph_version != manifest.graph_version:
+            raise VersionConflict(
+                f"base_graph_version={intent.base_graph_version} but "
+                f"current graph_version={manifest.graph_version}. Re-read and retry."
             )
+        if not intent.ops:
+            raise ValueError("PatchIntent.ops is empty.")
+
+        now = datetime.now(timezone.utc)
+        pending = _Pending(
+            nodes=[], edges=[], ports=[], updated_nodes=[], updated_edges=[],
+            canonical_ops=[], deleted_edges=[], deleted_nodes=[], deleted_ports=[],
+            refs={},
         )
+        errors: list[str] = []
 
-    if errors:
-        raise ValidationError("; ".join(errors))
+        for idx, op in enumerate(intent.ops):
+            errors.extend(
+                _apply_op(
+                    layout,
+                    op,
+                    intent.actor,
+                    now,
+                    pending,
+                    registry,
+                    op_index=idx,
+                )
+            )
 
-    for node in pending.nodes:
-        save_node(layout, node)
-    for port in pending.ports:
-        save_port(layout, port)
-    for edge in pending.edges:
-        save_edge(layout, edge)
-    for node in pending.updated_nodes:
-        save_node(layout, node)
-    for edge in pending.updated_edges:
-        save_edge(layout, edge)
-    for edge in pending.deleted_edges:
-        delete_edge(layout, edge.id)
-    for port in pending.deleted_ports:
-        delete_port(layout, port.id)
-    for node in pending.deleted_nodes:
-        delete_node(layout, node.id)
+        if errors:
+            raise ValidationError("; ".join(errors))
 
-    new_version = manifest.graph_version + 1
-    event = Event(
-        id=new_id("evt"),
-        at=now,
-        actor=intent.actor,
-        kind="commit",
-        base_graph_version=intent.base_graph_version,
-        graph_version=new_version,
-        note=intent.note,
-        ops=pending.canonical_ops,
-    )
-    append_event(layout, event)
+        for node in pending.nodes:
+            save_node(layout, node)
+        for port in pending.ports:
+            save_port(layout, port)
+        for edge in pending.edges:
+            save_edge(layout, edge)
+        for node in pending.updated_nodes:
+            save_node(layout, node)
+        for edge in pending.updated_edges:
+            save_edge(layout, edge)
+        for edge in pending.deleted_edges:
+            delete_edge(layout, edge.id)
+        for port in pending.deleted_ports:
+            delete_port(layout, port.id)
+        for node in pending.deleted_nodes:
+            delete_node(layout, node.id)
 
-    manifest = manifest.model_copy(
-        update={
-            "graph_version": new_version,
-            "content_hash": compute_content_hash(layout),
-        }
-    )
-    write_manifest(layout, manifest)
+        new_version = manifest.graph_version + 1
+        event = Event(
+            id=new_id("evt"),
+            at=now,
+            actor=intent.actor,
+            kind="commit",
+            base_graph_version=intent.base_graph_version,
+            graph_version=new_version,
+            note=intent.note,
+            ops=pending.canonical_ops,
+        )
+        append_event(layout, event)
 
-    # §13.6 撤回兜底: snapshot the whole dot-dir into the embedded git repo.
-    # No-op until storage.checkpoint.ensure_repo has run (server startup).
-    message = f"v{new_version} {intent.actor}"
-    if intent.note:
-        message = f"{message}: {intent.note}"
-    maybe_checkpoint(layout, message)
+        manifest = manifest.model_copy(
+            update={
+                "graph_version": new_version,
+                "content_hash": compute_content_hash(layout),
+            }
+        )
+        write_manifest(layout, manifest)
 
-    return Receipt(
-        graph_version=new_version,
-        event_id=event.id,
-        nodes=[n.id for n in pending.nodes],
-        edges=[e.id for e in pending.edges],
-        ports=[p.id for p in pending.ports],
-        updated_nodes=[n.id for n in pending.updated_nodes],
-        updated_edges=[e.id for e in pending.updated_edges],
-        deleted_edges=[e.id for e in pending.deleted_edges],
-        deleted_nodes=[n.id for n in pending.deleted_nodes],
-        deleted_ports=[p.id for p in pending.deleted_ports],
-    )
+        # §13.6 撤回兜底: snapshot the whole dot-dir into the embedded git repo.
+        # No-op until storage.checkpoint.ensure_repo has run (server startup).
+        message = f"v{new_version} {intent.actor}"
+        if intent.note:
+            message = f"{message}: {intent.note}"
+        maybe_checkpoint(layout, message)
+
+        return Receipt(
+            graph_version=new_version,
+            event_id=event.id,
+            nodes=[n.id for n in pending.nodes],
+            edges=[e.id for e in pending.edges],
+            ports=[p.id for p in pending.ports],
+            updated_nodes=[n.id for n in pending.updated_nodes],
+            updated_edges=[e.id for e in pending.updated_edges],
+            deleted_edges=[e.id for e in pending.deleted_edges],
+            deleted_nodes=[n.id for n in pending.deleted_nodes],
+            deleted_ports=[p.id for p in pending.deleted_ports],
+        )
 
 
 def _apply_op(
