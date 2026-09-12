@@ -49,7 +49,7 @@
 
 - [x] 7.1 Replace mechanism-heavy default edge/selection labels with lightweight product language where semantics remain unchanged.
 - [x] 7.2 Establish restrained pixel tokens for borders, spacing, typography, palette, and Agent state.
-- [x] 7.3 Remove decorative starfield/glow treatment that competed with graph readability.
+- [x] 7.3 Remove decorative background/glow treatment that competed with graph readability.
 
 ## 8. Node search / creation UX
 
