@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { AgentSessionController } from './agent-session'
-  import { hasAgentDragRef, readAgentDragRef } from './agent-dnd'
+  import { hasAgentDragRef, readAgentDragRefs } from './agent-dnd'
   import SessionHistory from './SessionHistory.svelte'
   import SessionRecovery from './SessionRecovery.svelte'
 
@@ -81,14 +81,16 @@
   }
 
   function onDrop(event: DragEvent) {
-    const ref = readAgentDragRef(event)
+    const droppedRefs = readAgentDragRefs(event)
     dragActive = false
-    if (!ref) return
+    if (droppedRefs.length === 0) return
     event.preventDefault()
-    controller.addPendingRef(
-      { kind: ref.kind, ref_id: ref.ref_id },
-      ref.label,
-    )
+    for (const ref of droppedRefs) {
+      controller.addPendingRef(
+        { kind: ref.kind, ref_id: ref.ref_id },
+        ref.label,
+      )
+    }
     open = true
   }
 </script>
@@ -242,7 +244,7 @@
     class:active={open}
     data-agent-drop-target
     aria-label={open ? '收起 Agent' : '打开 Agent'}
-    title={dragActive ? 'Drop to show this object to the Agent' : open ? '收起 Agent' : 'Agent · 只看你明确指给它的对象'}
+    title={dragActive ? 'Drop to show these objects to the Agent' : open ? '收起 Agent' : 'Agent · 只看你明确指给它的对象'}
     on:dragenter={onDragEnter}
     on:dragover={onDragOver}
     on:dragleave={onDragLeave}
