@@ -5,7 +5,6 @@
 
   export let controller: AgentSessionController
 
-  $: contextLabel = $controller.contextLabel
   $: busy = $controller.busy
   $: readOnly = $controller.readOnly
   $: refs = $controller.pendingRefs
@@ -15,32 +14,33 @@
   $: feedback = $controller.events.findLast(
     event => event.type === 'agent_text' || event.type === 'error',
   )
-  let historyOpen = false
+  $: hasSuggestion = !busy && feedback?.type === 'agent_text' && Boolean(feedback.text)
+
+  let discussionOpen = false
   let recoveryOpen = false
-
-  function close() {
-    open = false
-    historyOpen = false
-  }
-
-  function openRecovery() {
-    recoveryOpen = true
-    void controller.openRecovery()
-  }
-
   let text = ''
   let open = false
   let lastRefCount = 0
 
   $: hasContext = refs.length > 0
 
-  // "Ask" and explicit attach should feel like handing an object to the Agent,
-  // not like silently incrementing a badge. A newly attached ref therefore
-  // opens the small composer, while removals never force UI state.
+  // Explicit attachment is a direct-manipulation gesture: when the user points
+  // an object at the Agent, reveal the small composer immediately. Removing a
+  // ref never forces the UI open or closed.
   $: {
     const nextRefCount = refs.length
     if (nextRefCount > lastRefCount) open = true
     lastRefCount = nextRefCount
+  }
+
+  function close() {
+    open = false
+    discussionOpen = false
+  }
+
+  function openRecovery() {
+    recoveryOpen = true
+    void controller.openRecovery()
   }
 
   function send() {
@@ -55,31 +55,39 @@
       e.preventDefault()
       send()
     }
-    if (e.key === 'Escape') {
-      close()
-    }
+    if (e.key === 'Escape') close()
   }
 </script>
 
 <div class="companion-shell" class:open>
   {#if open}
-    <section class="companion-panel" class:with-history={historyOpen} aria-label="Agent Companion">
+    <section class="companion-panel" class:with-discussion={discussionOpen} aria-label="Agent Companion">
       <header class="panel-head">
-        <div>
+        <div class="agent-state">
           <strong>Agent <small>{$controller.providerId}</small></strong>
-          <span>{busy ? 'thinking…' : readOnly ? 'read only' : hasContext ? `looking at ${refs.length} object${refs.length === 1 ? '' : 's'}` : 'ready'}</span>
+          <span>
+            {busy
+              ? 'thinking…'
+              : readOnly
+                ? 'read only'
+                : hasContext
+                  ? `looking at ${refs.length} object${refs.length === 1 ? '' : 's'}`
+                  : hasSuggestion
+                    ? 'idea ready'
+                    : 'ready'}
+          </span>
         </div>
         <div class="panel-actions">
           <button
-            class:active={historyOpen}
-            aria-expanded={historyOpen}
-            on:click={() => (historyOpen = !historyOpen)}
-            title="展开或收起完整讨论与会话历史"
-          >History</button>
+            class:active={discussionOpen}
+            aria-expanded={discussionOpen}
+            on:click={() => (discussionOpen = !discussionOpen)}
+            title="展开或收起完整讨论"
+          >Discussion</button>
           <button
             on:click={() => controller.startNewSession()}
             disabled={busy || $controller.actionBusy}
-            title="在当前图层创建新的讨论"
+            title="在当前图层开始新的讨论"
             aria-label="新建讨论"
           >＋</button>
           <button on:click={close} title="收起" aria-label="收起 Agent">×</button>
@@ -87,14 +95,20 @@
       </header>
 
       {#if $controller.error}
-        <div class="preview error" role="alert">{$controller.error}</div>
+        <div class="notice error" role="alert">{$controller.error}</div>
       {/if}
 
-      {#if historyOpen}
+      {#if discussionOpen}
         <SessionHistory {controller} onRecovery={openRecovery} />
       {:else if feedback?.text}
-        <button class="feedback" class:error={feedback.type === 'error'} on:click={() => (historyOpen = true)} title="打开完整记录">
-          {feedback.text.length > 180 ? `${feedback.text.slice(0, 180)}…` : feedback.text}
+        <button
+          class="feedback"
+          class:error={feedback.type === 'error'}
+          on:click={() => (discussionOpen = true)}
+          title="打开完整讨论"
+        >
+          <span class="feedback-mark">{feedback.type === 'error' ? '!' : '✦'}</span>
+          <span>{feedback.text.length > 180 ? `${feedback.text.slice(0, 180)}…` : feedback.text}</span>
         </button>
       {/if}
 
@@ -107,11 +121,9 @@
               title="暂停当前轮；后续消息继续同一原生会话"
             >{$controller.stopping ? '暂停中…' : '暂停'}</button>
           {:else if $controller.capabilities?.interrupt === true}
-            <span>等待原生会话标识</span>
+            <span>等待会话准备完成</span>
           {:else if $controller.capabilities?.interrupt === false}
-            <span>Provider 不支持暂停</span>
-          {:else}
-            <span>暂停能力未知</span>
+            <span>当前 Agent 不支持暂停</span>
           {/if}
         </div>
       {/if}
@@ -119,9 +131,9 @@
       {#if refs.length > 0}
         <div class="context-block">
           <div class="context-head">
-            <span>Context · {refs.length}</span>
+            <span>Looking at · {refs.length}</span>
             <button class="text-button" on:click={() => void controller.previewPendingRefs()} disabled={previewBusy}>
-              {previewBusy ? 'checking…' : 'preview'}
+              {previewBusy ? 'checking…' : 'check context'}
             </button>
           </div>
           <div class="chips">
@@ -149,24 +161,30 @@
       {/if}
 
       {#if previewError}
-        <div class="preview error" role="alert">{previewError}</div>
+        <div class="notice error" role="alert">{previewError}</div>
       {:else if preview}
-        <details class="preview">
-          <summary>
-            {preview.delivery.action === 'send' ? 'What the agent will see' : 'Context already known'}
-          </summary>
-          <div class="preview-meta">
-            <code>{preview.delivery.reason}</code>
-            <span>{preview.sources.length} sources · {preview.omissions.length} omitted</span>
+        <div class="context-preview">
+          <div class="preview-summary">
+            <span class="preview-state">
+              {preview.delivery.action === 'send' ? 'Context ready' : 'Context already known'}
+            </span>
+            <span>{preview.sources.length} source{preview.sources.length === 1 ? '' : 's'}</span>
+            {#if preview.omissions.length > 0}
+              <span class="warning">{preview.omissions.length} omitted</span>
+            {/if}
           </div>
-          <pre>{JSON.stringify(preview.payload, null, 2)}</pre>
-        </details>
+          <details class="technical-preview">
+            <summary>Technical details</summary>
+            <div class="preview-meta"><code>{preview.delivery.reason}</code></div>
+            <pre>{JSON.stringify(preview.payload, null, 2)}</pre>
+          </details>
+        </div>
       {/if}
 
       <div class="composer">
         <textarea
           rows="2"
-          placeholder={readOnly ? '该讨论只读；新建或 fork 后继续' : hasContext ? 'Ask about these objects…' : 'Ask anything…'}
+          placeholder={readOnly ? 'This discussion is read only' : hasContext ? 'Ask about these objects…' : 'Ask anything…'}
           bind:value={text}
           on:keydown={onKeydown}
           disabled={busy || readOnly}
@@ -175,8 +193,8 @@
           {busy ? '…' : '↗'}
         </button>
       </div>
-      <div class="context-label" title="只有显式附加的对象会进入上下文">
-        {contextLabel}
+      <div class="privacy-note" title="视口、邻居和祖先不会因为你正在看它们而自动进入上下文">
+        Only objects you explicitly point to are shared with the Agent.
       </div>
     </section>
   {/if}
@@ -185,7 +203,9 @@
     class="pet"
     class:busy
     class:has-context={hasContext}
+    class:has-suggestion={hasSuggestion}
     class:active={open}
+    data-agent-drop-target
     aria-label={open ? '收起 Agent' : '打开 Agent'}
     title={open ? '收起 Agent' : 'Agent · 只看你明确指给它的对象'}
     on:click={() => { if (open) close(); else open = true }}
@@ -195,6 +215,7 @@
       <b></b>
     </span>
     {#if refs.length > 0}<span class="badge">{refs.length}</span>{/if}
+    {#if hasSuggestion && !open}<span class="suggestion-dot" title="Agent 有新的想法"></span>{/if}
   </button>
 </div>
 
@@ -212,10 +233,15 @@
 {/if}
 
 <style>
-  .companion-panel.with-history { width: min(680px, calc(100vw - 36px)); }
+  .companion-panel.with-discussion { width: min(680px, calc(100vw - 36px)); }
+  .agent-state { min-width: 0; }
   .panel-head small { color: var(--muted); font-size: 10px; font-weight: normal; }
+
   .feedback {
-    display: block;
+    display: flex;
+    align-items: flex-start;
+    gap: 7px;
+    width: calc(100% - 20px);
     margin: 8px 10px 0;
     padding: 7px;
     max-height: 64px;
@@ -229,7 +255,10 @@
     font: inherit;
     font-size: 11px;
   }
-  .feedback.error { color: var(--red); }
+  .feedback-mark { flex: 0 0 auto; color: var(--violet); font-family: var(--font-mono); }
+  .feedback.error,
+  .feedback.error .feedback-mark { color: var(--red); }
+
   .session-status { padding: 5px 10px; color: var(--muted); font-size: 10px; }
   .session-status button {
     border: 1px solid var(--hairline);
@@ -238,6 +267,7 @@
     cursor: pointer;
     font: inherit;
   }
+
   .companion-shell {
     position: absolute;
     right: 18px;
@@ -249,10 +279,7 @@
     gap: 8px;
     pointer-events: none;
   }
-
-  .companion-shell > * {
-    pointer-events: auto;
-  }
+  .companion-shell > * { pointer-events: auto; }
 
   .pet {
     position: relative;
@@ -266,20 +293,13 @@
     cursor: pointer;
     box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28);
   }
-
   .pet:hover,
   .pet.active,
-  .pet.has-context {
-    border-color: var(--violet);
-  }
+  .pet.has-context,
+  .pet.has-suggestion { border-color: var(--violet); }
+  .pet.busy .pet-face { animation: pet-think 0.8s steps(2, end) infinite; }
 
-  .pet.busy .pet-face {
-    animation: pet-think 0.8s steps(2, end) infinite;
-  }
-
-  @keyframes pet-think {
-    50% { transform: translateY(-2px); }
-  }
+  @keyframes pet-think { 50% { transform: translateY(-2px); } }
 
   .pet-face {
     position: absolute;
@@ -287,7 +307,6 @@
     border: 2px solid var(--violet);
     image-rendering: pixelated;
   }
-
   .pet-face::before,
   .pet-face::after {
     content: '';
@@ -299,7 +318,6 @@
   }
   .pet-face::before { left: 2px; }
   .pet-face::after { right: 2px; }
-
   .pet-face i {
     position: absolute;
     top: 8px;
@@ -319,21 +337,30 @@
     background: var(--muted);
   }
 
-  .badge {
+  .badge,
+  .suggestion-dot {
     position: absolute;
+    box-sizing: border-box;
+    border: 1px solid var(--canvas-bg);
+    background: var(--violet);
+  }
+  .badge {
     right: -5px;
     top: -5px;
     min-width: 16px;
     height: 16px;
     padding: 0 3px;
-    box-sizing: border-box;
     display: grid;
     place-items: center;
-    border: 1px solid var(--canvas-bg);
     border-radius: 4px;
-    background: var(--violet);
     color: #08111f;
     font: 700 9px var(--font-mono);
+  }
+  .suggestion-dot {
+    right: -3px;
+    bottom: -3px;
+    width: 9px;
+    height: 9px;
   }
 
   .companion-panel {
@@ -352,30 +379,28 @@
 
   .panel-head,
   .context-head,
+  .preview-summary,
   .preview-meta {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 8px;
   }
-
   .panel-head {
     padding-bottom: 8px;
     border-bottom: 1px solid var(--hairline-2);
   }
-
   .panel-head strong {
     color: var(--ivory);
     font: 600 13px var(--font-mono);
   }
-
   .panel-head span,
-  .context-label,
+  .privacy-note,
+  .preview-summary,
   .preview-meta {
     color: var(--muted);
     font-size: 10px;
   }
-
   .panel-head span { margin-left: 8px; }
   .panel-actions { display: flex; gap: 4px; }
 
@@ -387,32 +412,13 @@
     font: inherit;
     cursor: pointer;
   }
-
-  button:hover:not(:disabled) {
-    border-color: var(--violet);
-    color: var(--ivory);
-  }
-
-  button:disabled {
-    opacity: 0.45;
-    cursor: default;
-  }
-
+  button:hover:not(:disabled) { border-color: var(--violet); color: var(--ivory); }
+  button:disabled { opacity: 0.45; cursor: default; }
   .panel-actions button,
-  .ref-chip button {
-    min-width: 24px;
-    height: 24px;
-    padding: 0 5px;
-  }
+  .ref-chip button { min-width: 24px; height: 24px; padding: 0 5px; }
+  .panel-actions button.active { border-color: var(--violet); }
 
-  .panel-actions button.active {
-    border-color: var(--violet);
-  }
-
-  .context-block {
-    padding: 9px 0 4px;
-  }
-
+  .context-block { padding: 9px 0 4px; }
   .context-head {
     margin-bottom: 6px;
     color: var(--muted);
@@ -420,20 +426,13 @@
     text-transform: uppercase;
     letter-spacing: 0.05em;
   }
-
   .text-button {
     padding: 2px 6px;
     border: 0;
     background: transparent;
     color: var(--blue);
   }
-
-  .chips {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 5px;
-  }
-
+  .chips { display: flex; flex-wrap: wrap; gap: 5px; }
   .ref-chip {
     display: inline-flex;
     align-items: center;
@@ -444,55 +443,43 @@
     border-radius: 4px;
     background: var(--panel-3);
   }
-
   .ref-chip .kind {
     color: var(--violet);
     font: 9px var(--font-mono);
     text-transform: uppercase;
   }
-
   .ref-chip .label {
     max-width: 210px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-
   .ref-chip .pin,
-  .ref-chip .remove {
-    border: 0;
-    background: transparent;
-    color: var(--muted);
-  }
-
+  .ref-chip .remove { border: 0; background: transparent; color: var(--muted); }
   .ref-chip .pin.pinned { color: var(--violet); }
 
-  .preview {
-    margin: 6px 0;
+  .notice,
+  .context-preview {
+    margin: 7px 0;
     border: 1px solid var(--hairline-2);
     border-radius: 4px;
     background: var(--panel-3);
   }
-
-  .preview.error {
-    padding: 7px;
-    color: var(--red);
-  }
-
-  .preview summary {
-    padding: 7px;
-    cursor: pointer;
-    color: var(--text);
-  }
-
-  .preview-meta { padding: 0 7px 6px; }
-
-  .preview pre {
-    max-height: 180px;
+  .notice { padding: 7px; }
+  .notice.error { color: var(--red); }
+  .context-preview { padding: 7px; }
+  .preview-summary { justify-content: flex-start; flex-wrap: wrap; }
+  .preview-state { color: var(--jade); }
+  .preview-summary .warning { color: var(--amber); }
+  .technical-preview { margin-top: 7px; color: var(--muted); }
+  .technical-preview summary { cursor: pointer; font-size: 10px; }
+  .preview-meta { padding: 6px 0; justify-content: flex-start; }
+  .technical-preview pre {
+    max-height: 150px;
     overflow: auto;
     margin: 0;
     padding: 7px;
-    border-top: 1px solid var(--hairline-2);
+    border: 1px solid var(--hairline-2);
     color: #a9b9cf;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
@@ -505,7 +492,6 @@
     gap: 6px;
     margin-top: 8px;
   }
-
   textarea {
     flex: 1;
     min-width: 0;
@@ -519,17 +505,9 @@
     color: var(--text);
     font: 12px/1.45 var(--font-body);
   }
-
   textarea:focus { border-color: var(--violet); }
-
-  .send {
-    width: 38px;
-    padding: 0;
-    color: var(--violet);
-    font-size: 18px;
-  }
-
-  .context-label {
+  .send { width: 38px; padding: 0; color: var(--violet); font-size: 18px; }
+  .privacy-note {
     margin-top: 6px;
     overflow: hidden;
     text-overflow: ellipsis;
