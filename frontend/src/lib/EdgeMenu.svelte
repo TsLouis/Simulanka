@@ -22,8 +22,12 @@
   $: verdict = str('verdict')
   $: verdictBy = str('verdict_by')
   $: source = str('source') ?? 'user'
+  // Provenance and lifecycle are separate. An accepted edge may still have
+  // source=agent; only status=proposed is a Draft in the product surface.
+  $: isDraft = str('status') === 'proposed'
   $: verdictAction = edge.affordances.find(action => action.id === 'edge.verdict') ?? null
   $: acceptAction = edge.affordances.find(action => action.id === 'edge.accept') ?? null
+  $: canAccept = acceptAction?.enabled === true
   $: discussAction = edge.affordances.find(action => action.id === 'edge.discuss') ?? null
   $: attachAction = edge.affordances.find(action => action.id === 'context.attach') ?? null
 
@@ -57,7 +61,7 @@
 
 <div class="menu" bind:this={menuEl} style="left: {left}px; top: {top}px;" role="menu">
   <div class="head">
-    <span class="source source-{source}">{source === 'agent' ? 'draft' : source}</span>
+    <span class="source source-{source}">{isDraft ? 'draft' : source}</span>
     <span class="ends" title={edge.id}>{srcName} → {dstName}</span>
   </div>
 
@@ -67,25 +71,21 @@
     </div>
   {/if}
 
-  {#if acceptAction}
+  {#if canAccept}
     <button
       class="row keep"
-      class:disabled={!acceptAction.enabled}
-      disabled={!acceptAction.enabled}
-      title={disabledTitle(acceptAction)}
+      title={acceptAction?.label ?? 'Keep suggestion'}
       on:click={onAccept}
-    >✓ Keep suggestion
-      {#if !acceptAction.enabled}<span class="reason">{acceptAction.reason}</span>{/if}
-    </button>
+    >✓ Keep suggestion</button>
   {/if}
 
   {#if verdictAction}
     {#if verdictAction.enabled}
-      {#if !acceptAction}
+      {#if !canAccept}
         <button class="row keep" on:click={() => onVerdict('correct')}>✓ Looks right</button>
       {/if}
       <button class="row dismiss" on:click={() => onVerdict('wrong')}>
-        × {source === 'agent' ? 'Dismiss suggestion' : 'Looks wrong'}
+        × {isDraft ? 'Dismiss suggestion' : 'Looks wrong'}
       </button>
       <button class="row" on:click={() => onVerdict('disputed')}>◇ Needs attention</button>
     {:else}
