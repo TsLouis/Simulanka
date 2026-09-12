@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { writeAgentDragRef } from './agent-dnd'
   import type { AffordanceDTO, EdgeDTO } from './types'
 
   // The server still owns the exact verdict/write-authority contract. This
@@ -55,14 +56,33 @@
   function onGlobalPointerDown(e: MouseEvent) {
     if (menuEl && !menuEl.contains(e.target as Node)) onClose()
   }
+
+  function dragEdgeToAgent(event: DragEvent) {
+    if (attachAction?.enabled !== true) {
+      event.preventDefault()
+      return
+    }
+    writeAgentDragRef(event, {
+      kind: 'edge',
+      ref_id: edge.id,
+      label: `edge · ${srcName} → ${dstName}`,
+    })
+  }
 </script>
 
 <svelte:window on:keydown={onKeydown} on:mousedown|capture={onGlobalPointerDown} />
 
 <div class="menu" bind:this={menuEl} style="left: {left}px; top: {top}px;" role="menu">
-  <div class="head">
+  <div
+    class="head"
+    class:draggable={attachAction?.enabled === true}
+    draggable={attachAction?.enabled === true}
+    on:dragstart={dragEdgeToAgent}
+    title={attachAction?.enabled ? 'Drag this edge to the Agent' : edge.id}
+  >
     <span class="source source-{source}">{isDraft ? 'draft' : source}</span>
     <span class="ends" title={edge.id}>{srcName} → {dstName}</span>
+    <span class="edge-type">{edge.type}</span>
   </div>
 
   {#if reviewLabel(verdict)}
@@ -100,9 +120,9 @@
       class="row agent"
       class:disabled={!attachAction.enabled}
       disabled={!attachAction.enabled}
-      title={disabledTitle(attachAction)}
+      title={attachAction.enabled ? 'Point this edge to the Agent' : attachAction.reason}
       on:click={onAttach}
-    >Ask Agent about this
+    >✦ Ask Agent
       {#if !attachAction.enabled}<span class="reason">{attachAction.reason}</span>{/if}
     </button>
   {/if}
@@ -124,7 +144,7 @@
   .menu {
     position: fixed;
     z-index: 50;
-    width: 260px;
+    width: 270px;
     box-sizing: border-box;
     padding: 5px;
     display: flex;
@@ -137,13 +157,16 @@
   }
 
   .head {
-    display: flex;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
     align-items: center;
     gap: 7px;
     padding: 6px 7px 8px;
     border-bottom: 1px solid var(--hairline-2);
     margin-bottom: 4px;
   }
+  .head.draggable { cursor: grab; }
+  .head.draggable:active { cursor: grabbing; }
 
   .source {
     flex: 0 0 auto;
@@ -163,6 +186,11 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     color: var(--ivory);
+  }
+  .edge-type {
+    color: var(--muted);
+    font: 8px var(--font-mono);
+    text-transform: uppercase;
   }
 
   .state {
