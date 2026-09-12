@@ -69,8 +69,9 @@ const OVERVIEW_MAX_SCALE = 0.62
 const DETAIL_MIN_SCALE = 0.98
 
 type SlotLike = { label?: string | null }
+type SemanticNodeView = { attrs?: Record<string, unknown> }
 type DensityNode = LGraphNode & {
-  simulanka?: unknown
+  simulanka?: SemanticNodeView
   inputs?: SlotLike[]
   outputs?: SlotLike[]
   onDrawForeground?: (...args: unknown[]) => void
@@ -79,6 +80,43 @@ type DensityNode = LGraphNode & {
 type DensityCanvas = LGraphCanvas & {
   ds?: { scale?: number }
   drawNode: (node: LGraphNode, ctx: CanvasRenderingContext2D) => void
+}
+
+type DraftLink = {
+  simulanka_ghost?: boolean
+  _pos?: [number, number]
+}
+
+/** Draw a deliberately small, redundant marker for a graph Draft. */
+function drawDraftTag(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  compact = false,
+): void {
+  ctx.save()
+  ctx.setLineDash([])
+  ctx.font = `600 ${compact ? 7 : 8}px ${CANVAS_FONT}`
+  const label = compact ? 'D' : 'DRAFT'
+  const width = ctx.measureText(label).width + (compact ? 6 : 10)
+  const height = compact ? 11 : 13
+  ctx.fillStyle = 'rgba(12, 23, 38, 0.96)'
+  ctx.strokeStyle = '#b18af3'
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  ctx.rect(x - width / 2, y - height / 2, width, height)
+  ctx.fill()
+  ctx.stroke()
+  ctx.fillStyle = '#cbb5f7'
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.fillText(label, x, y + 0.5)
+  ctx.restore()
+}
+
+function isDraftNode(node: DensityNode): boolean {
+  const attrs = node.simulanka?.attrs
+  return attrs?.status === 'proposed' || attrs?.status === 'draft'
 }
 
 /**
@@ -106,8 +144,14 @@ function installZoomAwareNodeRendering(canvas: LGraphCanvas): void {
     }
 
     const scale = target.ds?.scale ?? 1
+    const drawDraft = () => {
+      if (!isDraftNode(densityNode)) return
+      drawDraftTag(ctx, node.size[0] - 24, -13, scale < DETAIL_MIN_SCALE)
+    }
+
     if (scale >= DETAIL_MIN_SCALE) {
       baseDrawNode(node, ctx)
+      drawDraft()
       return
     }
 
@@ -134,6 +178,7 @@ function installZoomAwareNodeRendering(canvas: LGraphCanvas): void {
       }
 
       baseDrawNode(node, ctx)
+      drawDraft()
     } finally {
       densityNode.inputs = originalInputs
       densityNode.outputs = originalOutputs
@@ -141,6 +186,32 @@ function installZoomAwareNodeRendering(canvas: LGraphCanvas): void {
       originalInputs?.forEach((slot, index) => { slot.label = inputLabels?.[index] })
       originalOutputs?.forEach((slot, index) => { slot.label = outputLabels?.[index] })
     }
+  }
+}
+
+/**
+ * Add a tiny DRAFT tag at the center of existing proposed/ghost links. The App
+ * already wraps renderLink to add the dashed stroke and continues to own the
+ * authoritative accept/verdict actions. Patching the prototype here is useful:
+ * App's wrapper captures this decorated renderer and therefore composes with it
+ * rather than replacing the marker.
+ */
+function installDraftLinkMarkers(): void {
+  const proto = LGraphCanvas.prototype as unknown as {
+    renderLink: (...args: unknown[]) => void
+    simulankaDraftMarkerInstalled?: boolean
+  }
+  if (proto.simulankaDraftMarkerInstalled) return
+  proto.simulankaDraftMarkerInstalled = true
+
+  const baseRenderLink = proto.renderLink
+  proto.renderLink = function (this: LGraphCanvas, ...args: unknown[]): void {
+    baseRenderLink.apply(this, args)
+    const ctx = args[0] as CanvasRenderingContext2D | undefined
+    const link = args[3] as DraftLink | undefined
+    const scale = (this as unknown as { ds?: { scale?: number } }).ds?.scale ?? 1
+    if (!ctx || !link?.simulanka_ghost || !link._pos || scale < OVERVIEW_MAX_SCALE) return
+    drawDraftTag(ctx, link._pos[0], link._pos[1] - 10, scale < DETAIL_MIN_SCALE)
   }
 }
 
@@ -179,6 +250,7 @@ export function applyNightSky(canvas: LGraphCanvas): void {
   // keeps all details/actions in its own context UI so graph state stays honest.
   target.onShowNodePanel = () => {}
 
+  installDraftLinkMarkers()
   installZoomAwareNodeRendering(canvas)
 
   const fonts = (document as Document & { fonts?: FontFaceSet }).fonts
