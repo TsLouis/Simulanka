@@ -25,6 +25,26 @@ export const TRUST_COLORS: Record<string, string> = {
   unreviewed: '#64778d',
 }
 
+// ComfyUI treats slot/link colour as part of datatype legibility. Keep the
+// palette restrained and semantic: built-in Simulanka types get stable colours;
+// unknown extension types still fall back to LiteGraph's normal connection colour.
+const PORT_TYPE_COLORS: Record<string, string> = {
+  any: '#71869f',
+  tensor: '#68b8f2',
+  scalar: '#e6bf62',
+  number: '#e6bf62',
+  string: '#73d4b1',
+  boolean: '#b18af3',
+}
+const PORT_TYPE_OFF_COLORS: Record<string, string> = {
+  any: '#4c6177',
+  tensor: '#38536e',
+  scalar: '#8b7544',
+  number: '#8b7544',
+  string: '#376b5d',
+  boolean: '#655281',
+}
+
 interface NodeStyle {
   color: string
   bgcolor: string
@@ -330,6 +350,26 @@ function installDraftLinkMarkers(): void {
   }
 }
 
+function installPortTypePalette(canvas: LGraphCanvas): void {
+  const target = canvas as unknown as {
+    default_connection_color_byType?: Record<string, string>
+    default_connection_color_byTypeOff?: Record<string, string>
+  }
+  target.default_connection_color_byType ??= {}
+  Object.assign(target.default_connection_color_byType, PORT_TYPE_COLORS)
+
+  // Newer LiteGraph/ComfyUI distinguishes connected vs idle slot palettes. Old
+  // LiteGraph safely ignores this property, so assigning it is backward-friendly.
+  target.default_connection_color_byTypeOff ??= {}
+  Object.assign(target.default_connection_color_byTypeOff, PORT_TYPE_OFF_COLORS)
+
+  const canvasType = LGraphCanvas as unknown as {
+    link_type_colors?: Record<string, string>
+  }
+  canvasType.link_type_colors ??= {}
+  Object.assign(canvasType.link_type_colors, PORT_TYPE_COLORS)
+}
+
 /**
  * Keep the historical function name because App.svelte already calls it.
  * The v2 implementation intentionally removes decorative stars and glow: the
@@ -365,6 +405,7 @@ export function applyNightSky(canvas: LGraphCanvas): void {
   // keeps all details/actions in its own context UI so graph state stays honest.
   target.onShowNodePanel = () => {}
 
+  installPortTypePalette(canvas)
   installDraftLinkMarkers()
   installZoomAwareNodeRendering(canvas)
   installDoubleClickNodeSearch(canvas)
