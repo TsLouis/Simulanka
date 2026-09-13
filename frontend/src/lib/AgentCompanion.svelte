@@ -5,6 +5,7 @@
   import {
     conversationProjectionFromEvents,
     setConversationProjection,
+    stripProjectionBlocks,
   } from './agent-projection'
   import SessionHistory from './SessionHistory.svelte'
   import SessionRecovery from './SessionRecovery.svelte'
@@ -23,7 +24,10 @@
   $: feedback = $controller.events.findLast(
     event => event.type === 'agent_text' || event.type === 'error',
   )
-  $: hasSuggestion = !busy && feedback?.type === 'agent_text' && Boolean(feedback.text)
+  $: feedbackText = feedback?.type === 'agent_text'
+    ? stripProjectionBlocks(feedback.text ?? '')
+    : (feedback?.text ?? '')
+  $: hasSuggestion = !busy && feedback?.type === 'agent_text' && Boolean(feedbackText || turnProjection.visuals.length)
 
   let discussionOpen = false
   let recoveryOpen = false
@@ -148,15 +152,15 @@
 
       {#if discussionOpen}
         <SessionHistory {controller} onRecovery={openRecovery} />
-      {:else if feedback?.text}
+      {:else if feedbackText}
         <button
           class="feedback"
-          class:error={feedback.type === 'error'}
+          class:error={feedback?.type === 'error'}
           on:click={() => (discussionOpen = true)}
           title="打开完整讨论"
         >
-          <span class="feedback-mark">{feedback.type === 'error' ? '!' : '✦'}</span>
-          <span>{feedback.text.length > 180 ? `${feedback.text.slice(0, 180)}…` : feedback.text}</span>
+          <span class="feedback-mark">{feedback?.type === 'error' ? '!' : '✦'}</span>
+          <span>{feedbackText.length > 180 ? `${feedbackText.slice(0, 180)}…` : feedbackText}</span>
         </button>
       {/if}
 
