@@ -230,7 +230,7 @@
         </button>
       </div>
       <div class="privacy-note" title="视口、邻居和祖先不会因为你正在看它们而自动进入上下文">
-        Only objects you explicitly point to are shared with the Agent.
+        Hold <kbd>A</kbd> + click a node, port, or edge to point it out · only explicit objects are shared.
       </div>
     </section>
   {/if}
@@ -244,7 +244,7 @@
     class:active={open}
     data-agent-drop-target
     aria-label={open ? '收起 Agent' : '打开 Agent'}
-    title={dragActive ? 'Drop to show these objects to the Agent' : open ? '收起 Agent' : 'Agent · 只看你明确指给它的对象'}
+    title={dragActive ? 'Drop to show these objects to the Agent' : open ? '收起 Agent' : 'Agent · hold A + click a graph object to point it out'}
     on:dragenter={onDragEnter}
     on:dragover={onDragOver}
     on:dragleave={onDragLeave}
@@ -559,5 +559,14 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .privacy-note kbd {
+    padding: 0 3px;
+    border: 1px solid var(--hairline);
+    border-bottom-color: var(--muted);
+    border-radius: 2px;
+    background: var(--panel-3);
+    color: var(--ivory);
+    font: 9px var(--font-mono);
   }
 </style>
