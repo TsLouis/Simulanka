@@ -1,26 +1,18 @@
 import assert from 'node:assert/strict'
-import test from 'node:test'
-import ts from 'typescript'
-import vm from 'node:vm'
-import { readFile } from 'node:fs/promises'
-import { fileURLToPath } from 'node:url'
-import { dirname, resolve } from 'node:path'
+import { after, test } from 'node:test'
+import { createServer } from 'vite'
 
-const here = dirname(fileURLToPath(import.meta.url))
-const source = await readFile(resolve(here, '../src/lib/agent-projection.ts'), 'utf8')
-const transpiled = ts.transpileModule(source, {
-  compilerOptions: {
-    module: ts.ModuleKind.CommonJS,
-    target: ts.ScriptTarget.ES2022,
-  },
-}).outputText
-const module = { exports: {} }
-vm.runInNewContext(transpiled, {
-  module,
-  exports: module.exports,
-  require: () => ({}),
+const server = await createServer({
+  configFile: false,
+  optimizeDeps: { noDiscovery: true },
+  server: { middlewareMode: true },
+  appType: 'custom',
 })
-const { conversationProjectionFromEvents } = module.exports
+after(() => server.close())
+
+const { conversationProjectionFromEvents } = await server.ssrLoadModule(
+  '/src/lib/agent-projection.ts',
+)
 
 test('uses only the latest user turn explicit ContextBundle refs', () => {
   const projection = conversationProjectionFromEvents([
@@ -81,4 +73,17 @@ test('ignores malformed context refs', () => {
     refs: [{ kind: 'port', ref_id: 'p1' }],
     text: null,
   })
+})
+
+test('a newer turn without explicit refs clears the previous graph projection', () => {
+  const projection = conversationProjectionFromEvents([
+    {
+      type: 'user_msg',
+      details: { context_bundles: [{ refs: [{ kind: 'node', ref_id: 'n1' }] }] },
+    },
+    { type: 'agent_text', text: 'about n1' },
+    { type: 'user_msg', text: 'now answer generally' },
+    { type: 'agent_text', text: 'general answer' },
+  ])
+  assert.deepEqual(projection, { refs: [], text: null })
 })
