@@ -80,10 +80,12 @@ export function styleNode(node: LGraphNode, paletteToken: string): void {
 
 const CANVAS_FONT = "ui-monospace, 'SFMono-Regular', 'Cascadia Mono', Consolas, monospace"
 
-// ComfyUI-inspired density rule: slots/ports are structural and never disappear.
-// Zoom only suppresses labels and card detail. Every input/output keeps its own
-// native LiteGraph row, anchor, shape and hit target at every scale.
-const DETAIL_MIN_SCALE = 0.98
+// Working zoom keeps the native interface readable longer. Below this threshold
+// we deliberately switch to a structure view: Port anchors remain exact, Port
+// labels/card detail disappear, and Node identity gets a small screen-stable tag.
+const DETAIL_MIN_SCALE = 0.72
+const OVERVIEW_IDENTITY_MIN_SCALE = 0.24
+const OVERVIEW_IDENTITY_SCREEN_PX = 10
 const DRAFT_LABEL_MIN_SCALE = 0.62
 const UNRELATED_NODE_ALPHA = 0.24
 const UNRELATED_LINK_ALPHA = 0.14
@@ -202,13 +204,45 @@ function isDraftNode(node: DensityNode): boolean {
   return attrs?.status === 'proposed' || attrs?.status === 'draft'
 }
 
+function drawOverviewIdentity(
+  ctx: CanvasRenderingContext2D,
+  node: LGraphNode,
+  scale: number,
+): void {
+  if (scale >= DETAIL_MIN_SCALE || scale < OVERVIEW_IDENTITY_MIN_SCALE) return
+  const safeScale = Math.max(scale, OVERVIEW_IDENTITY_MIN_SCALE)
+  const fontSize = OVERVIEW_IDENTITY_SCREEN_PX / safeScale
+  const padX = 5 / safeScale
+  const padY = 3 / safeScale
+  const y = -13 / safeScale
+  const label = node.title.replace(/^▸\s*/, '')
+
+  ctx.save()
+  ctx.setLineDash([])
+  ctx.font = `600 ${fontSize}px ${CANVAS_FONT}`
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  const width = ctx.measureText(label).width + padX * 2
+  const height = fontSize + padY * 2
+  ctx.fillStyle = 'rgba(8, 20, 33, 0.9)'
+  ctx.strokeStyle = 'rgba(104, 184, 242, 0.34)'
+  ctx.lineWidth = 1 / safeScale
+  ctx.beginPath()
+  ctx.rect(node.size[0] / 2 - width / 2, y - height / 2, width, height)
+  ctx.fill()
+  ctx.stroke()
+  ctx.fillStyle = '#edf4ff'
+  ctx.fillText(label, node.size[0] / 2, y + 0.25 / safeScale)
+  ctx.restore()
+}
+
 /**
  * Render-only progressive disclosure for Node/Port density.
  *
- * This follows ComfyUI's mature node-editor convention: slot geometry remains
- * present in low-detail rendering, while labels are omitted. We therefore never
- * remove, merge or overlay ports. The native LiteGraph renderer remains the only
- * source of port position/shape; Simulanka changes only textual/card density.
+ * Working zoom keeps labels/card fields long enough to read comfortably. Farther
+ * out, Port geometry stays authoritative while text density falls away. Node
+ * identity is redrawn with an inverse-scale label so the overview remains
+ * navigable instead of turning every title into unreadable pixels.
  *
  * The same wrapper also applies Simulanka's quiet single-selection attention:
  * unrelated nodes recede, but their ports still remain structurally visible.
@@ -254,11 +288,11 @@ function installZoomAwareNodeRendering(canvas: LGraphCanvas): void {
         // port handle remain visible and independently positioned.
         densityNode.onDrawForeground = undefined
         // Non-empty whitespace prevents LiteGraph from falling back to slot.name.
-        // This mirrors ComfyUI's low-quality behaviour: keep slot, hide its label.
         densityNode.inputs?.forEach(slot => { slot.label = '\u00a0' })
         densityNode.outputs?.forEach(slot => { slot.label = '\u00a0' })
 
         baseDrawNode(node, ctx)
+        drawOverviewIdentity(ctx, node, scale)
         drawDraft()
       } finally {
         densityNode.onDrawForeground = originalForeground
