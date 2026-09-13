@@ -1,6 +1,5 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { writeAgentDragRefs } from './agent-dnd'
   import { filterGroups, type NodeTemplate, type TemplateGroup } from './templates'
   import type { AffordanceDTO, NodeDTO } from './types'
 
@@ -19,7 +18,6 @@
   export let onDeleteTemplate: (name: string) => void = () => {}
 
   $: node = nodes[0] ?? null
-  $: attachAction = affordances.find(action => action.id === 'context.attach') ?? null
 
   const actionIcon = (id: string): string => ({
     'node.create': '＋',
@@ -97,21 +95,6 @@
     if (inputs === 0 && outputs === 0) return 'no ports'
     return `${inputs} in · ${outputs} out`
   }
-
-  function dragSelectionToAgent(event: DragEvent) {
-    if (attachAction?.enabled !== true || nodes.length === 0) {
-      event.preventDefault()
-      return
-    }
-    writeAgentDragRefs(
-      event,
-      nodes.map(selected => ({
-        kind: 'node' as const,
-        ref_id: selected.id,
-        label: `${selected.type} · ${selected.name}`,
-      })),
-    )
-  }
 </script>
 
 <svelte:window on:keydown={onKeydown} on:mousedown|capture={onGlobalPointerDown} />
@@ -165,16 +148,9 @@
       {/if}
     </div>
   {:else if node}
-    <div
-      class="node-head"
-      class:draggable={attachAction?.enabled === true}
-      draggable={attachAction?.enabled === true}
-      on:dragstart={dragSelectionToAgent}
-      title={attachAction?.enabled ? 'Drag this selection to the Agent' : undefined}
-    >
+    <div class="node-head">
       <span class="type-chip">{nodes.length > 1 ? `${nodes.length} objects` : node.type}</span>
       <span class="node-name">{nodes.length > 1 ? 'Selection' : node.name}</span>
-      {#if attachAction?.enabled}<span class="drag-hint">→ Agent</span>{/if}
     </div>
     {#each affordances as action (action.id)}
       <button
@@ -312,8 +288,6 @@
     border-bottom: 1px solid var(--hairline);
     margin-bottom: 5px;
   }
-  .node-head.draggable { cursor: grab; }
-  .node-head.draggable:active { cursor: grabbing; }
   .type-chip {
     background: var(--panel-3);
     color: var(--blue);
@@ -328,11 +302,6 @@
     color: var(--ivory);
     overflow: hidden;
     text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .drag-hint {
-    color: var(--violet);
-    font: 8px var(--font-mono);
     white-space: nowrap;
   }
   .action { padding: 7px 8px; }
