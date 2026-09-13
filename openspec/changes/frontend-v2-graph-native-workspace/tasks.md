@@ -14,7 +14,7 @@
 ## 3. ComfyUI-baseline Node and Port presentation
 
 - [x] 3.1 Use stable zoom-density thresholds while keeping native LiteGraph port geometry authoritative.
-- [x] 3.2 Overview zoom keeps node identity and every real input/output Port handle independently visible; hide Port labels and non-essential card detail only.
+- [x] 3.2 Overview zoom keeps node identity and every real input/output Port handle independently visible; hide Port labels and non-essential card detail only. Mild zoom-out keeps normal labels longer; farther overview zoom redraws Node identity at an approximately screen-stable size instead of letting titles become unreadable pixels.
 - [x] 3.3 Working zoom preserves the same independent Port handles and connection anchors; do not merge/stack ports for visual simplification.
 - [x] 3.4 Detail zoom restores Port names/directions plus PresentationSpec-selected card fields; Inspector presents port type/shape/confidence as interface metadata.
 - [x] 3.5 Preserve root boundary IO/tunnel semantics and connection eligibility; zoom treatment applies only to textual/card density.
@@ -33,11 +33,12 @@
 
 - [x] 5.1 Add an unobtrusive Agent Companion UI sidecar; it does not become a semantic graph entity.
 - [x] 5.2 `Ask` on a node attaches the explicit ref through the existing supplemental-context contract and opens the Companion composer.
-- [x] 5.3 Support explicit drag-style attachment for node/edge/port and multi-node RefSets: object surfaces emit a validated, deduplicated typed Simulanka payload and only the Agent Pet accepts it. Graph position/state is not changed by the gesture; ordinary text drags are not context.
-- [x] 5.4 Show pending refs and preserve context preview before sending.
-- [x] 5.5 Keep long transcript/history accessible on demand from the Agent Companion; do not project Session trees as canvas windows.
-- [x] 5.6 Keep harness/compiler detail progressively disclosed: normal preview shows delivery/source/omission summary while raw compiled payload stays under Technical details.
-- [x] 5.7 Pet exposes only quiet micro-states (thinking/context/idea ready/drop target); no permanent execution console is introduced.
+- [x] 5.3 Make `A + click` the primary graph-pointing gesture: hit-test Port before Node, and reuse the existing Edge hit/menu path for Edge refs. Pointing is gated by `context.attach`, opens the same pending RefSet, and MUST NOT move or mutate graph objects. Text inputs do not activate pointer mode.
+- [x] 5.4 Keep typed drag-to-Agent for node/edge/port and multi-node RefSets as a secondary/compatibility path. Payloads remain validated/deduplicated; ordinary text drags are not context and graph position/state is unchanged.
+- [x] 5.5 Show pending refs and preserve context preview before sending.
+- [x] 5.6 Keep long transcript/history accessible on demand from the Agent Companion; do not project Session trees as canvas windows.
+- [x] 5.7 Keep harness/compiler detail progressively disclosed: normal preview shows delivery/source/omission summary while raw compiled payload stays under Technical details.
+- [x] 5.8 Pet exposes only quiet micro-states (thinking/context/idea ready/drop target); no permanent execution console is introduced. Companion teaches `A + click` as the primary pointing gesture instead of drag-to-Pet.
 
 ## 6. Graph-native Agent expression
 
@@ -59,16 +60,18 @@
 - [x] 8.2 Add keyboard result navigation (`↑/↓`, Enter, Esc) and show profile plus input/output count in results.
 - [ ] 8.3 Fix the Node + Ports + initial-position creation transaction separately in #17; Frontend v2 MUST NOT hide an incomplete creation failure behind presentation code.
 
-## 9. Verification and docs
+## 9. Verification, performance and docs
 
-- [ ] 9.1 Re-run frontend tests/type/build checks after the latest Companion/DnD/object-surface/collapse changes. Cleanup checkpoint passed earlier, but current head needs fresh verification.
+- [ ] 9.1 Re-run frontend tests/type/build checks after the latest pointer gesture, zoom readability and graph-loop changes. Cleanup checkpoint passed earlier, but current head needs fresh verification; no GitHub Actions run exists for the current HEAD.
 - [ ] 9.2 Run backend regression tests for Registry/affordance/session/context contracts touched by the UI integration.
 - [x] 9.3 GitNexus detect-changes skipped for this user-authorized iteration.
-- [ ] 9.4 Manually verify default canvas, persistent independent ports across zoom, no semantic-node port collapse, datatype link colours, search gestures, selection attention, selection actions, Agent context, single/RefSet drag-to-Agent, and Draft presentation.
-- [x] 9.5 Update frontend boundary README to the accepted graph-native model.
-- [ ] 9.6 Update the long-form `docs/frontend.md` S8 wording so it no longer describes Agent output as message-first; retain server API/domain terminology where it is authoritative.
-- [x] 9.7 Add unit coverage for typed Agent drag payloads; ordinary text drags and malformed refs must not become context.
-- [ ] 9.8 Archive/sync the OpenSpec change after PR #15 acceptance; keep this Draft iteration apply-ready until then.
+- [ ] 9.4 Manually verify default canvas, readable Node identity across working/overview zoom, persistent independent Ports, no semantic-node port collapse, datatype link colours, search gestures, selection attention/actions, `A + click` on Node/Port/Edge, text-entry isolation, drag fallback, and Draft presentation.
+- [x] 9.5 Remove `LGraph.start()` from the read-only/editor graph lifecycle. Canvas rendering remains owned by `LGraphCanvas`; each SSE reload must not start another executable graph loop.
+- [ ] 9.6 Stress-test repeated connect/disconnect + SSE reload cycles to confirm the progressive freeze is fixed. If latency still accumulates, profile/coalesce overlapping `load()` calls before changing more interaction code.
+- [x] 9.7 Update frontend boundary README/OpenSpec to the accepted graph-native model and pointer-first explicit-context contract.
+- [ ] 9.8 Update the long-form `docs/frontend.md` S8 wording so it no longer describes Agent output as message-first; retain server API/domain terminology where it is authoritative.
+- [x] 9.9 Keep unit coverage for typed Agent drag payloads; ordinary text drags and malformed refs must not become context.
+- [ ] 9.10 Archive/sync the OpenSpec change after PR #15 acceptance; keep this Draft iteration apply-ready until then.
 
 ## 10. Cleanup (#18, PR #15 branch)
 
