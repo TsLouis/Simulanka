@@ -36,19 +36,53 @@
   let lastRefCount = 0
   let dragActive = false
   let composerEl: HTMLTextAreaElement | null = null
+  let pointerCollecting = false
+  let pointerStartRefCount: number | null = null
 
   $: hasContext = refs.length > 0
 
-  // Explicit attachment is a direct-manipulation gesture: when the user points
-  // an object at the Agent, reveal the small composer and hand keyboard focus to
-  // it. `A + click → type → Enter` therefore stays one continuous interaction.
+  // Pointing is a collection gesture, not a focus gesture. While A is held the
+  // user may click several nodes/ports/edges into one RefSet. We reveal the
+  // Companion as refs arrive but wait until A is released before focusing the
+  // composer, so the first pointed object never interrupts the next click.
   $: {
     const nextRefCount = refs.length
-    if (nextRefCount > lastRefCount) {
-      open = true
-      queueMicrotask(() => composerEl?.focus())
-    }
+    if (nextRefCount > lastRefCount) open = true
     lastRefCount = nextRefCount
+  }
+
+  function isTypingTarget(target: EventTarget | null): boolean {
+    const element = target as HTMLElement | null
+    return element instanceof HTMLInputElement
+      || element instanceof HTMLTextAreaElement
+      || element?.isContentEditable === true
+  }
+
+  function onPointerKeydown(event: KeyboardEvent) {
+    if (
+      event.key.toLowerCase() !== 'a'
+      || event.altKey
+      || event.ctrlKey
+      || event.metaKey
+      || isTypingTarget(event.target)
+    ) return
+    if (pointerStartRefCount === null) pointerStartRefCount = refs.length
+    pointerCollecting = true
+  }
+
+  function onPointerKeyup(event: KeyboardEvent) {
+    if (event.key.toLowerCase() !== 'a' || pointerStartRefCount === null) return
+    const addedAny = refs.length > pointerStartRefCount
+    pointerStartRefCount = null
+    pointerCollecting = false
+    if (!addedAny) return
+    open = true
+    queueMicrotask(() => composerEl?.focus())
+  }
+
+  function onPointerBlur() {
+    pointerStartRefCount = null
+    pointerCollecting = false
   }
 
   function close() {
@@ -113,6 +147,12 @@
   }
 </script>
 
+<svelte:window
+  on:keydown={onPointerKeydown}
+  on:keyup={onPointerKeyup}
+  on:blur={onPointerBlur}
+/>
+
 <div class="companion-shell" class:open>
   {#if open}
     <section class="companion-panel" class:with-discussion={discussionOpen} aria-label="Agent Companion">
@@ -126,13 +166,15 @@
                 : 'thinking…'
               : readOnly
                 ? 'read only'
-                : hasContext
-                  ? `looking at ${refs.length} object${refs.length === 1 ? '' : 's'}`
-                  : projectedRefCount > 0 && hasSuggestion
-                    ? `pointing at ${projectedRefCount} object${projectedRefCount === 1 ? '' : 's'}`
-                    : hasSuggestion
-                      ? 'idea ready'
-                      : 'ready'}
+                : pointerCollecting
+                  ? `pointing · ${refs.length} object${refs.length === 1 ? '' : 's'}`
+                  : hasContext
+                    ? `looking at ${refs.length} object${refs.length === 1 ? '' : 's'}`
+                    : projectedRefCount > 0 && hasSuggestion
+                      ? `pointing at ${projectedRefCount} object${projectedRefCount === 1 ? '' : 's'}`
+                      : hasSuggestion
+                        ? 'idea ready'
+                        : 'ready'}
           </span>
         </div>
         <div class="panel-actions">
@@ -253,7 +295,7 @@
         </button>
       </div>
       <div class="privacy-note" title="视口、邻居和祖先不会因为你正在看它们而自动进入上下文">
-        Hold <kbd>A</kbd> + click a node, port, or edge to point it out · only explicit objects are shared.
+        Hold <kbd>A</kbd>, click one or more graph objects, release <kbd>A</kbd>, then type · only explicit objects are shared.
       </div>
     </section>
   {/if}
@@ -262,13 +304,14 @@
     class="pet"
     class:busy
     class:drag-active={dragActive}
+    class:pointer-collecting={pointerCollecting}
     class:has-context={hasContext}
     class:has-suggestion={hasSuggestion}
     class:has-projection={projectedRefCount > 0}
     class:active={open}
     data-agent-drop-target
     aria-label={open ? '收起 Agent' : '打开 Agent'}
-    title={dragActive ? 'Drop to show these objects to the Agent' : open ? '收起 Agent' : 'Agent · hold A + click a graph object to point it out'}
+    title={dragActive ? 'Drop to show these objects to the Agent' : pointerCollecting ? 'Keep clicking graph objects; release A when finished' : open ? '收起 Agent' : 'Agent · hold A + click graph objects to point them out'}
     on:dragenter={onDragEnter}
     on:dragover={onDragOver}
     on:dragleave={onDragLeave}
@@ -365,9 +408,13 @@
   }
   .pet:hover,
   .pet.active,
+  .pet.pointer-collecting,
   .pet.has-context,
   .pet.has-suggestion,
   .pet.has-projection { border-color: var(--violet); }
+  .pet.pointer-collecting {
+    box-shadow: 0 0 0 3px rgba(177, 138, 243, 0.1), 0 6px 20px rgba(0, 0, 0, 0.28);
+  }
   .pet.drag-active {
     border-color: var(--violet);
     transform: scale(1.08);
