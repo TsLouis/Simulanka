@@ -5,7 +5,6 @@
   import {
     conversationProjectionFromEvents,
     setConversationProjection,
-    stripProjectionBlocks,
   } from './agent-projection'
   import SessionHistory from './SessionHistory.svelte'
   import SessionRecovery from './SessionRecovery.svelte'
@@ -24,10 +23,13 @@
   $: feedback = $controller.events.findLast(
     event => event.type === 'agent_text' || event.type === 'error',
   )
-  $: feedbackText = feedback?.type === 'agent_text'
-    ? stripProjectionBlocks(feedback.text ?? '')
-    : (feedback?.text ?? '')
-  $: hasSuggestion = !busy && feedback?.type === 'agent_text' && Boolean(feedbackText || turnProjection.visuals.length)
+  // OpenCode streams one answer as several agent_text events. The projection
+  // parser already aggregates the latest turn and strips sidecar protocol, so
+  // use that human-readable text instead of showing only the final raw chunk.
+  $: feedbackText = feedback?.type === 'error'
+    ? (feedback.text ?? '')
+    : (turnProjection.text ?? '')
+  $: hasSuggestion = !busy && feedback?.type === 'agent_text' && Boolean(turnProjection.text || turnProjection.visuals.length)
 
   let discussionOpen = false
   let recoveryOpen = false
