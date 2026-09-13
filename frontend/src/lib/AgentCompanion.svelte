@@ -1,6 +1,11 @@
 <script lang="ts">
+  import './agent-canvas-projection'
   import type { AgentSessionController } from './agent-session'
   import { hasAgentDragRef, readAgentDragRefs } from './agent-dnd'
+  import {
+    conversationProjectionFromEvents,
+    setConversationProjection,
+  } from './agent-projection'
   import SessionHistory from './SessionHistory.svelte'
   import SessionRecovery from './SessionRecovery.svelte'
 
@@ -12,6 +17,9 @@
   $: preview = $controller.preview
   $: previewBusy = $controller.previewBusy
   $: previewError = $controller.previewError
+  $: turnProjection = conversationProjectionFromEvents($controller.events)
+  $: setConversationProjection(turnProjection)
+  $: projectedRefCount = turnProjection.refs.length
   $: feedback = $controller.events.findLast(
     event => event.type === 'agent_text' || event.type === 'error',
   )
@@ -103,14 +111,18 @@
           <strong>Agent <small>{$controller.providerId}</small></strong>
           <span>
             {busy
-              ? 'thinking…'
+              ? projectedRefCount > 0
+                ? `thinking on ${projectedRefCount} object${projectedRefCount === 1 ? '' : 's'}…`
+                : 'thinking…'
               : readOnly
                 ? 'read only'
                 : hasContext
                   ? `looking at ${refs.length} object${refs.length === 1 ? '' : 's'}`
-                  : hasSuggestion
-                    ? 'idea ready'
-                    : 'ready'}
+                  : projectedRefCount > 0 && hasSuggestion
+                    ? `pointing at ${projectedRefCount} object${projectedRefCount === 1 ? '' : 's'}`
+                    : hasSuggestion
+                      ? 'idea ready'
+                      : 'ready'}
           </span>
         </div>
         <div class="panel-actions">
@@ -241,6 +253,7 @@
     class:drag-active={dragActive}
     class:has-context={hasContext}
     class:has-suggestion={hasSuggestion}
+    class:has-projection={projectedRefCount > 0}
     class:active={open}
     data-agent-drop-target
     aria-label={open ? '收起 Agent' : '打开 Agent'}
@@ -255,7 +268,11 @@
       <i></i><i></i>
       <b></b>
     </span>
-    {#if refs.length > 0}<span class="badge">{refs.length}</span>{/if}
+    {#if refs.length > 0}
+      <span class="badge">{refs.length}</span>
+    {:else if projectedRefCount > 0}
+      <span class="badge projection-badge">{projectedRefCount}</span>
+    {/if}
     {#if hasSuggestion && !open}<span class="suggestion-dot" title="Agent 有新的想法"></span>{/if}
   </button>
 </div>
@@ -338,7 +355,8 @@
   .pet:hover,
   .pet.active,
   .pet.has-context,
-  .pet.has-suggestion { border-color: var(--violet); }
+  .pet.has-suggestion,
+  .pet.has-projection { border-color: var(--violet); }
   .pet.drag-active {
     border-color: var(--violet);
     transform: scale(1.08);
@@ -403,6 +421,7 @@
     color: #08111f;
     font: 700 9px var(--font-mono);
   }
+  .projection-badge { background: var(--panel-2); color: var(--violet); border-color: var(--violet); }
   .suggestion-dot {
     right: -3px;
     bottom: -3px;
