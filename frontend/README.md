@@ -35,8 +35,20 @@ conventions unless Simulanka research semantics require a deliberate divergence.
   context preview. It exposes a Svelte store and commands, with no Canvas or
   graph-position dependency. Server persistence and API DTOs remain authoritative.
 - `src/lib/AgentCompanion.svelte` is the only default Agent surface. It is a compact
-  graph companion, not a permanent chat dock. Explicitly pointing a node/edge/port to
-  the Agent opens the small composer; full discussion is mounted only on request.
+  graph companion, not a permanent chat dock. The primary pointing gesture is
+  **hold `A` → click one or more Node/Port/Edge objects → release `A` → type**.
+  Successive clicks accumulate one de-duplicated pending RefSet without moving graph
+  objects or stealing focus; releasing `A` focuses the composer when new refs were
+  added. Explicit `Ask Agent` actions are the non-keyboard fallback. The abandoned
+  drag-to-Pet interaction is intentionally not retained as a second context model.
+- `src/lib/agent-projection.ts` validates the latest-turn Conversation Projection.
+  Real projection targets must be exact refs delivered in that turn's server-authored
+  ContextBundle; prose, selection and viewport never create targets. The current
+  graph-chat transport supports strict `attention`, object-specific `annotation` and
+  temporary `draft_graph` sidecars and strips the protocol from human-visible text.
+- `src/lib/agent-canvas-projection.ts` renders those projections against real Node,
+  Port and persisted data-flow Edge geometry. Temporary Draft sketches remain draw-time
+  conversation objects and never create semantic Node/Edge/Port entities.
 - `NodeInspector.svelte` treats a node's independent input/output ports as first-class
   interface structure. Zoom may hide labels/card detail on Canvas, but never collapses
   multiple semantic ports into shared anchors.
@@ -54,6 +66,8 @@ rewritten as session windows.
 The Add Node transaction/initial-position correctness bug is tracked separately in #17
 and must not be hidden by presentation code.
 
-`npm test` covers Session/Context orchestration, including stale asynchronous responses
-and scope changes during streaming. It uses the existing Vite TS loader and Node's test
-runner, with in-memory Session API fixtures.
+`npm test` covers Session/Context orchestration and Conversation Projection safety,
+including stale asynchronous Session responses, scope changes during streaming,
+latest-turn explicit-ref scoping, invented-target rejection, protocol stripping and
+projection fences split across streamed Agent text chunks. Tests use the existing Vite
+TS loader and Node's test runner.
