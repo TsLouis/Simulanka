@@ -5,6 +5,10 @@ export interface ConversationProjection {
   text: string | null
 }
 
+const EMPTY_PROJECTION: ConversationProjection = { refs: [], text: null }
+let activeProjection: ConversationProjection = EMPTY_PROJECTION
+const listeners = new Set<(projection: ConversationProjection) => void>()
+
 function isContextRef(value: unknown): value is ContextRefDTO {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const candidate = value as Record<string, unknown>
@@ -56,7 +60,7 @@ export function conversationProjectionFromEvents(
     break
   }
 
-  if (userIndex < 0 || refs.length === 0) return { refs: [], text: null }
+  if (userIndex < 0 || refs.length === 0) return EMPTY_PROJECTION
 
   let text: string | null = null
   for (let index = events.length - 1; index > userIndex; index -= 1) {
@@ -67,4 +71,37 @@ export function conversationProjectionFromEvents(
     }
   }
   return { refs, text }
+}
+
+function projectionKey(projection: ConversationProjection): string {
+  return JSON.stringify([
+    projection.refs.map(ref => [ref.kind, ref.ref_id]),
+    projection.text,
+  ])
+}
+
+/**
+ * Publish a UI/session sidecar projection. This never mutates the semantic graph.
+ * Consumers such as the canvas theme can redraw attention/annotation overlays.
+ */
+export function setConversationProjection(projection: ConversationProjection): void {
+  const normalized: ConversationProjection = {
+    refs: projection.refs.map(ref => ({ kind: ref.kind, ref_id: ref.ref_id })),
+    text: projection.text,
+  }
+  if (projectionKey(normalized) === projectionKey(activeProjection)) return
+  activeProjection = normalized
+  for (const listener of listeners) listener(activeProjection)
+}
+
+export function getConversationProjection(): ConversationProjection {
+  return activeProjection
+}
+
+export function subscribeConversationProjection(
+  listener: (projection: ConversationProjection) => void,
+): () => void {
+  listeners.add(listener)
+  listener(activeProjection)
+  return () => listeners.delete(listener)
 }
