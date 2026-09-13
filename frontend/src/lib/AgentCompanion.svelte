@@ -1,7 +1,6 @@
 <script lang="ts">
   import './agent-canvas-projection'
   import type { AgentSessionController } from './agent-session'
-  import { hasAgentDragRef, readAgentDragRefs } from './agent-dnd'
   import {
     conversationProjectionFromEvents,
     setConversationProjection,
@@ -36,7 +35,6 @@
   let text = ''
   let open = false
   let lastRefCount = 0
-  let dragActive = false
   let composerEl: HTMLTextAreaElement | null = null
   let pointerCollecting = false
   let pointerStartRefCount: number | null = null
@@ -111,41 +109,6 @@
       send()
     }
     if (e.key === 'Escape') close()
-  }
-
-  function onDragEnter(event: DragEvent) {
-    if (!hasAgentDragRef(event)) return
-    event.preventDefault()
-    dragActive = true
-  }
-
-  function onDragOver(event: DragEvent) {
-    if (!hasAgentDragRef(event)) return
-    event.preventDefault()
-    if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
-    dragActive = true
-  }
-
-  function onDragLeave(event: DragEvent) {
-    const current = event.currentTarget as HTMLElement | null
-    const next = event.relatedTarget as Node | null
-    if (current && next && current.contains(next)) return
-    dragActive = false
-  }
-
-  function onDrop(event: DragEvent) {
-    const droppedRefs = readAgentDragRefs(event)
-    dragActive = false
-    if (droppedRefs.length === 0) return
-    event.preventDefault()
-    for (const ref of droppedRefs) {
-      controller.addPendingRef(
-        { kind: ref.kind, ref_id: ref.ref_id },
-        ref.label,
-      )
-    }
-    open = true
-    queueMicrotask(() => composerEl?.focus())
   }
 </script>
 
@@ -305,19 +268,13 @@
   <button
     class="pet"
     class:busy
-    class:drag-active={dragActive}
     class:pointer-collecting={pointerCollecting}
     class:has-context={hasContext}
     class:has-suggestion={hasSuggestion}
     class:has-projection={projectedRefCount > 0}
     class:active={open}
-    data-agent-drop-target
     aria-label={open ? '收起 Agent' : '打开 Agent'}
-    title={dragActive ? 'Drop to show these objects to the Agent' : pointerCollecting ? 'Keep clicking graph objects; release A when finished' : open ? '收起 Agent' : 'Agent · hold A + click graph objects to point them out'}
-    on:dragenter={onDragEnter}
-    on:dragover={onDragOver}
-    on:dragleave={onDragLeave}
-    on:drop={onDrop}
+    title={pointerCollecting ? 'Keep clicking graph objects; release A when finished' : open ? '收起 Agent' : 'Agent · hold A + click graph objects to point them out'}
     on:click={() => { if (open) close(); else { open = true; queueMicrotask(() => composerEl?.focus()) } }}
   >
     <span class="pet-face" aria-hidden="true">
@@ -416,11 +373,6 @@
   .pet.has-projection { border-color: var(--violet); }
   .pet.pointer-collecting {
     box-shadow: 0 0 0 3px rgba(177, 138, 243, 0.1), 0 6px 20px rgba(0, 0, 0, 0.28);
-  }
-  .pet.drag-active {
-    border-color: var(--violet);
-    transform: scale(1.08);
-    box-shadow: 0 0 0 4px rgba(177, 138, 243, 0.12), 0 8px 24px rgba(0, 0, 0, 0.34);
   }
   .pet.busy .pet-face { animation: pet-think 0.8s steps(2, end) infinite; }
 
