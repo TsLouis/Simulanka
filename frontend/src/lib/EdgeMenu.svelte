@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { writeAgentDragRef } from './agent-dnd'
   import type { AffordanceDTO, EdgeDTO } from './types'
 
   // The server still owns the exact verdict/write-authority contract. This
@@ -56,30 +55,12 @@
   function onGlobalPointerDown(e: MouseEvent) {
     if (menuEl && !menuEl.contains(e.target as Node)) onClose()
   }
-
-  function dragEdgeToAgent(event: DragEvent) {
-    if (attachAction?.enabled !== true) {
-      event.preventDefault()
-      return
-    }
-    writeAgentDragRef(event, {
-      kind: 'edge',
-      ref_id: edge.id,
-      label: `edge · ${srcName} → ${dstName}`,
-    })
-  }
 </script>
 
 <svelte:window on:keydown={onKeydown} on:mousedown|capture={onGlobalPointerDown} />
 
 <div class="menu" bind:this={menuEl} style="left: {left}px; top: {top}px;" role="menu">
-  <div
-    class="head"
-    class:draggable={attachAction?.enabled === true}
-    draggable={attachAction?.enabled === true}
-    on:dragstart={dragEdgeToAgent}
-    title={attachAction?.enabled ? 'Drag this edge to the Agent' : edge.id}
-  >
+  <div class="head" title={edge.id}>
     <span class="source source-{source}">{isDraft ? 'draft' : source}</span>
     <span class="ends" title={edge.id}>{srcName} → {dstName}</span>
     <span class="edge-type">{edge.type}</span>
@@ -165,8 +146,6 @@
     border-bottom: 1px solid var(--hairline-2);
     margin-bottom: 4px;
   }
-  .head.draggable { cursor: grab; }
-  .head.draggable:active { cursor: grabbing; }
 
   .source {
     flex: 0 0 auto;
