@@ -1,8 +1,8 @@
 ## Context
 
-现有 Simulanka 前端已经拥有统一 Node/Edge/Port 渲染、Registry descriptor、server affordances、SSE、Inspector、ChatDock/ChatNode、Session 与显式 ContextBundle。问题不在“缺能力”，而在能力的默认编排：常驻面板和聊天壳占据画布，内部机制词直接暴露给用户，Agent 的主要表达仍偏消息而不是图。
+现有 Simulanka 前端已经拥有统一 Node/Edge/Port 渲染、Registry descriptor、server affordances、SSE、Inspector、Session 与显式 ContextBundle。Frontend v2 的问题不在“缺能力”，而在能力的默认编排：旧常驻面板/聊天壳占据画布，内部机制词直接暴露给用户，Agent 的主要表达偏消息而不是图。
 
-本 change 不改变“kernel 是图的唯一写者”“人裁优先”“ContextBundle 只来自显式附加 RefSet”等底层约束。它改变的是前端交互语法：图成为默认共同语言，机制退到系统层。
+本 change 不改变“kernel 是图的唯一权威写入层”“人裁优先”“ContextBundle 只来自显式附加 RefSet”等底层约束。它改变的是前端交互语法：图成为默认共同语言，机制退到系统层。
 
 Node editor 的基础交互不重新发明。ComfyUI 作为成熟参考基线：Node 尺寸、input/output 分列、Port 始终可见、低 zoom 隐藏 label、拖线与目标反馈等基础行为优先沿用其成熟范式；Simulanka 的差异化集中在研究语义、Agent Companion、Draft/Annotation/Context，而不是刻意创造另一套 Port 编辑语法。
 
@@ -14,6 +14,7 @@ Node editor 的基础交互不重新发明。ComfyUI 作为成熟参考基线：
 - Node 在不同 zoom 下显示恰当的信息密度；Port 是节点正常结构的一部分，其 handle 始终可见，远距离只隐藏文字与非必要详情。
 - Node/Port/connection 的基础交互尽量遵循 ComfyUI/LiteGraph 的成熟范式，降低学习成本和实现风险。
 - 选择对象后即可轻量 Ask/Open，不要求先打开永久 Inspector/Chat。
+- 用户可通过一个连续、可组合的 pointing 手势把一个或多个 Node/Port/Edge 明确指给 Agent。
 - Agent 能围绕 node/edge/port/selection 工作，并用图上 Draft/annotation/attention 表达想法。
 - 产品语言简洁，内部安全、审计和来源信息仍可追溯。
 - 优先复用现有 Registry、affordance、Session、ContextBundle 和 proposed semantics。
@@ -23,9 +24,10 @@ Node editor 的基础交互不重新发明。ComfyUI 作为成熟参考基线：
 - 本 change 首阶段不放宽 frozen write matrix。
 - 不把 Agent Companion 做成复杂游戏角色或动画系统。
 - 不删除 Session transcript、ContextBundle 审计或 Provider adapter。
-- 不把临时 annotation/attention 持久化成正式 Node/Edge。
+- 不把临时 annotation/attention/draft_graph 持久化成正式 Node/Edge。
 - 不一次性重写 LiteGraph 引擎或图持久化格式。
 - 不为了像素风而改变成熟的 Node/Port 拓扑编辑习惯。
+- 不同时维护多套直接操纵式 Agent context 手势；A-pointer 是唯一主要 pointing 模型，显式 Ask 按钮/菜单是备用入口。
 
 ## Decisions
 
@@ -72,17 +74,21 @@ Inspector 继续由 PresentationSpec 与 affordance 驱动；只是默认可见�
 
 ### 6. Agent Companion is a surface, not a new semantic entity
 
-Companion 是 UI sidecar，不成为 Node/Edge/Port/Profile。它代表当前可交互 Agent/session state，可在画布边缘或 selection 附近出现。
+Companion 是 UI sidecar，不成为 Node/Edge/Port/Profile。它代表当前可交互 Agent/session state，可在画布边缘出现，但不会因为视觉距离自动获得 graph context。
 
-用户可通过 Ask、显式 attach、拖拽 selection 到 Companion 等方式构造 pending RefSet。只有用户明确完成附加的 RefSet 才进入 ContextBundle；当前 viewport、祖先和邻居不会因为视觉靠近而自动注入。
+主要显式 context 手势是 **hold `A` → 连续点击一个或多个 Node/Port/Edge → release `A` → 输入问题**。A 保持按下期间，每次命中只把对应、且 server 允许 `context.attach` 的 exact Ref 累积进同一个 pending RefSet；不会自动加入邻居、祖先或 viewport，也不会移动/编辑被点击对象。收集期间 Companion 只更新计数、不抢键盘焦点；松开 A 且本次确有新增 Ref 后才把焦点交给 composer。
+
+对象 surface 上的 `Ask Agent` / selection Attach 是备用的显式入口，进入相同 pending RefSet。旧 drag-to-Pet/typed-DnD 路径在 pointer 手势实测通过后删除，避免维护第二套不自然的对象指向模型。
 
 ### 7. Graph-native expression has three persistence levels
 
 Agent 输出分为：
 
 1. **Attention**：临时 highlight/arrow/focus，纯 UI，不持久化图。
-2. **Annotation**：依附对象的短解释，可属于 conversation/session sidecar；不自动成为 semantic graph。
-3. **Draft**：对新增 Node/Edge/关系结构的视觉提议。若底层已有 proposed/ghost 安全语义则映射它；若只是预览则保持 projection sidecar，直到通过现有 server action 提交。
+2. **Annotation**：依附对象的短解释，属于 conversation/session sidecar；不自动成为 semantic graph。
+3. **Draft**：对新增 Node/Edge/关系结构的视觉提议。若底层已有 proposed 安全语义则映射它；若只是解释性草图则保持 projection sidecar，直到通过现有 server action 提交。
+
+第一版 `graph-chat` 可用严格的 `simulanka-projection` sidecar 表达 `attention`、object-specific `annotation` 与临时 `draft_graph`。真实 target/anchor 必须来自本轮 server-authored ContextBundle refs；前端不从 prose、selection 或 viewport 猜锚点。协议块不进入正常 Discussion 文本。后续若验证有价值，可把 transport 提升为 provider-neutral structured event/details，而不重做 Canvas projection schema。
 
 正式 semantic graph 仍只能由 server/kernel 权威写入。
 
@@ -114,8 +120,9 @@ UI 默认使用：Draft、Keep、Dismiss、Context、Why、Related、Needs atten
 - [Port 在远景过密] → 参考 ComfyUI：保留所有 handle，简化形状并隐藏文字；通过节点尺寸和行间距保持多个 Port 可分辨。
 - [成熟范式与 Simulanka 特殊语义冲突] → 默认服从 ComfyUI/LiteGraph 基线，只有 Registry eligibility、边界投影、Agent Draft 等确有语义差异时扩展。
 - [Agent Companion 变成新聊天壳] → 默认小而安静；长 transcript 只在用户主动展开 Discussion 时出现。
-- [Draft 与正式图混淆] → 必须同时使用透明度/线型/标识，不只依赖颜色。
-- [显式 context 交互过重] → Ask selection 可作为一步 attach，但 UI 必须显示将发送的对象，并保留 preview。
+- [Draft 与正式图混淆] → 必须同时使用虚线/容器/标识等冗余线索，不只依赖颜色。
+- [显式 context 交互过重] → A-pointer 可一次连续收集多个对象；Ask selection 仍作为备用一步 attach；UI 始终显示将发送的 refs 并保留 preview。
+- [维护多套 context 手势造成复杂度] → pointer 通过实测后删除 drag-to-Agent 实现、helper 与测试，只保留 pointer + explicit Ask。
 - [拆 App.svelte 引入大范围回归] → 先抽 shell/纯展示组件，保持原 API/store 流；每 slice 单独验证。
 
 ## Migration Plan
@@ -123,12 +130,11 @@ UI 默认使用：Draft、Keep、Dismiss、Context、Why、Related、Needs atten
 1. 建立 Frontend v2 shell 与设计 tokens，不改变 server API。
 2. 抽离默认常驻面板的布局依赖；完整 Inspector 按需打开，Session 历史迁入 Companion 的按需 discussion surface，删除旧聊天窗口组件。
 3. 对齐 ComfyUI-style Node/Port 基线：所有 Port handle 常驻、低 zoom 只隐藏 label/detail、Node 尺寸尊重 Port 数量、原生连线反馈优先保留。
-4. 增加 selection ContextPopover 与 Ask/Open 流程。
-5. 增加 Agent Companion，复用现有 session/context API。
-6. 增加 Attention/Annotation/Draft projection，优先映射现有 proposed semantics。
+4. 增加 selection ContextPopover 与 Ask/Open 流程，并用 A-pointer 统一显式多对象指向。
+5. 增加 Agent Companion，复用现有 session/context API；移除验证失败/冗余的 drag-to-Pet interaction path。
+6. 增加 Attention/Annotation/Draft projection，优先映射现有 proposed semantics；解释性 draft_graph 保持 conversation sidecar。
 7. 运行前端与后端回归，更新 authoritative `docs/frontend.md`。
-8. 再评估是否另开或扩展 trust/undo change；未验证前不放宽写权。
-
+8. 再评估 provider-neutral projection transport 与 trust/undo change；未验证前不放宽写权。
 
 ## Cleanup slice (#18)
 
@@ -151,5 +157,6 @@ does not migrate or rewrite stored graph/layout data.
 This slice deletes obsolete presentation code instead of retaining hidden window
 components or CSS suppression. It leaves all server endpoints and DTOs, provider
 semantics, Registry/write-authority contracts, graph persistence, and the accepted
-Node/Port/Edge interactions unchanged. Add Node correctness remains #17; new
-annotations, drag-to-Agent and broader shell features remain separate work.
+Node/Port/Edge interactions unchanged. Add Node correctness remains #17. Graph-native
+attention/annotation/draft projection is layered later as UI/session sidecar work and
+does not reintroduce chat-window architecture.
