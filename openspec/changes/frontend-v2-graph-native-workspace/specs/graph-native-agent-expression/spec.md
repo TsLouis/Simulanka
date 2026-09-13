@@ -8,14 +8,26 @@
 - **THEN** 前端可在相关对象附近展示该关系的 Draft edge，并附极短解释，而无需自动展开完整 transcript
 
 ### Requirement: 图上投影必须使用结构化 Ref，不得猜测锚点
-Attention、annotation、临时 arrow/circle 或其他 object-attached Agent presentation SHALL 由结构化 sidecar/projection 数据明确声明目标 node/edge/port Ref。前端 MUST NOT 从自然语言、当前 selection、最后一次 pending refs、当前 viewport 或“看起来最相关”的对象推断锚点。
+Attention、annotation、临时 arrow/circle 或其他 object-attached Agent presentation SHALL 由结构化 sidecar/projection 数据明确声明目标 node/edge/port Ref。服务端持久化在当前 `user_msg.details.context_bundles[].refs` 中的本轮显式 RefSet MAY 作为 Conversation Projection 的结构化锚点，因为它记录的是该 turn 实际显式提供给 Agent 的对象。前端 MUST NOT 从自然语言、当前 selection、未发送的 pending refs、当前 viewport 或“看起来最相关”的对象推断锚点。
+
+#### Scenario: 当前 turn 的显式对象成为 Conversation Projection
+- **WHEN** 一个 `user_msg` 持久化了本轮 ContextBundle 的 node/edge/port refs
+- **THEN** UI 可把这些 exact refs 临时显示为“Agent 正在看/回应这些对象”的 Conversation Projection；切换 Session branch 或恢复历史时由持久化 refs 重新得到相同投影，不读取当前 selection
+
+#### Scenario: 单对象 turn 的短回复
+- **WHEN** 当前 turn 只有 1 个显式 Ref，且该 `user_msg` 之后已有 `agent_text`
+- **THEN** UI MAY 将该 turn 的一条简短回复显示在该对象附近，因为锚点唯一且来自结构化 Ref；完整 transcript 仍按需展开
+
+#### Scenario: 多对象 turn 不猜文字归属
+- **WHEN** 当前 turn 同时包含多个显式 Ref
+- **THEN** UI 可同时突出这些对象，但 MUST NOT 任意选择其中一个对象承载普通 `agent_text`；若要对象级 annotation，Agent 必须提供更精确的结构化 projection metadata
 
 #### Scenario: 只有文字没有 projection metadata
-- **WHEN** Session 只收到一条 `agent_text`，没有结构化 object Ref / projection metadata
+- **WHEN** Session 只收到一条 `agent_text`，且对应 turn 没有结构化 object Ref / projection metadata
 - **THEN** UI 可在 Companion 显示该文字或 idea-ready 提示，但 MUST NOT 自动把它贴到某个 Node/Edge/Port 上
 
 #### Scenario: 切换 branch 后仍能正确定位
-- **WHEN** 一个可恢复的 annotation 属于某个 Session branch，并显式携带目标 Ref
+- **WHEN** 一个可恢复的 annotation 属于某个 Session branch，并显式携带目标 Ref，或其 turn 持久化了唯一显式 Ref
 - **THEN** 恢复该 branch 时 UI 根据持久化/sidecar projection 数据定位；不得根据恢复时的当前 selection 重新猜测
 
 ### Requirement: Attention 是临时投影
@@ -24,6 +36,10 @@ Agent attention（高亮、指向、局部 focus、临时 arrow/circle） SHALL 
 #### Scenario: Agent 指出关键边
 - **WHEN** 一个结构化 projection 请求用户注意某条已有 Edge
 - **THEN** UI 临时突出该 Edge，结束本轮、清除 projection 或离开对应 discussion 后 semantic graph 保持逐字不变
+
+#### Scenario: Agent 正在回应显式 Context
+- **WHEN** 当前 turn 的服务端事件记录了一组显式 Context refs
+- **THEN** Canvas 可用 Conversation Projection 突出对应 Node/Port/Edge；该投影只存在于 presentation/session sidecar，不能创建或修改任何 graph entity
 
 ### Requirement: Annotation 与 semantic graph 分离
 对象附着的解释性 annotation SHALL 默认属于 Session/discussion sidecar 或临时 projection，而 MUST NOT 自动写成 Node attrs、note Node 或正式 Edge。只有用户通过明确的图写入动作提升时才可进入 semantic graph。
