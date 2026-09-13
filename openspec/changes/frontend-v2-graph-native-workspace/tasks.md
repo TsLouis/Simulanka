@@ -43,12 +43,13 @@
 ## 6. Graph-native Agent expression
 
 - [x] 6.1 Implement a turn-scoped Conversation Projection from the server-persisted `user_msg.details.context_bundles[].refs`: exact Node/Port/Edge refs receive temporary Agent attention on Canvas without writing the semantic graph. Projection restores from Session history/branch events and never derives targets from selection/prose/viewport.
-- [x] 6.2 For a turn with exactly one structured Ref, allow one compact latest-agent-text annotation beside that object. Multi-ref turns only highlight the RefSet and MUST NOT assign prose to an arbitrary object.
+- [x] 6.2 Preserve the safe fallback: a turn with exactly one explicit Ref may show compact latest-Agent prose beside that object; multi-ref turns highlight only and never guess which object owns free-form prose.
 - [x] 6.3 Present existing proposed/ghost Agent edges (and future proposed nodes) as visually distinct `DRAFT` objects.
 - [x] 6.4 Map Keep/Dismiss/Needs attention product actions to the existing authoritative server actions; do not bypass write-matrix checks.
 - [x] 6.5 Use redundant visual cues (dash + explicit DRAFT tag + source styling), not color alone.
-- [ ] 6.6 Define a provider-neutral structured projection event/tool for Agent-originated `attention`, object-specific `annotation`, temporary arrows/circles and `draft_graph` suggestions that target refs independently of the user's current turn ContextBundle.
-- [ ] 6.7 Render temporary Agent `draft_graph` projections without creating semantic Node/Edge entities; promotion to the graph must remain an explicit authoritative action.
+- [x] 6.6 Define and parse a strict graph-chat `simulanka-projection` sidecar format for `attention`, object-specific `annotation`, and temporary `draft_graph`. Real target refs MUST be a subset of the server-authored explicit Context refs for that turn; free-form prose never creates targets. Projection protocol blocks are hidden from normal Companion/Discussion prose.
+- [x] 6.7 Render structured `attention`, `annotation`, and `draft_graph` projections on Canvas. Draft-graph local node ids are conversation-local only; the anchor must be a real explicit Ref. Rendering remains draw-time/UI sidecar and creates no semantic Node/Edge/Port.
+- [ ] 6.8 Promote the projection transport from graph-chat fenced sidecar blocks to a provider-neutral structured event/tool/details contract without changing the Canvas projection schema. Do this only after the interaction proves useful across real sessions.
 
 ## 7. Product language and pixel visual system
 
@@ -64,16 +65,16 @@
 
 ## 9. Verification, performance and docs
 
-- [ ] 9.1 Re-run frontend tests/type/build checks after the latest pointer gesture, zoom readability, graph-loop and Conversation Projection changes. Cleanup checkpoint passed earlier, but current head needs fresh verification; no GitHub Actions run exists for the current HEAD.
+- [ ] 9.1 Re-run frontend tests/type/build checks after the latest pointer gesture, zoom readability, graph-loop, structured projection, Companion and transcript changes. Cleanup checkpoint passed earlier, but current head needs fresh verification; no GitHub Actions run exists for the current HEAD.
 - [ ] 9.2 Run backend regression tests for Registry/affordance/session/context contracts touched by the UI integration.
 - [x] 9.3 GitNexus detect-changes skipped for this user-authorized iteration.
-- [ ] 9.4 Manually verify default canvas, readable Node identity across working/overview zoom, persistent independent Ports, no semantic-node port collapse, datatype link colours, search gestures, selection attention/actions, `A + click` on Node/Port/Edge, text-entry isolation, drag fallback, Draft presentation, and Conversation Projection on Node/Port/data-flow Edge refs.
+- [ ] 9.4 Manually verify default canvas, readable Node identity across working/overview zoom, persistent independent Ports, no semantic-node port collapse, datatype link colours, search gestures, selection attention/actions, `A + click` on Node/Port/Edge, text-entry isolation, drag fallback, Draft presentation, turn-scoped fallback projection, structured attention/annotation, and structured draft-graph rendering.
 - [x] 9.5 Remove `LGraph.start()` from the read-only/editor graph lifecycle. Canvas rendering remains owned by `LGraphCanvas`; each SSE reload must not start another executable graph loop.
 - [ ] 9.6 Stress-test repeated connect/disconnect + SSE reload cycles to confirm the progressive freeze is fixed. If latency still accumulates, profile/coalesce overlapping `load()` calls before changing more interaction code.
 - [x] 9.7 Update frontend boundary README/OpenSpec to the accepted graph-native model and pointer-first explicit-context contract.
 - [ ] 9.8 Update the long-form `docs/frontend.md` S8 wording so it no longer describes Agent output as message-first; retain server API/domain terminology where it is authoritative.
 - [x] 9.9 Keep unit coverage for typed Agent drag payloads; ordinary text drags and malformed refs must not become context.
-- [x] 9.10 Add unit coverage for turn-scoped Conversation Projection derivation: latest explicit turn only, exact structured refs, de-duplication, malformed-ref rejection, and no prose-based targeting.
+- [x] 9.10 Add unit coverage for Conversation Projection derivation and structured sidecar safety: latest explicit turn only, exact refs, de-duplication, malformed-ref rejection, invented target rejection, explicit anchor enforcement, and transcript protocol stripping.
 - [ ] 9.11 Archive/sync the OpenSpec change after PR #15 acceptance; keep this Draft iteration apply-ready until then.
 
 ## 10. Cleanup (#18, PR #15 branch)
