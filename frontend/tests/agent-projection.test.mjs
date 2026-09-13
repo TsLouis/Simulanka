@@ -15,7 +15,7 @@ const {
   stripProjectionBlocks,
 } = await server.ssrLoadModule('/src/lib/agent-projection.ts')
 
-const block = payload => `\`\`\`simulanka-projection\n${JSON.stringify(payload)}\n\`\`\``
+const block = payload => '```simulanka-projection\n' + JSON.stringify(payload) + '\n```'
 
 const userEvent = refs => ({
   type: 'user_msg',
