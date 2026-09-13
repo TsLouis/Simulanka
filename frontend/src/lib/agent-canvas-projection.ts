@@ -181,6 +181,11 @@ function annotationText(text: string): string {
   return compact.length > 88 ? `${compact.slice(0, 88)}…` : compact
 }
 
+function draftText(text: string): string {
+  const compact = text.replace(/\s+/g, ' ').trim()
+  return compact.length > 26 ? `${compact.slice(0, 26)}…` : compact
+}
+
 function drawAnnotation(
   ctx: CanvasRenderingContext2D,
   x: number,
@@ -215,12 +220,36 @@ function drawAnnotation(
   ctx.restore()
 }
 
+function drawArrowHead(
+  ctx: CanvasRenderingContext2D,
+  sx: number,
+  sy: number,
+  dx: number,
+  dy: number,
+  size: number,
+): void {
+  const angle = Math.atan2(dy - sy, dx - sx)
+  ctx.beginPath()
+  ctx.moveTo(dx, dy)
+  ctx.lineTo(
+    dx - size * Math.cos(angle - 0.5),
+    dy - size * Math.sin(angle - 0.5),
+  )
+  ctx.lineTo(
+    dx - size * Math.cos(angle + 0.5),
+    dy - size * Math.sin(angle + 0.5),
+  )
+  ctx.closePath()
+  ctx.fill()
+}
+
 function drawDraftGraph(
   ctx: CanvasRenderingContext2D,
   projection: AgentDraftGraphProjection,
   anchorX: number,
   anchorY: number,
   scale: number,
+  stackIndex = 0,
 ): void {
   if (scale < ANNOTATION_MIN_SCALE) return
   const safeScale = Math.max(scale, ANNOTATION_MIN_SCALE)
@@ -228,8 +257,17 @@ function drawDraftGraph(
   const boxH = 30 / safeScale
   const gapX = 28 / safeScale
   const gapY = 18 / safeScale
-  const startX = anchorX + 20 / safeScale
-  const startY = anchorY + 34 / safeScale
+  const stackOffset = stackIndex * 150 / safeScale
+  const startX = anchorX + 24 / safeScale
+  const startY = anchorY + 42 / safeScale + stackOffset
+  const cols = Math.max(1, Math.min(3, projection.nodes.length))
+  const rows = Math.max(1, Math.ceil(projection.nodes.length / 3))
+  const panelPadX = 10 / safeScale
+  const panelTop = 20 / safeScale
+  const panelX = startX - panelPadX
+  const panelY = startY - panelTop
+  const panelW = cols * boxW + Math.max(0, cols - 1) * gapX + panelPadX * 2
+  const panelH = rows * boxH + Math.max(0, rows - 1) * gapY + 38 / safeScale
   const positions = new Map<string, [number, number]>()
 
   projection.nodes.forEach((node, index) => {
@@ -242,13 +280,36 @@ function drawDraftGraph(
   })
 
   ctx.save()
-  ctx.globalAlpha = 0.88
+  ctx.globalAlpha = 0.9
+  ctx.lineWidth = 1 / safeScale
+
+  // The whole sketch reads as one temporary idea, visually tethered to the real
+  // graph object that prompted it. This leader is explanatory only; it is not a
+  // semantic Edge and never participates in hit-testing or persistence.
+  ctx.strokeStyle = 'rgba(177, 138, 243, 0.62)'
+  ctx.setLineDash([3 / safeScale, 4 / safeScale])
+  ctx.beginPath()
+  ctx.moveTo(anchorX, anchorY)
+  ctx.lineTo(panelX, panelY + 13 / safeScale)
+  ctx.stroke()
+
+  ctx.fillStyle = 'rgba(25, 22, 48, 0.28)'
+  ctx.strokeStyle = 'rgba(177, 138, 243, 0.72)'
+  ctx.beginPath()
+  ctx.roundRect(panelX, panelY, panelW, panelH, 4 / safeScale)
+  ctx.fill()
+  ctx.stroke()
+  ctx.setLineDash([])
+  ctx.fillStyle = AGENT_COLOR
+  ctx.font = `700 ${7 / safeScale}px ${CANVAS_FONT}`
+  ctx.textAlign = 'left'
+  ctx.textBaseline = 'middle'
+  ctx.fillText('DRAFT', panelX + 7 / safeScale, panelY + 9 / safeScale)
+
   ctx.strokeStyle = AGENT_COLOR
   ctx.fillStyle = AGENT_COLOR
-  ctx.lineWidth = 1 / safeScale
   ctx.font = `500 ${9 / safeScale}px ${CANVAS_FONT}`
   ctx.textAlign = 'center'
-  ctx.textBaseline = 'middle'
 
   for (const edge of projection.edges) {
     const src = positions.get(edge.src)
@@ -264,9 +325,10 @@ function drawDraftGraph(
     ctx.lineTo(dx, dy)
     ctx.stroke()
     ctx.setLineDash([])
+    drawArrowHead(ctx, sx, sy, dx, dy, 6 / safeScale)
     if (edge.label) {
       ctx.fillStyle = AGENT_TEXT
-      ctx.fillText(annotationText(edge.label), (sx + dx) / 2, (sy + dy) / 2 - 8 / safeScale)
+      ctx.fillText(draftText(edge.label), (sx + dx) / 2, (sy + dy) / 2 - 8 / safeScale)
       ctx.fillStyle = AGENT_COLOR
     }
   }
@@ -284,13 +346,13 @@ function drawDraftGraph(
     ctx.stroke()
     ctx.setLineDash([])
     ctx.fillStyle = AGENT_TEXT
-    ctx.fillText(annotationText(node.label), x + boxW / 2, y + boxH / 2)
+    ctx.fillText(draftText(node.label), x + boxW / 2, y + boxH / 2)
     if (node.type) {
       ctx.globalAlpha = 0.66
       ctx.font = `500 ${7 / safeScale}px ${CANVAS_FONT}`
-      ctx.fillText(node.type, x + boxW / 2, y + boxH + 7 / safeScale)
+      ctx.fillText(draftText(node.type), x + boxW / 2, y + boxH + 7 / safeScale)
       ctx.font = `500 ${9 / safeScale}px ${CANVAS_FONT}`
-      ctx.globalAlpha = 0.88
+      ctx.globalAlpha = 0.9
     }
   }
   ctx.restore()
@@ -327,9 +389,9 @@ function drawNodeProjection(
         scale,
       )
     }
-    for (const draft of draftGraphsFor('node', target.nodeId)) {
-      drawDraftGraph(ctx, draft, node.size[0], 0, scale)
-    }
+    draftGraphsFor('node', target.nodeId).forEach((draft, index) => {
+      drawDraftGraph(ctx, draft, node.size[0], 0, scale, index)
+    })
   }
 
   for (const slot of target.inPorts) {
@@ -339,7 +401,9 @@ function drawNodeProjection(
     const label = annotationFor('port', portId)
       ?? (projection.visuals.length === 0 && projection.refs.length === 1 ? projection.text : null)
     if (label) drawAnnotation(ctx, pos[0] + 12 / Math.max(scale, 0.45), pos[1], label, scale)
-    for (const draft of draftGraphsFor('port', portId)) drawDraftGraph(ctx, draft, pos[0], pos[1], scale)
+    draftGraphsFor('port', portId).forEach((draft, index) => {
+      drawDraftGraph(ctx, draft, pos[0], pos[1], scale, index)
+    })
   }
 
   for (const slot of target.outPorts) {
@@ -349,7 +413,9 @@ function drawNodeProjection(
     const label = annotationFor('port', portId)
       ?? (projection.visuals.length === 0 && projection.refs.length === 1 ? projection.text : null)
     if (label) drawAnnotation(ctx, pos[0] + 12 / Math.max(scale, 0.45), pos[1], label, scale)
-    for (const draft of draftGraphsFor('port', portId)) drawDraftGraph(ctx, draft, pos[0], pos[1], scale)
+    draftGraphsFor('port', portId).forEach((draft, index) => {
+      drawDraftGraph(ctx, draft, pos[0], pos[1], scale, index)
+    })
   }
 }
 
@@ -380,7 +446,9 @@ function drawEdgeProjection(
   const label = annotationFor('edge', edgeId)
     ?? (projection.visuals.length === 0 && projection.refs.length === 1 ? projection.text : null)
   if (label) drawAnnotation(ctx, x + 12 / safeScale, y - 16 / safeScale, label, scale)
-  for (const draft of draftGraphsFor('edge', edgeId)) drawDraftGraph(ctx, draft, x, y, scale)
+  draftGraphsFor('edge', edgeId).forEach((draft, index) => {
+    drawDraftGraph(ctx, draft, x, y, scale, index)
+  })
 }
 
 function installPrototypeProjectionHooks(): void {
