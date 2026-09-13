@@ -114,7 +114,13 @@ export function stripProjectionBlocks(text: string): string {
     if (lineEnd < 0) break
     const info = result.slice(start + FENCE.length, lineEnd).trim().toLowerCase()
     const end = result.indexOf(FENCE, lineEnd + 1)
-    if (end < 0) break
+    if (end < 0) {
+      // During streaming, hide an unfinished projection block as soon as its
+      // labelled opening fence arrives. It becomes parseable once later chunks
+      // complete the closing fence.
+      if (info === PROJECTION_LABEL) result = result.slice(0, start)
+      break
+    }
     if (info !== PROJECTION_LABEL) {
       pos = end + FENCE.length
       continue
@@ -244,7 +250,9 @@ export function conversationProjectionFromEvents(
     const event = events[index]
     if (event?.type === 'agent_text' && event.text) agentChunks.push(event.text)
   }
-  const rawText = agentChunks.join('\n').trim()
+  // Provider adapters may split one textual answer into multiple completed
+  // parts. Preserve the raw order exactly so a structured fence can span chunks.
+  const rawText = agentChunks.join('').trim()
   const visuals = structuredVisuals(rawText, refs)
   const visibleText = stripProjectionBlocks(rawText)
   return {
