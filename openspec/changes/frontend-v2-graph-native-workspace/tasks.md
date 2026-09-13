@@ -33,12 +33,12 @@
 
 - [x] 5.1 Add an unobtrusive Agent Companion UI sidecar; it does not become a semantic graph entity.
 - [x] 5.2 `Ask` on a node attaches the explicit ref through the existing supplemental-context contract and opens the Companion composer.
-- [x] 5.3 Make `A + click` the primary graph-pointing gesture: hit-test Port before Node, and reuse the existing Edge hit/menu path for Edge refs. Pointing is gated by `context.attach`, opens the same pending RefSet, and MUST NOT move or mutate graph objects. Text inputs do not activate pointer mode.
+- [x] 5.3 Make hold-`A` pointing the primary graph gesture: while `A` stays held, successive Node/Port/Edge clicks accumulate into one de-duplicated pending RefSet without stealing keyboard focus or moving graph objects. Releasing `A` focuses the Companion composer only when new refs were added. Port hit-testing precedes Node body and Edge uses the persisted Edge hit path; all refs remain gated by `context.attach`. Text inputs do not activate pointer mode.
 - [x] 5.4 Keep typed drag-to-Agent for node/edge/port and multi-node RefSets as a secondary/compatibility path. Payloads remain validated/deduplicated; ordinary text drags are not context and graph position/state is unchanged.
 - [x] 5.5 Show pending refs and preserve context preview before sending.
 - [x] 5.6 Keep long transcript/history accessible on demand from the Agent Companion; do not project Session trees as canvas windows.
 - [x] 5.7 Keep harness/compiler detail progressively disclosed: normal preview shows delivery/source/omission summary while raw compiled payload stays under Technical details.
-- [x] 5.8 Pet exposes only quiet micro-states (thinking/context/idea ready/drop target); no permanent execution console is introduced. Companion teaches `A + click` as the primary pointing gesture instead of drag-to-Pet.
+- [x] 5.8 Pet exposes only quiet micro-states (thinking/context/idea ready/drop target/pointing collection); no permanent execution console is introduced. Companion teaches hold-A → point one or more objects → release-A → type as the primary explicit-context gesture.
 
 ## 6. Graph-native Agent expression
 
@@ -68,13 +68,13 @@
 - [ ] 9.1 Re-run frontend tests/type/build checks after the latest pointer gesture, zoom readability, graph-loop, structured projection, Companion and transcript changes. Cleanup checkpoint passed earlier, but current head needs fresh verification; no GitHub Actions run exists for the current HEAD.
 - [ ] 9.2 Run backend regression tests for Registry/affordance/session/context contracts touched by the UI integration.
 - [x] 9.3 GitNexus detect-changes skipped for this user-authorized iteration.
-- [ ] 9.4 Manually verify default canvas, readable Node identity across working/overview zoom, persistent independent Ports, no semantic-node port collapse, datatype link colours, search gestures, selection attention/actions, `A + click` on Node/Port/Edge, text-entry isolation, drag fallback, Draft presentation, turn-scoped fallback projection, structured attention/annotation, and structured draft-graph rendering.
+- [ ] 9.4 Manually verify default canvas, readable Node identity across working/overview zoom, persistent independent Ports, no semantic-node port collapse, datatype link colours, search gestures, selection attention/actions, continuous hold-A multi-object pointing on Node/Port/Edge, text-entry isolation, drag fallback, Draft presentation, turn-scoped fallback projection, structured attention/annotation, and structured draft-graph rendering.
 - [x] 9.5 Remove `LGraph.start()` from the read-only/editor graph lifecycle. Canvas rendering remains owned by `LGraphCanvas`; each SSE reload must not start another executable graph loop.
 - [ ] 9.6 Stress-test repeated connect/disconnect + SSE reload cycles to confirm the progressive freeze is fixed. If latency still accumulates, profile/coalesce overlapping `load()` calls before changing more interaction code.
 - [x] 9.7 Update frontend boundary README/OpenSpec to the accepted graph-native model and pointer-first explicit-context contract.
 - [ ] 9.8 Update the long-form `docs/frontend.md` S8 wording so it no longer describes Agent output as message-first; retain server API/domain terminology where it is authoritative.
 - [x] 9.9 Keep unit coverage for typed Agent drag payloads; ordinary text drags and malformed refs must not become context.
-- [x] 9.10 Add unit coverage for Conversation Projection derivation and structured sidecar safety: latest explicit turn only, exact refs, de-duplication, malformed-ref rejection, invented target rejection, explicit anchor enforcement, and transcript protocol stripping.
+- [x] 9.10 Add unit coverage for Conversation Projection derivation and structured sidecar safety: latest explicit turn only, exact refs, de-duplication, malformed/invented target rejection, explicit anchor enforcement, transcript protocol stripping, multi-chunk fenced projection parsing, and unfinished-fence concealment during streaming.
 - [ ] 9.11 Archive/sync the OpenSpec change after PR #15 acceptance; keep this Draft iteration apply-ready until then.
 
 ## 10. Cleanup (#18, PR #15 branch)
