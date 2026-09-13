@@ -2,6 +2,7 @@ import { LGraphCanvas, LiteGraph, type LGraphNode } from 'litegraph.js'
 import {
   getConversationProjection,
   subscribeConversationProjection,
+  type AgentDraftGraphProjection,
   type ConversationProjection,
 } from './agent-projection'
 
@@ -30,23 +31,61 @@ type CanvasWithScale = LGraphCanvas & {
   ds?: { scale?: number }
 }
 
+type RefKey = string
+
 let projection: ConversationProjection = getConversationProjection()
 let nodeRefs = new Set<string>()
 let edgeRefs = new Set<string>()
 let portRefs = new Set<string>()
+let annotations = new Map<RefKey, string>()
+let attentionLabels = new Map<RefKey, string>()
+let draftGraphs = new Map<RefKey, AgentDraftGraphProjection[]>()
 const canvases = new Set<LGraphCanvas>()
 
-function rebuildRefSets(next: ConversationProjection): void {
+function refKey(kind: string, refId: string): RefKey {
+  return `${kind}:${refId}`
+}
+
+function addRef(kind: 'node' | 'edge' | 'port', refId: string): void {
+  if (kind === 'node') nodeRefs.add(refId)
+  else if (kind === 'edge') edgeRefs.add(refId)
+  else portRefs.add(refId)
+}
+
+function rebuildProjectionState(next: ConversationProjection): void {
   projection = next
-  nodeRefs = new Set(
-    next.refs.filter(ref => ref.kind === 'node').map(ref => ref.ref_id),
-  )
-  edgeRefs = new Set(
-    next.refs.filter(ref => ref.kind === 'edge').map(ref => ref.ref_id),
-  )
-  portRefs = new Set(
-    next.refs.filter(ref => ref.kind === 'port').map(ref => ref.ref_id),
-  )
+  nodeRefs = new Set()
+  edgeRefs = new Set()
+  portRefs = new Set()
+  annotations = new Map()
+  attentionLabels = new Map()
+  draftGraphs = new Map()
+
+  // Backward-compatible conversation projection: before structured visual
+  // output exists, the exact refs delivered to the Agent are the only safe
+  // things it can visibly point back at.
+  if (next.visuals.length === 0) {
+    for (const ref of next.refs) addRef(ref.kind, ref.ref_id)
+    return
+  }
+
+  for (const visual of next.visuals) {
+    if (visual.kind === 'attention') {
+      for (const ref of visual.refs) {
+        addRef(ref.kind, ref.ref_id)
+        if (visual.label) attentionLabels.set(refKey(ref.kind, ref.ref_id), visual.label)
+      }
+      continue
+    }
+    if (visual.kind === 'annotation') {
+      addRef(visual.target.kind, visual.target.ref_id)
+      annotations.set(refKey(visual.target.kind, visual.target.ref_id), visual.text)
+      continue
+    }
+    addRef(visual.anchor.kind, visual.anchor.ref_id)
+    const key = refKey(visual.anchor.kind, visual.anchor.ref_id)
+    draftGraphs.set(key, [...(draftGraphs.get(key) ?? []), visual])
+  }
 }
 
 function registerCanvas(canvas: LGraphCanvas): void {
@@ -54,15 +93,15 @@ function registerCanvas(canvas: LGraphCanvas): void {
 }
 
 subscribeConversationProjection(next => {
-  rebuildRefSets(next)
+  rebuildProjectionState(next)
   for (const canvas of canvases) canvas.setDirty(true, true)
 })
 
 function nodeProjection(
   node: ProjectionNode,
-): { node: boolean; inPorts: number[]; outPorts: number[] } | null {
-  const nodeId = node.simulanka?.id
-  const nodePointed = typeof nodeId === 'string' && nodeRefs.has(nodeId)
+): { node: boolean; nodeId: string | null; inPorts: number[]; outPorts: number[] } | null {
+  const nodeId = typeof node.simulanka?.id === 'string' ? node.simulanka.id : null
+  const nodePointed = nodeId !== null && nodeRefs.has(nodeId)
   const inPorts: number[] = []
   const outPorts: number[] = []
   node.simulanka_in_ports?.forEach((portId, index) => {
@@ -72,7 +111,7 @@ function nodeProjection(
     if (portRefs.has(portId)) outPorts.push(index)
   })
   return nodePointed || inPorts.length > 0 || outPorts.length > 0
-    ? { node: nodePointed, inPorts, outPorts }
+    ? { node: nodePointed, nodeId, inPorts, outPorts }
     : null
 }
 
@@ -119,9 +158,9 @@ function drawPortTarget(
   isInput: boolean,
   slot: number,
   scale: number,
-): void {
+): [number, number] | null {
   const pos = connectionPos(node, isInput, slot)
-  if (!pos) return
+  if (!pos) return null
   const safeScale = Math.max(scale, 0.35)
   const radius = 8 / safeScale
   ctx.save()
@@ -134,11 +173,12 @@ function drawPortTarget(
   ctx.fill()
   ctx.stroke()
   ctx.restore()
+  return pos
 }
 
 function annotationText(text: string): string {
   const compact = text.replace(/\s+/g, ' ').trim()
-  return compact.length > 72 ? `${compact.slice(0, 72)}…` : compact
+  return compact.length > 88 ? `${compact.slice(0, 88)}…` : compact
 }
 
 function drawAnnotation(
@@ -175,6 +215,96 @@ function drawAnnotation(
   ctx.restore()
 }
 
+function drawDraftGraph(
+  ctx: CanvasRenderingContext2D,
+  projection: AgentDraftGraphProjection,
+  anchorX: number,
+  anchorY: number,
+  scale: number,
+): void {
+  if (scale < ANNOTATION_MIN_SCALE) return
+  const safeScale = Math.max(scale, ANNOTATION_MIN_SCALE)
+  const boxW = 92 / safeScale
+  const boxH = 30 / safeScale
+  const gapX = 28 / safeScale
+  const gapY = 18 / safeScale
+  const startX = anchorX + 20 / safeScale
+  const startY = anchorY + 34 / safeScale
+  const positions = new Map<string, [number, number]>()
+
+  projection.nodes.forEach((node, index) => {
+    const col = index % 3
+    const row = Math.floor(index / 3)
+    positions.set(node.id, [
+      startX + col * (boxW + gapX),
+      startY + row * (boxH + gapY),
+    ])
+  })
+
+  ctx.save()
+  ctx.globalAlpha = 0.88
+  ctx.strokeStyle = AGENT_COLOR
+  ctx.fillStyle = AGENT_COLOR
+  ctx.lineWidth = 1 / safeScale
+  ctx.font = `500 ${9 / safeScale}px ${CANVAS_FONT}`
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+
+  for (const edge of projection.edges) {
+    const src = positions.get(edge.src)
+    const dst = positions.get(edge.dst)
+    if (!src || !dst) continue
+    const sx = src[0] + boxW / 2
+    const sy = src[1] + boxH / 2
+    const dx = dst[0] + boxW / 2
+    const dy = dst[1] + boxH / 2
+    ctx.setLineDash([5 / safeScale, 4 / safeScale])
+    ctx.beginPath()
+    ctx.moveTo(sx, sy)
+    ctx.lineTo(dx, dy)
+    ctx.stroke()
+    ctx.setLineDash([])
+    if (edge.label) {
+      ctx.fillStyle = AGENT_TEXT
+      ctx.fillText(annotationText(edge.label), (sx + dx) / 2, (sy + dy) / 2 - 8 / safeScale)
+      ctx.fillStyle = AGENT_COLOR
+    }
+  }
+
+  for (const node of projection.nodes) {
+    const pos = positions.get(node.id)
+    if (!pos) continue
+    const [x, y] = pos
+    ctx.setLineDash([4 / safeScale, 3 / safeScale])
+    ctx.fillStyle = 'rgba(25, 22, 48, 0.90)'
+    ctx.strokeStyle = AGENT_COLOR
+    ctx.beginPath()
+    ctx.roundRect(x, y, boxW, boxH, 3 / safeScale)
+    ctx.fill()
+    ctx.stroke()
+    ctx.setLineDash([])
+    ctx.fillStyle = AGENT_TEXT
+    ctx.fillText(annotationText(node.label), x + boxW / 2, y + boxH / 2)
+    if (node.type) {
+      ctx.globalAlpha = 0.66
+      ctx.font = `500 ${7 / safeScale}px ${CANVAS_FONT}`
+      ctx.fillText(node.type, x + boxW / 2, y + boxH + 7 / safeScale)
+      ctx.font = `500 ${9 / safeScale}px ${CANVAS_FONT}`
+      ctx.globalAlpha = 0.88
+    }
+  }
+  ctx.restore()
+}
+
+function annotationFor(kind: string, refId: string): string | null {
+  const key = refKey(kind, refId)
+  return annotations.get(key) ?? attentionLabels.get(key) ?? null
+}
+
+function draftGraphsFor(kind: string, refId: string): AgentDraftGraphProjection[] {
+  return draftGraphs.get(refKey(kind, refId)) ?? []
+}
+
 function drawNodeProjection(
   canvas: CanvasWithScale,
   ctx: CanvasRenderingContext2D,
@@ -184,19 +314,42 @@ function drawNodeProjection(
   if (!target) return
   const scale = canvas.ds?.scale ?? 1
   drawNodeHalo(ctx, node, target.node)
-  for (const slot of target.inPorts) drawPortTarget(ctx, node, true, slot, scale)
-  for (const slot of target.outPorts) drawPortTarget(ctx, node, false, slot, scale)
 
-  // A one-object turn has an unambiguous conversational anchor. Multi-object
-  // turns deliberately highlight all refs without pinning prose to one of them.
-  if (projection.refs.length === 1 && projection.text) {
-    drawAnnotation(
-      ctx,
-      node.size[0] + 10 / Math.max(scale, 0.45),
-      8 / Math.max(scale, 0.45),
-      projection.text,
-      scale,
-    )
+  if (target.node && target.nodeId) {
+    const label = annotationFor('node', target.nodeId)
+      ?? (projection.visuals.length === 0 && projection.refs.length === 1 ? projection.text : null)
+    if (label) {
+      drawAnnotation(
+        ctx,
+        node.size[0] + 10 / Math.max(scale, 0.45),
+        8 / Math.max(scale, 0.45),
+        label,
+        scale,
+      )
+    }
+    for (const draft of draftGraphsFor('node', target.nodeId)) {
+      drawDraftGraph(ctx, draft, node.size[0], 0, scale)
+    }
+  }
+
+  for (const slot of target.inPorts) {
+    const pos = drawPortTarget(ctx, node, true, slot, scale)
+    const portId = node.simulanka_in_ports?.[slot]
+    if (!pos || !portId) continue
+    const label = annotationFor('port', portId)
+      ?? (projection.visuals.length === 0 && projection.refs.length === 1 ? projection.text : null)
+    if (label) drawAnnotation(ctx, pos[0] + 12 / Math.max(scale, 0.45), pos[1], label, scale)
+    for (const draft of draftGraphsFor('port', portId)) drawDraftGraph(ctx, draft, pos[0], pos[1], scale)
+  }
+
+  for (const slot of target.outPorts) {
+    const pos = drawPortTarget(ctx, node, false, slot, scale)
+    const portId = node.simulanka_out_ports?.[slot]
+    if (!pos || !portId) continue
+    const label = annotationFor('port', portId)
+      ?? (projection.visuals.length === 0 && projection.refs.length === 1 ? projection.text : null)
+    if (label) drawAnnotation(ctx, pos[0] + 12 / Math.max(scale, 0.45), pos[1], label, scale)
+    for (const draft of draftGraphsFor('port', portId)) drawDraftGraph(ctx, draft, pos[0], pos[1], scale)
   }
 }
 
@@ -224,15 +377,10 @@ function drawEdgeProjection(
   ctx.fillText('✦', x, y)
   ctx.restore()
 
-  if (projection.refs.length === 1 && projection.text) {
-    drawAnnotation(
-      ctx,
-      x + 12 / safeScale,
-      y - 16 / safeScale,
-      projection.text,
-      scale,
-    )
-  }
+  const label = annotationFor('edge', edgeId)
+    ?? (projection.visuals.length === 0 && projection.refs.length === 1 ? projection.text : null)
+  if (label) drawAnnotation(ctx, x + 12 / safeScale, y - 16 / safeScale, label, scale)
+  for (const draft of draftGraphsFor('edge', edgeId)) drawDraftGraph(ctx, draft, x, y, scale)
 }
 
 function installPrototypeProjectionHooks(): void {
@@ -254,8 +402,6 @@ function installPrototypeProjectionHooks(): void {
     baseDrawNode.call(this, node, ctx)
     const projectionNode = node as unknown as ProjectionNode
     if (!projectionNode.simulanka) return
-    // Selection attention may have reduced globalAlpha around the base draw.
-    // Agent attention is an independent conversation layer, so restore it.
     drawNodeProjection(this as CanvasWithScale, ctx, projectionNode)
   }
 
