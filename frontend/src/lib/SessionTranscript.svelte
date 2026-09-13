@@ -1,6 +1,7 @@
 <script lang="ts">
   import { afterUpdate } from 'svelte'
   import type { SessionEventDTO } from './api'
+  import { stripProjectionBlocks } from './agent-projection'
 
   // Mounted only when the user requests full discussion/history. The original
   // normalized events retain tool payloads, context audit details and usage.
@@ -16,6 +17,14 @@
     } catch {
       return String(value)
     }
+  }
+
+  function visibleEventText(event: SessionEventDTO): string {
+    const fallback = event.status ?? event.type
+    if (!event.text) return fallback
+    return event.type === 'agent_text'
+      ? stripProjectionBlocks(event.text) || fallback
+      : event.text
   }
 
   function shortSessionId(value: string): string {
@@ -106,9 +115,9 @@
           {/if}
         </details>
       {:else if event.type === 'status'}
-        <div class="status-line status-{event.status ?? 'event'}">{event.text ?? event.status ?? event.type}</div>
+        <div class="status-line status-{event.status ?? 'event'}">{visibleEventText(event)}</div>
       {:else}
-        <div class="bubble" class:error={event.type === 'error'}>{event.text ?? event.status ?? event.type}</div>
+        <div class="bubble" class:error={event.type === 'error'}>{visibleEventText(event)}</div>
       {/if}
       {#if event.details && Object.keys(event.details).length > 0}
         {@const refs = contextReferences(event.details)}
