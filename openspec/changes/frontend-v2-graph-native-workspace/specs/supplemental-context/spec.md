@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: 上下文只能显式补充
-系统 SHALL 只编译用户显式附加或上层程序显式声明的 RefSet。画布当前视图、全图状态、会话历史或领域默认对象 MUST NOT 自动成为补充上下文。前端 MAY 将 `Ask selection`、将 graph-object reference 拖给 Agent Companion、对象菜单 Attach 等交互视为显式附加，但 MUST 在发送前可见地呈现实际 pending refs。
+系统 SHALL 只编译用户显式附加或上层程序显式声明的 RefSet。画布当前视图、全图状态、会话历史或领域默认对象 MUST NOT 自动成为补充上下文。前端 SHALL 把“用户明确指向图对象”视为主要补充上下文手势；当前默认交互为按住 `A` 并点击 node/port/edge。`Ask selection`、对象菜单 Attach，以及带有 typed-ref payload 的拖拽 MAY 作为补充入口，但 MUST 汇入同一 pending RefSet，并在发送前可见地呈现实际 refs。
 
 #### Scenario: 只聊天不附加
 - **WHEN** 用户没有新增上下文引用而发送消息
@@ -10,6 +10,22 @@
 #### Scenario: scoped Companion 不等于上下文
 - **WHEN** Agent Companion 恢复到某个子图 scope，但用户未显式附加 RefSet
 - **THEN** 当前 root、其孩子和该 scope 的其他实体均不进入 ContextBundle，Adapter 收到逐字不变的用户消息
+
+#### Scenario: A + click 指向节点
+- **WHEN** 用户按住 `A` 并点击一个允许 `context.attach` 的 Node 主体
+- **THEN** 只有该 Node Ref 被加入 pending context；该点击 MUST NOT 同时移动、编辑或写入该 Node
+
+#### Scenario: A + click 指向端口
+- **WHEN** 用户按住 `A` 并点击一个允许 `context.attach` 的 Port handle
+- **THEN** 只有该 Port Ref 被加入 pending context，而不是把所属 Node 或相邻 Edge 一并隐式加入
+
+#### Scenario: A + click 指向边
+- **WHEN** 用户按住 `A` 并点击一条允许 `context.attach` 的 Edge
+- **THEN** 只有该 Edge Ref 被加入 pending context；普通 Edge menu/review 动作不因这次指向而执行
+
+#### Scenario: A 在文字输入中不进入指向状态
+- **WHEN** 键盘焦点位于 input、textarea 或 contenteditable surface 且用户输入字母 `A`
+- **THEN** 前端把它作为普通文字输入处理，不激活 Canvas 指向手势
 
 #### Scenario: 显式附加选择集
 - **WHEN** 用户选择若干 node/edge/port 并确认附加
@@ -22,6 +38,7 @@
 #### Scenario: 将对象引用拖给 Agent
 - **WHEN** 用户从 node/edge/port 的显式对象 surface 开始拖拽，并把带有 Simulanka typed-ref payload 的拖拽放到 Agent Companion
 - **THEN** 只有 payload 指定的 Ref 被加入 pending context；拖拽路径经过的其他实体不加入，semantic graph 的位置、连接和 attrs 均不改变
+- **AND** 该拖拽入口 MAY 作为兼容/备选手势存在，但产品不要求用户通过拖拽完成主要的对象指向流程
 
 #### Scenario: 普通文本拖拽不等于上下文
 - **WHEN** 用户把普通文字或不含有效 Simulanka typed-ref payload 的外部拖拽放到 Agent Companion
