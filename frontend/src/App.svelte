@@ -65,6 +65,7 @@
   let selectedId: string | null = null
   let selectedNode: NodeDTO | null = null
   let portsById: Map<string, PortDTO> = new Map()
+  let agentPointHeld = false
 
   // 跳转并选中原语（S6 血缘链逐跳 / S7 卡片点击共用）：先问 locator 拿父容器，
   // 视图到位后在 load() 末尾兑现选中——跨下钻层级可达。
@@ -162,13 +163,18 @@
         lgcanvas = new LGraphCanvas(canvasEl, graph)
         applyWorkspaceTheme(lgcanvas)
         wireSelection(lgcanvas)
+        wireAgentPointer(lgcanvas)
         wireNodeMoved(lgcanvas)
         wireGhostLinks(lgcanvas)
         wireContextMenu(lgcanvas)
         wireLinkMenu(lgcanvas)
         wireLineageLayer(lgcanvas)
       }
-      graph.start()
+      // LGraphCanvas owns rendering. Simulanka nodes are presentation/authoring
+      // objects, not executable LiteGraph programs, so starting LGraph would add
+      // an unnecessary requestAnimationFrame execution loop. More importantly,
+      // every SSE reload replaces the graph; starting each replacement can leave
+      // old execution loops alive and progressively degrade interaction latency.
       byNodeMap = byNode
       lineageEdges = lineage
       edgesById = new Map(
@@ -247,6 +253,81 @@
     }
   }
 
+  const agent = createAgentSessionController()
+
+  function contextAttachAction(
+    entity: { affordances: AffordanceDTO[] },
+  ): AffordanceDTO | null {
+    return entity.affordances.find(action => action.id === 'context.attach') ?? null
+  }
+
+  function pointNodeToAgent(node: NodeDTO): boolean {
+    const action = contextAttachAction(node)
+    if (action?.enabled !== true) {
+      status = action?.reason ?? '这个节点当前不能加入 Agent context'
+      return false
+    }
+    agent.addPendingRef(
+      { kind: 'node', ref_id: node.id },
+      `${node.type} · ${node.name}`,
+    )
+    status = `Agent ← ${node.name}`
+    return true
+  }
+
+  function pointEdgeToAgent(edge: EdgeDTO): boolean {
+    const action = contextAttachAction(edge)
+    if (action?.enabled !== true) {
+      status = action?.reason ?? '这条边当前不能加入 Agent context'
+      return false
+    }
+    agent.addPendingRef(
+      { kind: 'edge', ref_id: edge.id },
+      `edge · ${namesById.get(edge.src) ?? edge.src} → ${namesById.get(edge.dst) ?? edge.dst}`,
+    )
+    status = `Agent ← ${edge.type}`
+    return true
+  }
+
+  function setAgentPointHeld(active: boolean) {
+    if (agentPointHeld === active) return
+    agentPointHeld = active
+    canvasEl?.classList.toggle('agent-pointing', active)
+  }
+
+  function isTypingTarget(target: EventTarget | null): boolean {
+    const element = target as HTMLElement | null
+    return element instanceof HTMLInputElement
+      || element instanceof HTMLTextAreaElement
+      || element?.isContentEditable === true
+  }
+
+  function wireAgentPointer(canvas: LGraphCanvas) {
+    canvasEl.addEventListener('mousedown', onAgentPointerMouseDown, true)
+    void canvas
+  }
+
+  function onAgentPointerMouseDown(e: MouseEvent) {
+    if (!agentPointHeld || e.button !== 0 || !lgcanvas) return
+    const pos = (lgcanvas as unknown as {
+      convertEventToCanvasOffset: (event: MouseEvent) => [number, number]
+    }).convertEventToCanvasOffset(e)
+    const graph = lgcanvas.graph as unknown as {
+      getNodeOnPos?: (x: number, y: number) => LGraphNode | null
+    } | null
+    const hit = graph?.getNodeOnPos?.(pos[0], pos[1]) ?? null
+    const dto = hit
+      ? ((hit as unknown as { simulanka?: NodeDTO }).simulanka ?? null)
+      : null
+    if (!dto) return
+
+    // `A + click` is a pointing gesture, not selection or movement. Consume the
+    // click before LiteGraph can begin a drag; the graph itself stays unchanged.
+    e.preventDefault()
+    e.stopPropagation()
+    pointNodeToAgent(dto)
+  }
+
   // --- S7 就地裁决：链接中心点点击 → 锚定菜单 → server 人侧端点 --------------
 
   // LiteGraph 原生把「点中链接中心点」路由到 showLinkMenu(默认弹它自己的
@@ -258,6 +339,11 @@
       const id = (link as { simulanka_edge_id?: string }).simulanka_edge_id
       const dto = id ? edgesById.get(id) : undefined
       if (!dto) return
+      if (agentPointHeld) {
+        pointEdgeToAgent(dto)
+        edgeMenu = null
+        return
+      }
       edgeMenu = { x: e.clientX, y: e.clientY, edge: dto }
     }
   }
@@ -306,8 +392,6 @@
       status = `resolve failed: ${(err as Error).message}`
     }
   }
-
-  const agent = createAgentSessionController()
 
   // §13.5.3: render ghost links (agent proposals, status="proposed") dashed.
   // LiteGraph has no per-link dash, so shadow the instance renderLink: set a
@@ -789,6 +873,16 @@
     }
   }
   function onNavKey(e: KeyboardEvent) {
+    if (isTypingTarget(e.target)) return
+    if (
+      e.key.toLowerCase() === 'a'
+      && !e.altKey
+      && !e.ctrlKey
+      && !e.metaKey
+    ) {
+      setAgentPointHeld(true)
+      return
+    }
     if (!e.altKey) return
     if (e.key === 'ArrowLeft') {
       e.preventDefault()
@@ -797,6 +891,12 @@
       e.preventDefault()
       goForward()
     }
+  }
+  function onWorkspaceKeyUp(e: KeyboardEvent) {
+    if (e.key.toLowerCase() === 'a') setAgentPointHeld(false)
+  }
+  function onWindowBlur() {
+    setAgentPointHeld(false)
   }
 
   function goTo(idx: number) {
@@ -845,6 +945,8 @@
     window.addEventListener('pagehide', beaconFlush)
     window.addEventListener('mouseup', onNavMouse)
     window.addEventListener('keydown', onNavKey)
+    window.addEventListener('keyup', onWorkspaceKeyUp)
+    window.addEventListener('blur', onWindowBlur)
     document.addEventListener('visibilitychange', flushIfHidden)
   })
 
@@ -885,10 +987,13 @@
   onDestroy(() => {
     subscription?.close()
     canvasEl?.removeEventListener('contextmenu', onCanvasContextMenu)
+    canvasEl?.removeEventListener('mousedown', onAgentPointerMouseDown, true)
     window.removeEventListener('resize', resizeCanvas)
     window.removeEventListener('pagehide', beaconFlush)
     window.removeEventListener('mouseup', onNavMouse)
     window.removeEventListener('keydown', onNavKey)
+    window.removeEventListener('keyup', onWorkspaceKeyUp)
+    window.removeEventListener('blur', onWindowBlur)
     document.removeEventListener('visibilitychange', flushIfHidden)
     beaconFlush()
   })
@@ -1126,5 +1231,8 @@
     min-width: 0;
     height: 100%;
     background: var(--canvas-bg);
+  }
+  canvas.agent-pointing {
+    cursor: crosshair !important;
   }
 </style>
