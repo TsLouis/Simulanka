@@ -35,15 +35,19 @@
   let open = false
   let lastRefCount = 0
   let dragActive = false
+  let composerEl: HTMLTextAreaElement | null = null
 
   $: hasContext = refs.length > 0
 
   // Explicit attachment is a direct-manipulation gesture: when the user points
-  // an object at the Agent, reveal the small composer immediately. Removing a
-  // ref never forces the UI open or closed.
+  // an object at the Agent, reveal the small composer and hand keyboard focus to
+  // it. `A + click → type → Enter` therefore stays one continuous interaction.
   $: {
     const nextRefCount = refs.length
-    if (nextRefCount > lastRefCount) open = true
+    if (nextRefCount > lastRefCount) {
+      open = true
+      queueMicrotask(() => composerEl?.focus())
+    }
     lastRefCount = nextRefCount
   }
 
@@ -62,6 +66,7 @@
     const message = text
     text = ''
     void controller.sendMessage(message)
+    queueMicrotask(() => composerEl?.focus())
   }
 
   function onKeydown(e: KeyboardEvent) {
@@ -104,6 +109,7 @@
       )
     }
     open = true
+    queueMicrotask(() => composerEl?.focus())
   }
 </script>
 
@@ -235,6 +241,7 @@
 
       <div class="composer">
         <textarea
+          bind:this={composerEl}
           rows="2"
           placeholder={readOnly ? 'This discussion is read only' : hasContext ? 'Ask about these objects…' : 'Ask anything…'}
           bind:value={text}
@@ -266,7 +273,7 @@
     on:dragover={onDragOver}
     on:dragleave={onDragLeave}
     on:drop={onDrop}
-    on:click={() => { if (open) close(); else open = true }}
+    on:click={() => { if (open) close(); else { open = true; queueMicrotask(() => composerEl?.focus()) } }}
   >
     <span class="pet-face" aria-hidden="true">
       <i></i><i></i>
