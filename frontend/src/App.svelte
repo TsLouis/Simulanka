@@ -275,6 +275,20 @@
     return true
   }
 
+  function pointPortToAgent(port: PortDTO, nodeName: string): boolean {
+    const action = contextAttachAction(port)
+    if (action?.enabled !== true) {
+      status = action?.reason ?? '这个 Port 当前不能加入 Agent context'
+      return false
+    }
+    agent.addPendingRef(
+      { kind: 'port', ref_id: port.id },
+      `port · ${nodeName}/${port.name}`,
+    )
+    status = `Agent ← ${nodeName}/${port.name}`
+    return true
+  }
+
   function pointEdgeToAgent(edge: EdgeDTO): boolean {
     const action = contextAttachAction(edge)
     if (action?.enabled !== true) {
@@ -319,13 +333,33 @@
     const dto = hit
       ? ((hit as unknown as { simulanka?: NodeDTO }).simulanka ?? null)
       : null
-    if (!dto) return
+    if (!hit || !dto) return
+
+    const nodeView = hit as unknown as {
+      getSlotInPosition?: (
+        x: number,
+        y: number,
+      ) => { input?: unknown; output?: unknown; slot: number } | null
+      simulanka_in_ports?: string[]
+      simulanka_out_ports?: string[]
+    }
+    const slot = nodeView.getSlotInPosition?.(pos[0], pos[1]) ?? null
+    const portId = slot?.input
+      ? nodeView.simulanka_in_ports?.[slot.slot]
+      : slot?.output
+        ? nodeView.simulanka_out_ports?.[slot.slot]
+        : undefined
+    const port = portId ? portsById.get(portId) : undefined
 
     // `A + click` is a pointing gesture, not selection or movement. Consume the
     // click before LiteGraph can begin a drag; the graph itself stays unchanged.
     e.preventDefault()
-    e.stopPropagation()
-    pointNodeToAgent(dto)
+    e.stopImmediatePropagation()
+    if (port) {
+      pointPortToAgent(port, dto.name)
+    } else {
+      pointNodeToAgent(dto)
+    }
   }
 
   // --- S7 就地裁决：链接中心点点击 → 锚定菜单 → server 人侧端点 --------------
