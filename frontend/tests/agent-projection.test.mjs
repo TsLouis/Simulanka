@@ -159,3 +159,24 @@ test('projection protocol is stripped from human-readable transcript text', () =
   })}\n\nMore prose.`
   assert.equal(stripProjectionBlocks(raw), 'Answer first.\n\nMore prose.')
 })
+
+test('projection fenced JSON can stream across multiple agent_text chunks', () => {
+  const projection = conversationProjectionFromEvents([
+    userEvent([{ kind: 'node', ref_id: 'n1' }]),
+    { type: 'agent_text', text: 'Look here.\n\n```simulanka-projection\n{"kind":"attention",' },
+    { type: 'agent_text', text: '"refs":[{"kind":"node","ref_id":"n1"}]}' },
+    { type: 'agent_text', text: '\n```' },
+  ])
+
+  assert.equal(projection.text, 'Look here.')
+  assert.deepEqual(projection.visuals, [{
+    kind: 'attention',
+    refs: [{ kind: 'node', ref_id: 'n1' }],
+    label: null,
+  }])
+})
+
+test('an unfinished projection fence never leaks partial protocol JSON into visible text', () => {
+  const raw = 'Readable answer.\n\n```simulanka-projection\n{"kind":"annotation"'
+  assert.equal(stripProjectionBlocks(raw), 'Readable answer.')
+})
