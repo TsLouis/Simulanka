@@ -1,5 +1,5 @@
 <script lang="ts">
-  import './agent-canvas-projection'
+  import { setPendingAgentRefs } from './agent-pending-context'
   import type { AgentSessionController } from './agent-session'
   import {
     conversationProjectionFromEvents,
@@ -13,6 +13,7 @@
   $: busy = $controller.busy
   $: readOnly = $controller.readOnly
   $: refs = $controller.pendingRefs
+  $: setPendingAgentRefs(refs.map(({ kind, ref_id }) => ({ kind, ref_id })))
   $: preview = $controller.preview
   $: previewBusy = $controller.previewBusy
   $: previewError = $controller.previewError
