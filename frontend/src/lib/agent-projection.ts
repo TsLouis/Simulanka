@@ -47,10 +47,11 @@ let activeProjection: ConversationProjection = EMPTY_PROJECTION
 const listeners = new Set<(projection: ConversationProjection) => void>()
 const FENCE = '```'
 const PROJECTION_LABEL = 'simulanka-projection'
-const MAX_VISUALS = 8
+const MAX_VISUALS = 4
 const MAX_REFS = 24
-const MAX_DRAFT_NODES = 10
-const MAX_DRAFT_EDGES = 18
+const MAX_ATTENTION_REFS = 12
+const MAX_DRAFT_NODES = 6
+const MAX_DRAFT_EDGES = 8
 
 function isContextRef(value: unknown): value is ContextRefDTO {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
@@ -142,6 +143,25 @@ function allowedRef(value: unknown, allowed: Map<string, ContextRefDTO>): Contex
   return allowed.get(refKey(value)) ?? null
 }
 
+function uniqueAllowedRefs(
+  values: unknown[],
+  allowed: Map<string, ContextRefDTO>,
+  max: number,
+): ContextRefDTO[] {
+  const refs: ContextRefDTO[] = []
+  const seen = new Set<string>()
+  for (const candidate of values) {
+    const ref = allowedRef(candidate, allowed)
+    if (!ref) continue
+    const key = refKey(ref)
+    if (seen.has(key)) continue
+    seen.add(key)
+    refs.push(ref)
+    if (refs.length >= max) break
+  }
+  return refs
+}
+
 function parseVisual(
   value: unknown,
   allowed: Map<string, ContextRefDTO>,
@@ -150,17 +170,18 @@ function parseVisual(
   const item = value as Record<string, unknown>
 
   if (item.kind === 'attention') {
-    const refs = (Array.isArray(item.refs) ? item.refs : [])
-      .map(candidate => allowedRef(candidate, allowed))
-      .filter((ref): ref is ContextRefDTO => ref !== null)
-      .slice(0, MAX_REFS)
+    const refs = uniqueAllowedRefs(
+      Array.isArray(item.refs) ? item.refs : [],
+      allowed,
+      MAX_ATTENTION_REFS,
+    )
     if (refs.length === 0) return null
-    return { kind: 'attention', refs, label: smallString(item.label, 100) }
+    return { kind: 'attention', refs, label: smallString(item.label, 72) }
   }
 
   if (item.kind === 'annotation') {
     const target = allowedRef(item.target, allowed)
-    const text = smallString(item.text)
+    const text = smallString(item.text, 160)
     if (!target || !text) return null
     return { kind: 'annotation', target, text }
   }
@@ -168,30 +189,38 @@ function parseVisual(
   if (item.kind === 'draft_graph') {
     const anchor = allowedRef(item.anchor, allowed)
     if (!anchor) return null
-    const nodes = (Array.isArray(item.nodes) ? item.nodes : [])
-      .slice(0, MAX_DRAFT_NODES)
-      .map((candidate): AgentDraftGraphNode | null => {
-        if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return null
-        const node = candidate as Record<string, unknown>
-        const id = smallString(node.id, 60)
-        const label = smallString(node.label, 90)
-        if (!id || !label) return null
-        return { id, label, type: smallString(node.type, 50) }
-      })
-      .filter((node): node is AgentDraftGraphNode => node !== null)
+
+    const nodes: AgentDraftGraphNode[] = []
+    const nodeIds = new Set<string>()
+    const rawNodes = Array.isArray(item.nodes) ? item.nodes : []
+    for (const candidate of rawNodes) {
+      if (nodes.length >= MAX_DRAFT_NODES) break
+      if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue
+      const node = candidate as Record<string, unknown>
+      const id = smallString(node.id, 48)
+      const label = smallString(node.label, 64)
+      if (!id || !label || nodeIds.has(id)) continue
+      nodeIds.add(id)
+      nodes.push({ id, label, type: smallString(node.type, 40) })
+    }
     if (nodes.length === 0) return null
-    const nodeIds = new Set(nodes.map(node => node.id))
-    const edges = (Array.isArray(item.edges) ? item.edges : [])
-      .slice(0, MAX_DRAFT_EDGES)
-      .map((candidate): AgentDraftGraphEdge | null => {
-        if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return null
-        const edge = candidate as Record<string, unknown>
-        const src = smallString(edge.src, 60)
-        const dst = smallString(edge.dst, 60)
-        if (!src || !dst || !nodeIds.has(src) || !nodeIds.has(dst)) return null
-        return { src, dst, label: smallString(edge.label, 70) }
-      })
-      .filter((edge): edge is AgentDraftGraphEdge => edge !== null)
+
+    const edges: AgentDraftGraphEdge[] = []
+    const seenEdges = new Set<string>()
+    const rawEdges = Array.isArray(item.edges) ? item.edges : []
+    for (const candidate of rawEdges) {
+      if (edges.length >= MAX_DRAFT_EDGES) break
+      if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue
+      const edge = candidate as Record<string, unknown>
+      const src = smallString(edge.src, 48)
+      const dst = smallString(edge.dst, 48)
+      if (!src || !dst || !nodeIds.has(src) || !nodeIds.has(dst)) continue
+      const label = smallString(edge.label, 48)
+      const key = `${src}\u0000${dst}\u0000${label ?? ''}`
+      if (seenEdges.has(key)) continue
+      seenEdges.add(key)
+      edges.push({ src, dst, label })
+    }
     return { kind: 'draft_graph', anchor, nodes, edges }
   }
 
