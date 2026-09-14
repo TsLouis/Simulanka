@@ -13,7 +13,7 @@ Node editor 的基础交互不重新发明。ComfyUI 作为成熟参考基线：
 - 打开项目时主要看到 Graph，而不是工具面板。
 - Node 在不同 zoom 下显示恰当的信息密度；Port 是节点正常结构的一部分，其 handle 始终可见，远距离只隐藏文字与非必要详情。
 - Node/Port/connection 的基础交互尽量遵循 ComfyUI/LiteGraph 的成熟范式，降低学习成本和实现风险。
-- 选择对象后即可轻量 Ask/Open，不要求先打开永久 Inspector/Chat。
+- 选择对象后即可轻量 Ask / Trace / Inspect，不要求先打开永久 Inspector/Chat。
 - 用户可通过一个连续、可组合的 pointing 手势把一个或多个 Node/Port/Edge 明确指给 Agent。
 - Agent 能围绕 node/edge/port/selection 工作，并用图上 Draft/annotation/attention 表达想法。
 - 产品语言简洁，内部安全、审计和来源信息仍可追溯。
@@ -66,11 +66,17 @@ Port 不是“详情属性”，而是 Node 的结构轮廓。所有 zoom 下，
 
 root boundary IO 仍遵守现有括号/隧道规则；本 change 只统一其视觉语言。
 
-### 5. Selection reveals context, not a permanent panel
+### 5. Selection reveals object actions, not a permanent panel
 
-单击对象先高亮对象及相关关系，并显示小型 contextual controls，例如 Ask、Open、more。完整 Inspector 只在 Open、快捷键或明确请求时出现。
+单击对象先高亮对象及相关关系，并显示小型 contextual controls。通用对象语法固定为：
 
-Inspector 继续由 PresentationSpec 与 affordance 驱动；只是默认可见性降低，不削弱能力。
+- **Ask**：把 exact object Ref 明确加入 Agent pending context；这是 AI interpretation 路径。
+- **Trace**：读取系统已有的确定性 provenance/lineage；不调用 Agent，也不得用模型推测冒充系统证据。只有存在确定性 trace resolver 的对象才显示。
+- **Inspect**：查看对象本身的 interface、attrs、状态与技术详情；不改变 semantic graph。
+
+Node 当前可使用 `Ask / Trace / Inspect`。没有独立 edge provenance resolver 的 Edge 使用 `Ask / Inspect`；Port 在 Interface 中使用 `Ask / Inspect`。对象专属写动作（如 Edge Keep/Dismiss/verdict、Node Rename/Delete）与这三个通用动词分层，并继续由 server affordances 驱动。
+
+完整 Inspector 只在 Inspect、快捷键或明确请求时出现。Inspector 继续由 PresentationSpec 与 affordance 驱动；只是默认可见性降低，不削弱能力。
 
 ### 6. Agent Companion is a surface, not a new semantic entity
 
@@ -78,7 +84,7 @@ Companion 是 UI sidecar，不成为 Node/Edge/Port/Profile。它代表当前可
 
 主要显式 context 手势是 **hold `A` → 连续点击一个或多个 Node/Port/Edge → release `A` → 输入问题**。A 保持按下期间，每次命中只把对应、且 server 允许 `context.attach` 的 exact Ref 累积进同一个 pending RefSet；不会自动加入邻居、祖先或 viewport，也不会移动/编辑被点击对象。收集期间 Companion 只更新计数、不抢键盘焦点；松开 A 且本次确有新增 Ref 后才把焦点交给 composer。
 
-对象 surface 上的 `Ask Agent` / selection Attach 是备用的显式入口，进入相同 pending RefSet。旧 drag-to-Pet/typed-DnD 路径在 pointer 手势实测通过后删除，避免维护第二套不自然的对象指向模型。
+对象 surface 上的 `Ask` / selection Attach 是备用的显式入口，进入相同 pending RefSet。旧 drag-to-Pet/typed-DnD 路径在 pointer 手势实测通过后删除，避免维护第二套不自然的对象指向模型。
 
 ### 7. Graph-native expression has three persistence levels
 
@@ -92,9 +98,11 @@ Agent 输出分为：
 
 正式 semantic graph 仍只能由 server/kernel 权威写入。
 
-### 8. Product language hides mechanism terms
+### 8. Product language hides mechanism terms without conflating capabilities
 
-UI 默认使用：Draft、Keep、Dismiss、Context、Why、Related、Needs attention。底层字段可继续叫 proposed、verdict、provenance 等；高级详情/调试界面可显示原始字段。
+UI 默认使用：Ask、Trace、Inspect、Draft、Keep、Dismiss、Context、Needs attention。底层字段可继续叫 proposed、verdict、provenance 等；高级详情/调试界面可显示原始字段。
+
+产品语言简化机制，但不能把不同能力混成一个词：Ask 属于 Agent；Trace 属于 deterministic graph evidence；Inspect 属于 object detail。一个对象没有 Trace 能力时就不显示 Trace，而不是退化成 Agent 猜测。
 
 ### 9. Trust model changes incrementally
 
@@ -116,6 +124,7 @@ UI 默认使用：Draft、Keep、Dismiss、Context、Why、Related、Needs atten
 ## Risks / Trade-offs
 
 - [隐藏机制导致用户不知道发生了什么] → 关键变更提供局部反馈、Undo/详情入口和可追溯来源。
+- [Ask/Trace/Inspect 看起来类似] → 用能力边界严格区分：Ask=Agent、Trace=deterministic provenance、Inspect=object details；缺能力则不显示对应动作。
 - [zoom 信息密度抖动] → 使用稳定阈值；Port handle 不参与显示/隐藏切换，只有 label/detail 变化。
 - [Port 在远景过密] → 参考 ComfyUI：保留所有 handle，简化形状并隐藏文字；通过节点尺寸和行间距保持多个 Port 可分辨。
 - [成熟范式与 Simulanka 特殊语义冲突] → 默认服从 ComfyUI/LiteGraph 基线，只有 Registry eligibility、边界投影、Agent Draft 等确有语义差异时扩展。
@@ -130,7 +139,7 @@ UI 默认使用：Draft、Keep、Dismiss、Context、Why、Related、Needs atten
 1. 建立 Frontend v2 shell 与设计 tokens，不改变 server API。
 2. 抽离默认常驻面板的布局依赖；完整 Inspector 按需打开，Session 历史迁入 Companion 的按需 discussion surface，删除旧聊天窗口组件。
 3. 对齐 ComfyUI-style Node/Port 基线：所有 Port handle 常驻、低 zoom 只隐藏 label/detail、Node 尺寸尊重 Port 数量、原生连线反馈优先保留。
-4. 增加 selection ContextPopover 与 Ask/Open 流程，并用 A-pointer 统一显式多对象指向。
+4. 增加统一 `Ask / Trace / Inspect` object interaction，并用 A-pointer 统一显式多对象指向；对象专属写动作继续走 server affordances。
 5. 增加 Agent Companion，复用现有 session/context API；移除验证失败/冗余的 drag-to-Pet interaction path。
 6. 增加 Attention/Annotation/Draft projection，优先映射现有 proposed semantics；解释性 draft_graph 保持 conversation sidecar。
 7. 运行前端与后端回归，更新 authoritative `docs/frontend.md`。
