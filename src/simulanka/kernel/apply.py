@@ -378,10 +378,18 @@ def _handle_create_port(
     *,
     prefix: str,
 ) -> list[str]:
-    try:
-        node = resolve_node(layout, op.node)
-    except ValueError as exc:
-        return [f"{prefix}: {exc}"]
+    if op.node.startswith("@"):
+        node = pending.refs.get(op.node[1:])
+        if node is None:
+            return [
+                f"{prefix}: unknown ref `{op.node}` "
+                "(no earlier create_node declared it)."
+            ]
+    else:
+        try:
+            node = resolve_node(layout, op.node)
+        except ValueError as exc:
+            return [f"{prefix}: {exc}"]
 
     existing = list_ports_of(layout, node.id) + [p for p in pending.ports if p.node_id == node.id]
     port = Port(
