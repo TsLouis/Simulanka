@@ -65,7 +65,7 @@
 
 ## 9. Verification, performance and docs
 
-- [ ] 9.1 Re-run frontend tests/type/build checks after the latest pointer gesture, zoom readability, graph-loop, structured projection, Companion and transcript changes. Cleanup checkpoint passed earlier, but current head needs fresh verification; no GitHub Actions run exists for the current HEAD.
+- [x] 9.1 Frontend CI now runs `npm ci`, `npm test`, `npm run check`, and `npm run build` on frontend PR changes. The first run on the current Frontend v2 branch passed all four stages after the pointer, zoom, graph-loop, structured projection, Companion and transcript changes.
 - [ ] 9.2 Run backend regression tests for Registry/affordance/session/context contracts touched by the UI integration.
 - [x] 9.3 GitNexus detect-changes skipped for this user-authorized iteration.
 - [ ] 9.4 Manually verify default canvas, readable Node identity across working/overview zoom, persistent independent Ports, no semantic-node port collapse, datatype link colours, search gestures, selection attention/actions, continuous hold-A multi-object pointing on Node/Port/Edge, text-entry isolation, explicit Ask fallback, Draft presentation, turn-scoped fallback projection, structured attention/annotation, and structured draft-graph rendering.
