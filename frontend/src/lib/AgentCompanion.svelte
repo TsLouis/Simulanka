@@ -20,6 +20,22 @@
   $: turnProjection = conversationProjectionFromEvents($controller.events)
   $: setConversationProjection(turnProjection)
   $: projectedRefCount = turnProjection.refs.length
+  $: attentionCount = turnProjection.visuals
+    .filter(visual => visual.kind === 'attention')
+    .reduce((count, visual) => count + (visual.kind === 'attention' ? visual.refs.length : 0), 0)
+  $: annotationCount = turnProjection.visuals.filter(visual => visual.kind === 'annotation').length
+  $: draftCount = turnProjection.visuals.filter(visual => visual.kind === 'draft_graph').length
+  $: projectionSummary = [
+    attentionCount > 0
+      ? `pointed to ${attentionCount} object${attentionCount === 1 ? '' : 's'}`
+      : null,
+    annotationCount > 0
+      ? `left ${annotationCount} note${annotationCount === 1 ? '' : 's'} on the graph`
+      : null,
+    draftCount > 0
+      ? `sketched ${draftCount} idea${draftCount === 1 ? '' : 's'}`
+      : null,
+  ].filter(Boolean).join(' · ')
   $: feedback = $controller.events.findLast(
     event => event.type === 'agent_text' || event.type === 'error',
   )
@@ -166,7 +182,7 @@
 
       {#if discussionOpen}
         <SessionHistory {controller} onRecovery={openRecovery} />
-      {:else if feedbackText}
+      {:else if feedbackText || projectionSummary}
         <button
           class="feedback"
           class:error={feedback?.type === 'error'}
@@ -174,7 +190,14 @@
           title="打开完整讨论"
         >
           <span class="feedback-mark">{feedback?.type === 'error' ? '!' : '✦'}</span>
-          <span>{feedbackText.length > 180 ? `${feedbackText.slice(0, 180)}…` : feedbackText}</span>
+          <span class="feedback-copy">
+            {#if feedbackText}
+              <span>{feedbackText.length > 180 ? `${feedbackText.slice(0, 180)}…` : feedbackText}</span>
+            {/if}
+            {#if projectionSummary}
+              <small>{projectionSummary}</small>
+            {/if}
+          </span>
         </button>
       {/if}
 
@@ -316,7 +339,7 @@
     width: calc(100% - 20px);
     margin: 8px 10px 0;
     padding: 7px;
-    max-height: 64px;
+    max-height: 72px;
     overflow: auto;
     text-align: left;
     overflow-wrap: anywhere;
@@ -328,6 +351,16 @@
     font-size: 11px;
   }
   .feedback-mark { flex: 0 0 auto; color: var(--violet); font-family: var(--font-mono); }
+  .feedback-copy {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .feedback-copy small {
+    color: var(--violet);
+    font: 9px var(--font-mono);
+  }
   .feedback.error,
   .feedback.error .feedback-mark { color: var(--red); }
 
