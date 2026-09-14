@@ -16,7 +16,7 @@
 
 #### Scenario: 选择普通节点
 - **WHEN** 用户单击一个有可用 affordances 的节点
-- **THEN** UI 可显示轻量 `Ask / Open / more` 控件，more 中的动作仍由 server affordances 决定
+- **THEN** UI 可显示轻量 `Ask / Trace / Inspect` 对象动作；其他写入/领域动作仍来自 server affordances 或 affordance-driven overflow，不得由节点类型硬编码
 
 ## ADDED Requirements
 
@@ -56,9 +56,24 @@
 - **WHEN** 一个节点存在 `data/config` 输入和 `result/log` 输出
 - **THEN** 在任意 zoom 下都能看见 4 个独立 Port handle；detail zoom 再显示对应 Port 名称和语义，用户可从兼容 Port 建立连接
 
+### Requirement: 对象交互使用稳定的 Ask / Trace / Inspect 语法
+Node、Edge、Port 的轻量 object interaction SHALL 使用一致且不混淆的产品语义：`Ask` 表示把 exact Ref 显式加入 Agent context；`Trace` 表示调用系统已有的确定性 provenance/lineage 能力，不调用 Agent；`Inspect` 表示查看对象本身的结构、接口、attrs 或状态。`Trace` MUST 只在该对象存在可验证的系统 trace 能力时出现，不得为了视觉一致性用 Agent 推测替代。
+
+#### Scenario: Node 同时支持 Agent 与 provenance
+- **WHEN** 用户选择一个既可 `context.attach` 又可读取 provenance 的 Node
+- **THEN** UI 提供 `Ask / Trace / Inspect`；Ask 进入 pending Agent RefSet，Trace 展示系统查询得到的 upstream graph evidence，Inspect 展开该 Node 的接口和详情
+
+#### Scenario: Edge 没有独立 provenance resolver
+- **WHEN** 用户选择一条可附加给 Agent、但没有确定性 edge provenance 查询能力的 Edge
+- **THEN** UI 提供 `Ask / Inspect`，不得显示一个实际由 Agent 解释或猜测实现的假 `Trace`
+
+#### Scenario: Inspect Port
+- **WHEN** 用户在 Node Interface 中 Inspect 一个 Port
+- **THEN** UI 显示该 Port 的 direction、type、observed shape/confidence、id 与可访问 attrs；Inspect 本身不改变连接或 semantic graph
+
 ### Requirement: 选择对象先显示轻量上下文
-单击 Node/Edge/Port SHALL 优先产生局部高亮与轻量 contextual controls，而不是自动展开完整 Inspector 或切换到独立模式。用户 MUST 可以显式打开完整详情。
+单击 Node/Edge/Port SHALL 优先产生局部高亮与轻量 contextual controls，而不是自动展开完整 Inspector 或切换到独立模式。用户 MUST 可以显式 Inspect 完整详情。对象专属写动作（例如 Edge Keep/Dismiss/verdict）SHOULD 与通用 `Ask / Trace / Inspect` 层级分开，并继续由 server affordances 控制。
 
 #### Scenario: 选择 Edge
 - **WHEN** 用户单击一条 Edge
-- **THEN** Edge 与端点关系被突出，附近出现轻量可用动作；完整详情只在用户要求时出现
+- **THEN** Edge 与端点关系被突出，先提供 `Ask / Inspect` 等对象级动作；Keep/Dismiss/Needs attention 等 Edge 专属动作保持在 affordance-driven review 层，完整详情只在用户要求时出现
