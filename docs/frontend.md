@@ -49,7 +49,7 @@
 - **WorkspaceShell / TopBar / ActivityBar**：shell 承接布局与辅助面开关；TopBar 展示导航、breadcrumb 与状态，42px Activity Bar 统一进入 Inspector、Registry、Files、Discussion、Session recovery。辅助面默认关闭，按需浮现；Files 复用所选 file 或最后显式打开的文件。`App.svelte` 保留 loading/navigation/SSE/selection/graph actions，`agent-session.ts` 职责不变；Frontend v2 设计权威仍是现有 OpenSpec change。
 - **RegistryPanel**：Activity Bar 的 `Registry` 打开只读语义浏览器，直接显示当前 version/digest、可信 packages、capabilities/consumers、Node/Edge Profiles 与 Templates；内容只来自已经过 digest 对齐的 server descriptor。
 - **NodeInspector**：按 PresentationSpec 分组显示声明字段，并始终保留 attrs 检查能力；未知 Profile 显示 raw attrs。端口附加与节点上下文动作读取 affordances，不按类型判断。
-- **消息面（S8 Agent Companion）**：设计原则=**不出现领域工作流按钮，agent→人的一切都是消息**。`AgentCompanion.svelte` 负责当前 scope 的新树草稿、显式附加 node/edge/port refs，以及同一 Session 的发送/状态反馈；`agent-session.ts` controller 负责 tree/branch、provider、streaming、history、recovery 和生命周期动作。当前层级、当前选择与祖先都不会自动注入。Session tree 只保留 server scope 归属，不投影成 Canvas 窗口；fork 在按需展开的 history surface 内切换分支。首条消息懒创建 Provider Session；消息与工具事件持久化在 JSONL sidecar，刷新从 history 恢复。
+- **Agent Companion（S8）**：设计原则=**不出现领域工作流按钮；Agent 与人的交互以显式对象引用、短反馈和按需讨论/history surface 呈现**。`AgentCompanion.svelte` 负责当前 scope 的新树草稿、显式附加 node/edge/port refs，以及同一 Session 的发送/状态反馈；`agent-session.ts` controller 负责 tree/branch、provider、streaming、history、recovery 和生命周期动作。当前层级、当前选择与祖先都不会自动注入。Session tree 只保留 server scope 归属，不投影成 Canvas 窗口；fork 在按需展开的 history surface 内切换分支。首条消息懒创建 Provider Session；消息与工具事件持久化在 JSONL sidecar，刷新从 history 恢复。
 - **VerifyPanel / DiscussPanel——已删除（2026-07-14）**：顶栏「核对」按钮一并退役。就地裁决/跳转选中已随 S7 余项落地（2026-07-15，见下）。
 
 ## 写权矩阵（执行点在此层）
