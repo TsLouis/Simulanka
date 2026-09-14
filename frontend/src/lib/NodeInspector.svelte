@@ -13,17 +13,19 @@
   export let onAttachPort: (port: PortDTO) => void = () => {}
 
   let expanded = false
-  let contextOpen = false
+  let traceOpen = false
+  let inspectedPortId: string | null = null
   let lastNodeId: string | null = null
   let chain: ProvenanceHop[] = []
   let chainFor: string | null = null
-  let contextBusy = false
+  let traceBusy = false
 
   $: currentNodeId = node?.id ?? null
   $: if (currentNodeId !== lastNodeId) {
     lastNodeId = currentNodeId
     expanded = false
-    contextOpen = false
+    traceOpen = false
+    inspectedPortId = null
     chain = []
     chainFor = null
   }
@@ -76,10 +78,10 @@
     return String(v)
   }
 
-  async function toggleContext() {
-    contextOpen = !contextOpen
-    if (!contextOpen || !node || chainFor === node.id) return
-    contextBusy = true
+  async function toggleTrace() {
+    traceOpen = !traceOpen
+    if (!traceOpen || !node || chainFor === node.id) return
+    traceBusy = true
     const id = node.id
     chainFor = id
     try {
@@ -88,8 +90,12 @@
     } catch {
       if (node?.id === id) chain = []
     } finally {
-      if (node?.id === id) contextBusy = false
+      if (node?.id === id) traceBusy = false
     }
+  }
+
+  function togglePortInspect(portId: string) {
+    inspectedPortId = inspectedPortId === portId ? null : portId
   }
 </script>
 
@@ -105,22 +111,30 @@
         <button
           class="primary"
           disabled={!nodeAttachAction.enabled}
-          title={nodeAttachAction.enabled ? 'Point this node to the Agent' : nodeAttachAction.reason}
+          title={nodeAttachAction.enabled ? 'Ask the Agent about this node' : nodeAttachAction.reason}
           on:click={() => onAttachNode(node!)}
         >✦ Ask</button>
       {/if}
-      <button class:active={contextOpen} on:click={() => void toggleContext()} title="Why / Context">Why</button>
-      <button class:active={expanded} on:click={() => (expanded = !expanded)}>
-        {expanded ? 'Close' : 'Open'}
-      </button>
+      <button
+        class:active={traceOpen}
+        aria-expanded={traceOpen}
+        on:click={() => void toggleTrace()}
+        title="Trace this node through deterministic graph provenance"
+      >Trace</button>
+      <button
+        class:active={expanded}
+        aria-expanded={expanded}
+        on:click={() => (expanded = !expanded)}
+        title="Inspect this node's interface and details"
+      >Inspect</button>
     </div>
 
-    {#if contextOpen}
-      <section class="context-strip">
-        {#if contextBusy}
-          <span class="muted">Tracing context…</span>
+    {#if traceOpen}
+      <section class="context-strip" aria-label="Node trace">
+        {#if traceBusy}
+          <span class="muted">Tracing…</span>
         {:else if chain.length > 1}
-          <span class="context-label">Related</span>
+          <span class="context-label">Trace</span>
           <div class="context-path">
             {#each chain.slice(1) as hop (hop.id)}
               <button class="context-hop" on:click={() => onJumpTo(hop.id)} title={`${hop.via_edge} · ${hop.id}`}>
@@ -130,13 +144,13 @@
             {/each}
           </div>
         {:else}
-          <span class="muted">No upstream context.</span>
+          <span class="muted">No upstream trace.</span>
         {/if}
       </section>
     {/if}
 
     {#if expanded}
-      <aside class="details">
+      <aside class="details" aria-label="Node inspector">
         <div class="detail-head">
           <div>
             <span class="eyebrow">{presentation?.category ?? 'node'}</span>
@@ -156,22 +170,45 @@
                   {@const attachAction = portAttachAction(port)}
                   {@const shape = portShape(port)}
                   {@const confidence = portConfidence(port)}
-                  <div class="port-row">
-                    <span class="port-dot in"></span>
-                    <div class="port-name">
-                      <strong>{portLabel(port) ?? port.name}</strong>
-                      <small>
-                        {portLabel(port) ? `${port.name} · ` : ''}{port.port_type || 'any'}{shape ? ` · ${shape}` : ''}{confidence ? ` · ${confidence}` : ''}
-                      </small>
+                  <div class="port-item" class:inspecting={inspectedPortId === port.id}>
+                    <div class="port-row">
+                      <span class="port-dot in"></span>
+                      <div class="port-name">
+                        <strong>{portLabel(port) ?? port.name}</strong>
+                        <small>
+                          {portLabel(port) ? `${port.name} · ` : ''}{port.port_type || 'any'}{shape ? ` · ${shape}` : ''}{confidence ? ` · ${confidence}` : ''}
+                        </small>
+                      </div>
+                      <div class="port-actions">
+                        {#if attachAction}
+                          <button
+                            class="port-action ask"
+                            disabled={!attachAction.enabled}
+                            title={attachAction.enabled ? 'Ask the Agent about this input' : attachAction.reason}
+                            on:click={() => onAttachPort(port)}
+                          >Ask</button>
+                        {/if}
+                        <button
+                          class="port-action"
+                          class:active={inspectedPortId === port.id}
+                          aria-expanded={inspectedPortId === port.id}
+                          on:click={() => togglePortInspect(port.id)}
+                        >Inspect</button>
+                      </div>
                     </div>
-                    {#if attachAction}
-                      <button
-                        class="icon-button"
-                        disabled={!attachAction.enabled}
-                        title={attachAction.enabled ? 'Point this input to the Agent' : attachAction.reason}
-                        aria-label={`Ask Agent about input ${port.name}`}
-                        on:click={() => onAttachPort(port)}
-                      >✦</button>
+                    {#if inspectedPortId === port.id}
+                      <div class="port-inspect">
+                        <dl>
+                          <dt>id</dt><dd><code>{port.id}</code></dd>
+                          <dt>direction</dt><dd>input</dd>
+                          <dt>type</dt><dd>{port.port_type || 'any'}</dd>
+                          {#if shape}<dt>shape</dt><dd>{shape}</dd>{/if}
+                          {#if confidence}<dt>confidence</dt><dd>{confidence}</dd>{/if}
+                        </dl>
+                        {#if Object.keys(port.attrs).length > 0}
+                          <pre>{formatVal(port.attrs)}</pre>
+                        {/if}
+                      </div>
                     {/if}
                   </div>
                 {/each}
@@ -183,22 +220,45 @@
                   {@const attachAction = portAttachAction(port)}
                   {@const shape = portShape(port)}
                   {@const confidence = portConfidence(port)}
-                  <div class="port-row">
-                    <span class="port-dot out"></span>
-                    <div class="port-name">
-                      <strong>{portLabel(port) ?? port.name}</strong>
-                      <small>
-                        {portLabel(port) ? `${port.name} · ` : ''}{port.port_type || 'any'}{shape ? ` · ${shape}` : ''}{confidence ? ` · ${confidence}` : ''}
-                      </small>
+                  <div class="port-item" class:inspecting={inspectedPortId === port.id}>
+                    <div class="port-row">
+                      <span class="port-dot out"></span>
+                      <div class="port-name">
+                        <strong>{portLabel(port) ?? port.name}</strong>
+                        <small>
+                          {portLabel(port) ? `${port.name} · ` : ''}{port.port_type || 'any'}{shape ? ` · ${shape}` : ''}{confidence ? ` · ${confidence}` : ''}
+                        </small>
+                      </div>
+                      <div class="port-actions">
+                        {#if attachAction}
+                          <button
+                            class="port-action ask"
+                            disabled={!attachAction.enabled}
+                            title={attachAction.enabled ? 'Ask the Agent about this output' : attachAction.reason}
+                            on:click={() => onAttachPort(port)}
+                          >Ask</button>
+                        {/if}
+                        <button
+                          class="port-action"
+                          class:active={inspectedPortId === port.id}
+                          aria-expanded={inspectedPortId === port.id}
+                          on:click={() => togglePortInspect(port.id)}
+                        >Inspect</button>
+                      </div>
                     </div>
-                    {#if attachAction}
-                      <button
-                        class="icon-button"
-                        disabled={!attachAction.enabled}
-                        title={attachAction.enabled ? 'Point this output to the Agent' : attachAction.reason}
-                        aria-label={`Ask Agent about output ${port.name}`}
-                        on:click={() => onAttachPort(port)}
-                      >✦</button>
+                    {#if inspectedPortId === port.id}
+                      <div class="port-inspect">
+                        <dl>
+                          <dt>id</dt><dd><code>{port.id}</code></dd>
+                          <dt>direction</dt><dd>output</dd>
+                          <dt>type</dt><dd>{port.port_type || 'any'}</dd>
+                          {#if shape}<dt>shape</dt><dd>{shape}</dd>{/if}
+                          {#if confidence}<dt>confidence</dt><dd>{confidence}</dd>{/if}
+                        </dl>
+                        {#if Object.keys(port.attrs).length > 0}
+                          <pre>{formatVal(port.attrs)}</pre>
+                        {/if}
+                      </div>
                     {/if}
                   </div>
                 {/each}
@@ -269,7 +329,7 @@
     flex-direction: column;
     align-items: flex-end;
     gap: 6px;
-    max-width: min(430px, calc(100% - 28px));
+    max-width: min(520px, calc(100% - 28px));
     color: var(--text);
     font-size: 12px;
     pointer-events: none;
@@ -411,12 +471,15 @@
     grid-template-columns: 1fr 1fr;
     gap: 12px;
   }
+  .port-item {
+    border-bottom: 1px solid rgba(43, 59, 96, 0.35);
+  }
+  .port-item.inspecting { background: rgba(105, 184, 242, 0.035); }
   .port-row {
     display: flex;
     align-items: center;
     gap: 6px;
-    min-height: 31px;
-    border-bottom: 1px solid rgba(43, 59, 96, 0.35);
+    min-height: 34px;
   }
   .port-dot {
     flex: 0 0 auto;
@@ -447,11 +510,41 @@
     color: var(--muted);
     font: 8px var(--font-mono);
   }
-  .icon-button {
-    min-width: 22px;
+  .port-actions {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 3px;
+  }
+  .port-action {
+    min-width: auto;
     min-height: 22px;
-    padding: 0;
-    color: var(--violet);
+    padding: 1px 5px;
+    font-size: 9px;
+  }
+  .port-action.ask { color: var(--violet); }
+  .port-inspect {
+    padding: 6px 6px 8px 12px;
+    border-top: 1px solid rgba(43, 59, 96, 0.24);
+  }
+  .port-inspect dl {
+    display: grid;
+    grid-template-columns: 62px minmax(0, 1fr);
+    gap: 3px 6px;
+    margin: 0;
+  }
+  .port-inspect code { font: 8px var(--font-mono); color: var(--muted); }
+  .port-inspect pre {
+    margin: 7px 0 0;
+    padding: 5px 6px;
+    max-height: 110px;
+    overflow: auto;
+    border: 1px solid var(--hairline-2);
+    border-radius: 3px;
+    background: var(--panel-3);
+    color: #a9b9cf;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font: 8px/1.4 var(--font-mono);
   }
   .actions { display: flex; flex-wrap: wrap; gap: 5px; }
   .facts dl,
