@@ -1,9 +1,9 @@
 <script lang="ts">
   import type { AffordanceDTO, EdgeDTO } from './types'
 
-  // The server still owns the exact verdict/write-authority contract. This
-  // component deliberately translates that machinery into lightweight product
-  // language: keep, dismiss, needs attention, and explicit Agent context.
+  // Object-level interaction stays small and consistent: Ask talks to the Agent,
+  // Inspect reveals the edge itself. Edge-specific write/review actions remain
+  // below and continue to map directly to server affordances.
   export let x: number
   export let y: number
   export let edge: EdgeDTO
@@ -41,9 +41,23 @@
     return null
   }
 
+  function formatVal(value: unknown): string {
+    if (typeof value === 'string') return value
+    if (value === null || value === undefined) return String(value)
+    if (typeof value === 'object') {
+      try {
+        return JSON.stringify(value, null, 2)
+      } catch {
+        return String(value)
+      }
+    }
+    return String(value)
+  }
+
   let menuEl: HTMLDivElement
-  $: left = Math.min(x, window.innerWidth - 270)
-  $: top = Math.min(y, window.innerHeight - 250)
+  let inspecting = false
+  $: left = Math.min(x, window.innerWidth - 292)
+  $: top = Math.min(y, window.innerHeight - (inspecting ? 430 : 300))
 
   function onKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') {
@@ -66,66 +80,99 @@
     <span class="edge-type">{edge.type}</span>
   </div>
 
+  <div class="object-actions" aria-label="Edge actions">
+    {#if attachAction}
+      <button
+        class="object-action ask"
+        class:disabled={!attachAction.enabled}
+        disabled={!attachAction.enabled}
+        title={attachAction.enabled ? 'Ask the Agent about this edge' : attachAction.reason}
+        on:click={onAttach}
+      >✦ Ask</button>
+    {/if}
+    <button
+      class="object-action"
+      class:active={inspecting}
+      aria-expanded={inspecting}
+      title="Inspect this edge"
+      on:click={() => (inspecting = !inspecting)}
+    >Inspect</button>
+  </div>
+
+  {#if inspecting}
+    <section class="inspect-panel" aria-label="Edge inspector">
+      <dl>
+        <dt>id</dt><dd><code>{edge.id}</code></dd>
+        <dt>type</dt><dd>{edge.type}</dd>
+        <dt>source</dt><dd>{source}</dd>
+        <dt>from</dt><dd>{srcName}<small>{edge.src}</small></dd>
+        <dt>to</dt><dd>{dstName}<small>{edge.dst}</small></dd>
+        {#if edge.src_port}<dt>src port</dt><dd><code>{edge.src_port}</code></dd>{/if}
+        {#if edge.dst_port}<dt>dst port</dt><dd><code>{edge.dst_port}</code></dd>{/if}
+        {#if str('status')}<dt>status</dt><dd>{str('status')}</dd>{/if}
+        {#if verdict}<dt>verdict</dt><dd>{verdict}{verdictBy ? ` · ${verdictBy}` : ''}</dd>{/if}
+      </dl>
+      {#if Object.keys(edge.attrs).length > 0}
+        <details class="attrs">
+          <summary>Attributes · {Object.keys(edge.attrs).length}</summary>
+          <pre>{formatVal(edge.attrs)}</pre>
+        </details>
+      {/if}
+    </section>
+  {/if}
+
   {#if reviewLabel(verdict)}
     <div class="state">
       {reviewLabel(verdict)}{#if verdictBy}<span> · {verdictBy}</span>{/if}
     </div>
   {/if}
 
-  {#if canAccept}
-    <button
-      class="row keep"
-      title={acceptAction?.label ?? 'Keep suggestion'}
-      on:click={onAccept}
-    >✓ Keep suggestion</button>
-  {/if}
+  <div class="review-actions" aria-label="Edge review actions">
+    {#if canAccept}
+      <button
+        class="row keep"
+        title={acceptAction?.label ?? 'Keep suggestion'}
+        on:click={onAccept}
+      >✓ Keep suggestion</button>
+    {/if}
 
-  {#if verdictAction}
-    {#if verdictAction.enabled}
-      {#if !canAccept}
-        <button class="row keep" on:click={() => onVerdict('correct')}>✓ Looks right</button>
+    {#if verdictAction}
+      {#if verdictAction.enabled}
+        {#if !canAccept}
+          <button class="row keep" on:click={() => onVerdict('correct')}>✓ Looks right</button>
+        {/if}
+        <button class="row dismiss" on:click={() => onVerdict('wrong')}>
+          × {isDraft ? 'Dismiss suggestion' : 'Looks wrong'}
+        </button>
+        <button class="row" on:click={() => onVerdict('disputed')}>◇ Needs attention</button>
+      {:else}
+        <button class="row disabled" disabled title={disabledTitle(verdictAction)}>
+          Review unavailable<span class="reason">{verdictAction.reason}</span>
+        </button>
       {/if}
-      <button class="row dismiss" on:click={() => onVerdict('wrong')}>
-        × {isDraft ? 'Dismiss suggestion' : 'Looks wrong'}
-      </button>
-      <button class="row" on:click={() => onVerdict('disputed')}>◇ Needs attention</button>
-    {:else}
-      <button class="row disabled" disabled title={disabledTitle(verdictAction)}>
-        Review unavailable<span class="reason">{verdictAction.reason}</span>
+    {/if}
+
+    {#if discussAction}
+      <button
+        class="row quiet"
+        class:disabled={!discussAction.enabled}
+        disabled={!discussAction.enabled}
+        title={disabledTitle(discussAction)}
+        on:click={onToggleDiscuss}
+      >{inDiscuss ? 'Remove attention mark' : 'Mark for attention'}
+        {#if !discussAction.enabled}<span class="reason">{discussAction.reason}</span>{/if}
       </button>
     {/if}
-  {/if}
-
-  {#if attachAction}
-    <button
-      class="row agent"
-      class:disabled={!attachAction.enabled}
-      disabled={!attachAction.enabled}
-      title={attachAction.enabled ? 'Point this edge to the Agent' : attachAction.reason}
-      on:click={onAttach}
-    >✦ Ask Agent
-      {#if !attachAction.enabled}<span class="reason">{attachAction.reason}</span>{/if}
-    </button>
-  {/if}
-
-  {#if discussAction}
-    <button
-      class="row quiet"
-      class:disabled={!discussAction.enabled}
-      disabled={!discussAction.enabled}
-      title={disabledTitle(discussAction)}
-      on:click={onToggleDiscuss}
-    >{inDiscuss ? 'Remove attention mark' : 'Mark for attention'}
-      {#if !discussAction.enabled}<span class="reason">{discussAction.reason}</span>{/if}
-    </button>
-  {/if}
+  </div>
 </div>
 
 <style>
   .menu {
     position: fixed;
     z-index: 50;
-    width: 270px;
+    width: 292px;
+    max-height: min(78vh, 540px);
+    overflow: auto;
     box-sizing: border-box;
     padding: 5px;
     display: flex;
@@ -144,7 +191,6 @@
     gap: 7px;
     padding: 6px 7px 8px;
     border-bottom: 1px solid var(--hairline-2);
-    margin-bottom: 4px;
   }
 
   .source {
@@ -172,14 +218,80 @@
     text-transform: uppercase;
   }
 
+  .object-actions {
+    display: flex;
+    gap: 4px;
+    padding: 6px 5px;
+    border-bottom: 1px solid var(--hairline-2);
+  }
+  .object-action {
+    min-height: 28px;
+    padding: 3px 8px;
+    border: 1px solid var(--hairline);
+    border-radius: 4px;
+    background: var(--panel-2);
+    color: var(--text);
+    cursor: pointer;
+    font: 11px var(--font-body);
+  }
+  .object-action.ask { color: var(--violet); border-color: rgba(178, 140, 224, 0.45); }
+  .object-action.active,
+  .object-action:hover:not(:disabled) { border-color: var(--blue); color: var(--ivory); }
+
+  .inspect-panel {
+    margin: 5px;
+    padding: 7px;
+    border: 1px solid var(--hairline-2);
+    border-radius: 4px;
+    background: var(--panel-3);
+  }
+  .inspect-panel dl {
+    display: grid;
+    grid-template-columns: 58px minmax(0, 1fr);
+    gap: 4px 7px;
+    margin: 0;
+  }
+  .inspect-panel dt {
+    color: var(--muted);
+    font: 9px var(--font-mono);
+  }
+  .inspect-panel dd {
+    min-width: 0;
+    margin: 0;
+    color: var(--text);
+    overflow-wrap: anywhere;
+  }
+  .inspect-panel dd small {
+    display: block;
+    margin-top: 1px;
+    color: var(--muted);
+    font: 8px var(--font-mono);
+  }
+  .inspect-panel code { color: var(--muted); font: 8px var(--font-mono); }
+  .attrs { margin-top: 7px; }
+  .attrs summary { cursor: pointer; color: var(--muted); font: 9px var(--font-mono); }
+  .attrs pre {
+    max-height: 130px;
+    overflow: auto;
+    margin: 6px 0 0;
+    padding: 6px;
+    border: 1px solid var(--hairline-2);
+    background: rgba(8, 20, 33, 0.6);
+    color: #a9b9cf;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font: 8px/1.4 var(--font-mono);
+  }
+
   .state {
-    padding: 3px 8px 5px;
+    padding: 5px 8px 3px;
     color: var(--muted);
     font: 9px var(--font-mono);
     text-transform: uppercase;
   }
   .state span { text-transform: none; }
 
+  .review-actions { padding-top: 3px; }
   .row {
     display: flex;
     align-items: center;
@@ -201,13 +313,14 @@
   }
   .row.keep:hover { color: var(--jade); }
   .row.dismiss:hover { color: var(--crimson); }
-  .row.agent { color: var(--violet); }
   .row.quiet { color: var(--muted); }
 
   .disabled,
-  .disabled:hover {
+  .disabled:hover,
+  button:disabled {
     color: var(--muted);
     background: transparent;
+    opacity: 0.58;
     cursor: not-allowed;
   }
 
