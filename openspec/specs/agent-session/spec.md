@@ -1,13 +1,13 @@
 # agent-session Specification
 
 ## Purpose
-TBD - created by archiving change s8-agent-socket. Update Purpose after archive.
+Frontend and server contracts for provider-neutral sessions, explicit context, and Agent Companion presentation.
 ## Requirements
 ### Requirement: 领域无关会话生命周期
-系统 SHALL 提供领域无关的 Session；会话创建、恢复、分叉、中断和归档 MUST NOT 要求 task、run、discussion 或其他领域节点。用户在空白 ChatNode 发送首条消息时 SHALL 懒创建会话。
+系统 SHALL 提供领域无关的 Session；会话创建、恢复、分叉、中断和归档 MUST NOT 要求 task、run、discussion 或其他领域节点。用户在 Agent Companion 的空白草稿中发送首条消息时 SHALL 懒创建会话。
 
 #### Scenario: 无锚首轮
-- **WHEN** 用户未选择任何图实体并在空白 ChatNode 发送消息
+- **WHEN** 用户未选择任何图实体并在 Agent Companion 的空白草稿中发送消息
 - **THEN** 系统创建会话并发送该消息，不要求先执行派工、开始实验或选择模式
 
 #### Scenario: 任意选择集首轮
@@ -39,20 +39,20 @@ server SHALL 提供按 conversation tree 与 graph view scope 投影的会话列
 - **WHEN** 用户在若干轮后刷新页面
 - **THEN** 用户可从会话列表重新打开该会话并看到完整归一历史
 
-### Requirement: 一棵会话树恰有一个 scoped ChatNode
-每个根 Session SHALL 开始一棵 conversation tree，其根 session id SHALL 作为不可变 tree id。系统 SHALL 为每棵 tree 投影恰好一个持久化 ChatNode UI sidecar，并绑定根 Session 创建时的 graph view root；fork SHALL 通过 parent session 继承 tree 与 scope，而 MUST NOT 创建第二个 ChatNode。ChatNode MUST NOT 成为 Node/Edge/Port 或 Profile。
+### Requirement: 会话树保留 scope 与活动分支
+每个根 Session SHALL 开始一棵 conversation tree，其根 session id SHALL 作为不可变 tree id，并绑定根 Session 创建时的 graph view root。fork SHALL 通过 parent session 继承 tree 与 scope；前端 SHALL 在 Agent Companion 的按需 history surface 中选择 tree 与活动分支，而 MUST NOT 将 Session 投影为 Canvas 窗口、Node、Edge、Port 或 Profile。
 
 #### Scenario: 当前层创建新树
-- **WHEN** 用户在当前 graph view 的空白 ChatNode 草稿发送首条消息
-- **THEN** 系统创建根 Session，以其 id 建立一个 ChatNode，并只在该 graph view scope 挂载
+- **WHEN** 用户在当前 graph view 的 Agent Companion 草稿发送首条消息
+- **THEN** 系统创建根 Session，以其 id 建立一棵绑定该 graph view scope 的 tree，Canvas 不增加会话窗口
 
 #### Scenario: fork 留在原节点
-- **WHEN** 用户从某 ChatNode 的活动 Session fork
-- **THEN** 新 Session 成为同一 tree 的分支并出现在同一个 ChatNode 内，当前层不增加第二个 ChatNode
+- **WHEN** 用户从 Agent Companion history 中的活动 Session fork
+- **THEN** 新 Session 成为同一 tree 的分支并可在同一 history surface 内切换，Canvas 不增加会话窗口
 
 #### Scenario: 跨层导航与返回
 - **WHEN** 用户从 scope A 下钻到 scope B 后再返回 A
-- **THEN** B 只显示 B 的 ChatNode；返回 A 后恢复 A 的 ChatNode、位置和活动分支，导航本身不创建 Session 或 Turn
+- **THEN** B 只显示 B scope 的 Session tree；返回 A 后恢复 A 的 tree 和活动分支，导航本身不创建 Session 或 Turn
 
 #### Scenario: 旧会话没有 scope
 - **WHEN** server 扫描到 created 事件缺少 scope 的旧会话树，或原 scope 节点已不存在
@@ -74,10 +74,10 @@ Adapter 支持 interrupt 时，server SHALL 允许用户中断当前 TurnHandle�
 - **THEN** 前端不显示可执行的暂停按钮，并明确显示该能力不可用
 
 ### Requirement: 统一壳而无工作流模式
-所有 Session SHALL 使用同一种 ChatNode/ChatDock 壳；“统一”指组件与交互合同统一，不指全项目只有一个实例。核心 UI MUST NOT 提供 `discussion/work` 模式选择、task 专属派工或开始实验按钮；工作流差异只能由以后显式加载的程序、prompt preset 或卡片扩展表达。
+所有 Session SHALL 使用同一领域无关生命周期与事件合同；前端由 Agent Companion 与按需 history surface 呈现，不得藉此创建新的领域会话类型。核心 UI MUST NOT 提供 `discussion/work` 模式选择、task 专属派工或开始实验按钮；工作流差异只能由以后显式加载的程序、prompt preset 或卡片扩展表达。
 
 #### Scenario: 从 task 节点交互
-- **WHEN** 用户选择一个 task 节点并打开聊天
+- **WHEN** 用户选择一个 task 节点并打开 Agent Companion
 - **THEN** UI 仅把 task 作为普通上下文引用，不显示派工或干活会话类型
 
 ### Requirement: 失败和能力降级可见

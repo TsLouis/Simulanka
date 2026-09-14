@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { SessionDTO, SessionEventDTO } from './api'
+  import SessionTranscript from './SessionTranscript.svelte'
 
   export let sessions: SessionDTO[] = []
   export let selectedSessionId: string | null = null
@@ -12,13 +13,6 @@
 
   function shortId(value: string): string {
     return value.length > 14 ? `…${value.slice(-12)}` : value
-  }
-
-  function eventLabel(event: SessionEventDTO): string {
-    if (event.type === 'tool_call' || event.type === 'tool_result') {
-      return `${event.type === 'tool_call' ? '调用' : '结果'} · ${event.tool_name ?? 'tool'}`
-    }
-    return event.text ?? event.status ?? event.type
   }
 </script>
 
@@ -57,15 +51,10 @@
     <section class="history" aria-live="polite">
       {#if selectedSessionId === null}
         <p>选择一个分支查看只读转录。</p>
-      {:else if events.length === 0}
-        <p>{loading ? '正在读取历史…' : '该分支没有可显示事件。'}</p>
+      {:else if events.length === 0 && loading}
+        <p>正在读取历史…</p>
       {:else}
-        {#each events as event, index (index)}
-          <article class:event-error={event.type === 'error'}>
-            <b>{event.type}</b>
-            <span>{eventLabel(event)}</span>
-          </article>
-        {/each}
+        <SessionTranscript {events} emptyMessage="该分支没有可显示事件。" />
       {/if}
     </section>
   </div>
@@ -115,6 +104,7 @@
     cursor: pointer;
   }
   .body {
+    flex: 1;
     min-height: 0;
     display: grid;
     grid-template-columns: minmax(220px, 0.8fr) minmax(280px, 1.2fr);
@@ -146,30 +136,9 @@
     font-size: 10px;
     font-style: normal;
   }
-  .history article {
-    display: grid;
-    grid-template-columns: 92px 1fr;
-    gap: 8px;
-    margin-bottom: 6px;
-    padding: 7px 8px;
-    border: 1px solid var(--hairline-2);
-    border-radius: 6px;
-    background: rgba(9, 17, 31, 0.45);
-  }
-  .history article b {
-    color: var(--gold-dim);
-    font-family: var(--font-mono);
-    font-size: 10px;
-  }
-  .history article span {
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-  }
-  .history article.event-error,
+  .history { display: flex; flex-direction: column; }
   .error {
     color: var(--red);
-  }
-  .error {
     padding: 7px 12px;
     border-bottom: 1px solid var(--hairline);
   }

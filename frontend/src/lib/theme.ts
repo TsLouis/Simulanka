@@ -1,167 +1,442 @@
-// 「星图册 · Starlit Atlas」canvas 侧主题 —— CSS 吃不到 canvas，这里是
-// app.css 变量表的 canvas 镜像（两处改动须同步，hex 以 app.css 注释互指）。
-// 研究图即星座图：夜空、星卡、星光丝线。
+// Canvas appearance and existing Node Editor presentation hooks.
 import { LGraphCanvas, LiteGraph, type LGraphNode } from 'litegraph.js'
 
-/** 画布夜空底色（= app.css --sky）。 */
-export const SKY = '#0b1322'
+export const CANVAS_BACKGROUND = '#081421'
 
-/** 边的出处三色（= app.css --star/--amber/--violet；§13.2 前端三色区分）。 */
+// Provenance still matters, but it is communicated with a restrained palette.
 export const EDGE_COLORS: Record<string, string> = {
-  trace: '#8fb8e8', // 星蓝 —— 机器观测的星光
-  user: '#e3b566', // 金线 —— 人的手笔
-  agent: '#b28ce0', // 紫晶 —— agent 主张
+  trace: '#68b8f2',
+  user: '#e6bf62',
+  agent: '#b18af3',
 }
-/** 血缘丝线（fulfills/produces 等无端口语义边）：比星蓝暗一档的底层丝线，
- *  画在节点层之下——是系统的账，不与数据流的三色抢戏。 */
-export const LINEAGE_COLOR = '#44557d'
-/** 未核 ghost：低语一样的灰蓝虚线。 */
-export const GHOST_COLOR = '#77839c'
-/** 被人拒绝的 ghost：绯红，读作「有争议」（= app.css --crimson）。 */
-export const REJECTED_GHOST_COLOR = '#e07a68'
-/** 端口置信度（= app.css --jade / --muted 系）。 */
-export const VERIFIED_COLOR = '#7ecfa5'
-export const INFERRED_COLOR = '#77839c'
+export const LINEAGE_COLOR = '#38536e'
+export const GHOST_COLOR = '#64778d'
+export const REJECTED_GHOST_COLOR = '#ee7b73'
+export const VERIFIED_COLOR = '#73d4b1'
+export const INFERRED_COLOR = '#64778d'
 
-/** S6 可信级五色（frontend.md 映射表）：只染节点体，边色不叠加。 */
 export const TRUST_COLORS: Record<string, string> = {
-  human: '#e3b566', // 金 —— 人裁
-  constructed: '#8fb8e8', // 星蓝 —— 机器观测（与 trace 边同色）
-  reviewed: '#7ecfa5', // 玉 —— 分析者 distill 复核
-  checked: '#d9ba7d', // 琥珀 —— 快检章（动态线词表先定）
-  unreviewed: '#77839c', // 灰 —— 「未定」应显眼地不显眼
+  human: '#e6bf62',
+  constructed: '#68b8f2',
+  reviewed: '#73d4b1',
+  checked: '#c7a95a',
+  unreviewed: '#64778d',
 }
 
-/** 星卡配色：LiteGraph node.color = 标题条，bgcolor = 卡身，boxcolor = 徽点。 */
+// ComfyUI treats slot/link colour as part of datatype legibility. Keep the
+// palette restrained and semantic: built-in Simulanka types get stable colours;
+// unknown extension types still fall back to LiteGraph's normal connection colour.
+const PORT_TYPE_COLORS: Record<string, string> = {
+  any: '#71869f',
+  tensor: '#68b8f2',
+  scalar: '#e6bf62',
+  number: '#e6bf62',
+  string: '#73d4b1',
+  boolean: '#b18af3',
+}
+const PORT_TYPE_OFF_COLORS: Record<string, string> = {
+  any: '#4c6177',
+  tensor: '#38536e',
+  scalar: '#8b7544',
+  number: '#8b7544',
+  string: '#376b5d',
+  boolean: '#655281',
+}
+
 interface NodeStyle {
   color: string
   bgcolor: string
   boxcolor: string
 }
-const CARD = '#151f38'
-// PresentationSpec.palette_token is the public selector for these tokens. Keep
-// profile names out of this module: an extension profile can reuse any token,
-// and an unknown token deliberately falls back to NODE_DEFAULT.
-const PALETTE_STYLES: Record<string, NodeStyle> = {
-  model: { color: '#3f3419', bgcolor: '#1b2138', boxcolor: '#e3b566' },
-  module: { color: '#20304f', bgcolor: CARD, boxcolor: '#8fb8e8' },
-  directory: { color: '#2a3550', bgcolor: CARD, boxcolor: '#93794a' },
-  experiment: { color: '#1d3a30', bgcolor: '#152034', boxcolor: '#7ecfa5' },
-  run: { color: '#2c2a4a', bgcolor: CARD, boxcolor: '#b28ce0' },
-  task: { color: '#3a2c22', bgcolor: CARD, boxcolor: '#e3b566' },
-  question: { color: '#243a52', bgcolor: CARD, boxcolor: '#8fb8e8' },
-  hypothesis: { color: '#332c50', bgcolor: CARD, boxcolor: '#b28ce0' },
-  claim: { color: '#3f3419', bgcolor: CARD, boxcolor: '#f2d9a4' },
-  evidence: { color: '#1d3a30', bgcolor: CARD, boxcolor: '#7ecfa5' },
-  note: { color: '#33301f', bgcolor: CARD, boxcolor: '#d9ba7d' },
-  file: { color: '#232c42', bgcolor: CARD, boxcolor: '#8d99b5' },
-  service: { color: '#173a3b', bgcolor: '#142734', boxcolor: '#67c7bd' },
-}
-const NODE_DEFAULT: NodeStyle = { color: '#24304e', bgcolor: CARD, boxcolor: '#93794a' }
-/** 边界桩子：半透明幽影 —— 它是子图取景框的投影，不是真节点。 */
-const NODE_BOUNDARY: NodeStyle = { color: '#1a2233', bgcolor: '#10182bcc', boxcolor: '#5a6a8f' }
 
-/** 给一张星卡上色。`boundary` 走幽影样式。 */
+const CARD = '#0e1d2d'
+const PALETTE_STYLES: Record<string, NodeStyle> = {
+  model: { color: '#17243a', bgcolor: CARD, boxcolor: '#e6bf62' },
+  module: { color: '#10263a', bgcolor: CARD, boxcolor: '#68b8f2' },
+  directory: { color: '#152333', bgcolor: CARD, boxcolor: '#71869f' },
+  experiment: { color: '#102b28', bgcolor: CARD, boxcolor: '#73d4b1' },
+  run: { color: '#211d3b', bgcolor: CARD, boxcolor: '#b18af3' },
+  task: { color: '#2a2417', bgcolor: CARD, boxcolor: '#e6bf62' },
+  question: { color: '#132b3f', bgcolor: CARD, boxcolor: '#68b8f2' },
+  hypothesis: { color: '#211d3b', bgcolor: CARD, boxcolor: '#b18af3' },
+  claim: { color: '#2a2417', bgcolor: CARD, boxcolor: '#e6bf62' },
+  evidence: { color: '#102b28', bgcolor: CARD, boxcolor: '#73d4b1' },
+  note: { color: '#282515', bgcolor: CARD, boxcolor: '#c7a95a' },
+  file: { color: '#162334', bgcolor: CARD, boxcolor: '#71869f' },
+  service: { color: '#102b2c', bgcolor: CARD, boxcolor: '#64c8bd' },
+}
+const NODE_DEFAULT: NodeStyle = { color: '#14243a', bgcolor: CARD, boxcolor: '#71869f' }
+const NODE_BOUNDARY: NodeStyle = { color: '#101a28', bgcolor: '#0a1420cc', boxcolor: '#4c6177' }
+
 export function styleNode(node: LGraphNode, paletteToken: string): void {
-  const s = paletteToken === 'boundary'
+  const style = paletteToken === 'boundary'
     ? NODE_BOUNDARY
     : (PALETTE_STYLES[paletteToken] ?? NODE_DEFAULT)
-  const n = node as unknown as Record<string, unknown>
-  n.color = s.color
-  n.bgcolor = s.bgcolor
-  n.boxcolor = s.boxcolor
+  const target = node as unknown as Record<string, unknown>
+  target.color = style.color
+  target.bgcolor = style.bgcolor
+  target.boxcolor = style.boxcolor
 }
 
-const CANVAS_FONT = "'Noto Sans SC', ui-sans-serif, sans-serif"
+const CANVAS_FONT = "ui-monospace, 'SFMono-Regular', 'Cascadia Mono', Consolas, monospace"
 
-/** 夜空 + 星卡的全局装置：底色、星野、字体、LiteGraph 全局配色。
- * 只需在 LGraphCanvas 构造后调用一次。 */
-export function applyNightSky(canvas: LGraphCanvas): void {
-  const lg = LiteGraph as unknown as Record<string, unknown>
-  lg.NODE_TITLE_COLOR = '#e9d9b0' // 象牙金标题字
-  lg.NODE_SELECTED_TITLE_COLOR = '#f2d9a4'
-  lg.NODE_TEXT_COLOR = '#c9d2e4'
-  lg.NODE_DEFAULT_COLOR = '#24304e'
-  lg.NODE_DEFAULT_BGCOLOR = CARD
-  lg.NODE_DEFAULT_BOXCOLOR = '#93794a'
-  lg.NODE_BOX_OUTLINE_COLOR = '#f2d9a4' // 选中描金
-  lg.WIDGET_BGCOLOR = '#0f1830'
-  lg.LINK_COLOR = '#44557d'
-  lg.EVENT_LINK_COLOR = '#e3b566'
-  lg.CONNECTING_LINK_COLOR = '#f2d9a4' // 拉线时的金丝
+// Working zoom keeps the native interface readable longer. Below this threshold
+// we deliberately switch to a structure view: Port anchors remain exact, Port
+// labels/card detail disappear, and Node identity gets a small screen-stable tag.
+const DETAIL_MIN_SCALE = 0.72
+const OVERVIEW_IDENTITY_MIN_SCALE = 0.24
+const OVERVIEW_IDENTITY_SCREEN_PX = 10
+const DRAFT_LABEL_MIN_SCALE = 0.62
+const UNRELATED_NODE_ALPHA = 0.24
+const UNRELATED_LINK_ALPHA = 0.14
 
-  const c = canvas as unknown as Record<string, unknown>
-  c.background_image = null // 关掉默认网格，让星野接管
-  c.show_info = false // 左下角 FPS 调试角标不属于星图
-  c.clear_background_color = SKY
-  c.render_canvas_border = false
-  c.render_connections_border = false
-  c.default_link_color = '#44557d'
-  c.title_text_font = `500 13px ${CANVAS_FONT}`
-  c.inner_text_font = `normal 11px ${CANVAS_FONT}`
-  c.round_radius = 6
-
-  c.onDrawBackground = (ctx: CanvasRenderingContext2D, area: [number, number, number, number]) => {
-    drawStarfield(ctx, area)
-  }
-
-  // 双击容器节点是我们的下钻手势；LiteGraph 原生的 node Properties 面板
-  // （带 Delete，且不走 kernel）在同一手势上弹出——压掉，NodeInspector
-  // 是唯一的节点详情面。
-  c.onShowNodePanel = () => {}
-
-  // Web 字体就绪后重绘一次，否则首帧 canvas 文字落回退字体。
-  const fonts = (document as Document & { fonts?: FontFaceSet }).fonts
-  void fonts?.ready.then(() => canvas.setDirty(true, true))
+type SlotLike = { label?: string | null }
+type SemanticNodeView = { attrs?: Record<string, unknown> }
+type DensityNode = LGraphNode & {
+  id?: number | string
+  simulanka?: SemanticNodeView
+  inputs?: SlotLike[]
+  outputs?: SlotLike[]
+  onDrawForeground?: (...args: unknown[]) => void
 }
 
-// 星野：图空间坐标下按网格 cell 决定性撒星（同一 cell 永远同一颗星），
-// 平移缩放时星随图动 —— 整张图就是一幅会动的星图。零状态、零动画开销。
-const CELL = 150
-
-function hash2(ix: number, iy: number, salt: number): number {
-  let h = (ix * 374761393 + iy * 668265263 + salt * 2246822519) | 0
-  h = ((h ^ (h >>> 13)) * 1274126177) | 0
-  return ((h ^ (h >>> 16)) >>> 0) / 4294967295
+type AttentionLink = {
+  origin_id?: number | string
+  target_id?: number | string
+  simulanka_ghost?: boolean
+  _pos?: [number, number]
 }
 
-function drawStarfield(
-  ctx: CanvasRenderingContext2D,
-  [ax, ay, aw, ah]: [number, number, number, number],
-): void {
-  const x0 = Math.floor(ax / CELL) - 1
-  const y0 = Math.floor(ay / CELL) - 1
-  const x1 = Math.ceil((ax + aw) / CELL) + 1
-  const y1 = Math.ceil((ay + ah) / CELL) + 1
-  ctx.save()
-  for (let iy = y0; iy <= y1; iy++) {
-    for (let ix = x0; ix <= x1; ix++) {
-      const presence = hash2(ix, iy, 1)
-      if (presence > 0.85) continue // 留出呼吸的空区
-      const sx = (ix + hash2(ix, iy, 2)) * CELL
-      const sy = (iy + hash2(ix, iy, 3)) * CELL
-      const size = 0.5 + hash2(ix, iy, 4) * 1.3
-      const alpha = 0.08 + hash2(ix, iy, 5) * 0.35
-      const golden = hash2(ix, iy, 6) > 0.92 // 少数星是金的
-      ctx.fillStyle = golden
-        ? `rgba(242, 217, 164, ${alpha + 0.15})`
-        : `rgba(190, 210, 240, ${alpha})`
-      ctx.beginPath()
-      ctx.arc(sx, sy, size, 0, Math.PI * 2)
-      ctx.fill()
-      if (golden) {
-        // 金星带一枚小小的四芒
-        const r = size * 4
-        ctx.strokeStyle = `rgba(242, 217, 164, ${alpha * 0.6})`
-        ctx.lineWidth = 0.6
-        ctx.beginPath()
-        ctx.moveTo(sx - r, sy)
-        ctx.lineTo(sx + r, sy)
-        ctx.moveTo(sx, sy - r)
-        ctx.lineTo(sx, sy + r)
-        ctx.stroke()
-      }
+type AttentionGraph = {
+  links?: Record<string, AttentionLink> | Map<unknown, AttentionLink>
+}
+
+type DensityCanvas = LGraphCanvas & {
+  ds?: { scale?: number }
+  selected_nodes?: Record<string, LGraphNode>
+  graph?: AttentionGraph | null
+  drawNode: (node: LGraphNode, ctx: CanvasRenderingContext2D) => void
+}
+
+type DraftLink = AttentionLink
+
+type AttentionState = {
+  graph: AttentionGraph | null | undefined
+  selectedId: string
+  relatedIds: Set<string>
+  directLinkIds: Set<string>
+}
+
+const attentionCache = new WeakMap<object, AttentionState>()
+
+function graphLinks(graph: AttentionGraph | null | undefined): AttentionLink[] {
+  const links = graph?.links
+  if (!links) return []
+  if (links instanceof Map) return [...links.values()]
+  return Object.values(links)
+}
+
+/**
+ * A single selection quietly answers "what is directly related to this?".
+ * This is not a named mode and it never writes state: selected node + one-hop
+ * neighbours remain prominent, everything else recedes. Multi-select deliberately
+ * disables the effect so ordinary box-selection/editor behaviour stays neutral.
+ */
+function selectionAttention(canvas: DensityCanvas): AttentionState | null {
+  const selected = Object.values(canvas.selected_nodes ?? {}).filter(
+    node => Boolean((node as unknown as DensityNode).simulanka),
+  )
+  if (selected.length !== 1) return null
+
+  const selectedId = String((selected[0] as unknown as DensityNode).id)
+  const graph = canvas.graph
+  const cached = attentionCache.get(canvas as unknown as object)
+  if (cached?.graph === graph && cached.selectedId === selectedId) return cached
+
+  const relatedIds = new Set<string>([selectedId])
+  const directLinkIds = new Set<string>()
+  for (const link of graphLinks(graph)) {
+    const origin = String(link.origin_id)
+    const target = String(link.target_id)
+    if (origin === selectedId) {
+      relatedIds.add(target)
+      directLinkIds.add(`${origin}->${target}`)
+    } else if (target === selectedId) {
+      relatedIds.add(origin)
+      directLinkIds.add(`${origin}->${target}`)
     }
   }
+
+  const next = { graph, selectedId, relatedIds, directLinkIds }
+  attentionCache.set(canvas as unknown as object, next)
+  return next
+}
+
+/** Draw a deliberately small, redundant marker for a graph Draft. */
+function drawDraftTag(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  compact = false,
+): void {
+  ctx.save()
+  ctx.setLineDash([])
+  ctx.font = `600 ${compact ? 7 : 8}px ${CANVAS_FONT}`
+  const label = compact ? 'D' : 'DRAFT'
+  const width = ctx.measureText(label).width + (compact ? 6 : 10)
+  const height = compact ? 11 : 13
+  ctx.fillStyle = 'rgba(12, 23, 38, 0.96)'
+  ctx.strokeStyle = '#b18af3'
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  ctx.rect(x - width / 2, y - height / 2, width, height)
+  ctx.fill()
+  ctx.stroke()
+  ctx.fillStyle = '#cbb5f7'
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.fillText(label, x, y + 0.5)
   ctx.restore()
+}
+
+function isDraftNode(node: DensityNode): boolean {
+  const attrs = node.simulanka?.attrs
+  return attrs?.status === 'proposed' || attrs?.status === 'draft'
+}
+
+function drawOverviewIdentity(
+  ctx: CanvasRenderingContext2D,
+  node: LGraphNode,
+  scale: number,
+): void {
+  if (scale >= DETAIL_MIN_SCALE || scale < OVERVIEW_IDENTITY_MIN_SCALE) return
+  const safeScale = Math.max(scale, OVERVIEW_IDENTITY_MIN_SCALE)
+  const fontSize = OVERVIEW_IDENTITY_SCREEN_PX / safeScale
+  const padX = 5 / safeScale
+  const padY = 3 / safeScale
+  const y = -13 / safeScale
+  const label = node.title.replace(/^▸\s*/, '')
+
+  ctx.save()
+  ctx.setLineDash([])
+  ctx.font = `600 ${fontSize}px ${CANVAS_FONT}`
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  const width = ctx.measureText(label).width + padX * 2
+  const height = fontSize + padY * 2
+  ctx.fillStyle = 'rgba(8, 20, 33, 0.9)'
+  ctx.strokeStyle = 'rgba(104, 184, 242, 0.34)'
+  ctx.lineWidth = 1 / safeScale
+  ctx.beginPath()
+  ctx.rect(node.size[0] / 2 - width / 2, y - height / 2, width, height)
+  ctx.fill()
+  ctx.stroke()
+  ctx.fillStyle = '#edf4ff'
+  ctx.fillText(label, node.size[0] / 2, y + 0.25 / safeScale)
+  ctx.restore()
+}
+
+/**
+ * Render-only progressive disclosure for Node/Port density.
+ *
+ * Working zoom keeps labels/card fields long enough to read comfortably. Farther
+ * out, Port geometry stays authoritative while text density falls away. Node
+ * identity is redrawn with an inverse-scale label so the overview remains
+ * navigable instead of turning every title into unreadable pixels.
+ *
+ * The same wrapper also applies Simulanka's quiet single-selection attention:
+ * unrelated nodes recede, but their ports still remain structurally visible.
+ */
+function installZoomAwareNodeRendering(canvas: LGraphCanvas): void {
+  const target = canvas as unknown as DensityCanvas
+  const baseDrawNode = target.drawNode.bind(canvas)
+
+  target.drawNode = (node: LGraphNode, ctx: CanvasRenderingContext2D): void => {
+    const densityNode = node as unknown as DensityNode
+    // Boundary stubs intentionally keep their existing projection rendering.
+    if (!densityNode.simulanka) {
+      baseDrawNode(node, ctx)
+      return
+    }
+
+    const attention = selectionAttention(target)
+    const dimmed = attention !== null && !attention.relatedIds.has(String(densityNode.id))
+    if (dimmed) {
+      ctx.save()
+      ctx.globalAlpha *= UNRELATED_NODE_ALPHA
+    }
+
+    try {
+      const scale = target.ds?.scale ?? 1
+      const drawDraft = () => {
+        if (!isDraftNode(densityNode)) return
+        drawDraftTag(ctx, node.size[0] - 24, -13, scale < DETAIL_MIN_SCALE)
+      }
+
+      if (scale >= DETAIL_MIN_SCALE) {
+        baseDrawNode(node, ctx)
+        drawDraft()
+        return
+      }
+
+      const originalForeground = densityNode.onDrawForeground
+      const inputLabels = densityNode.inputs?.map(slot => slot.label)
+      const outputLabels = densityNode.outputs?.map(slot => slot.label)
+
+      try {
+        // Card/trust details are detail material; node identity and every native
+        // port handle remain visible and independently positioned.
+        densityNode.onDrawForeground = undefined
+        // Non-empty whitespace prevents LiteGraph from falling back to slot.name.
+        densityNode.inputs?.forEach(slot => { slot.label = '\u00a0' })
+        densityNode.outputs?.forEach(slot => { slot.label = '\u00a0' })
+
+        baseDrawNode(node, ctx)
+        drawOverviewIdentity(ctx, node, scale)
+        drawDraft()
+      } finally {
+        densityNode.onDrawForeground = originalForeground
+        densityNode.inputs?.forEach((slot, index) => { slot.label = inputLabels?.[index] })
+        densityNode.outputs?.forEach((slot, index) => { slot.label = outputLabels?.[index] })
+      }
+    } finally {
+      if (dimmed) ctx.restore()
+    }
+  }
+}
+
+/**
+ * ComfyUI uses double-click on empty canvas as a primary node-search affordance.
+ * Reuse Simulanka's existing persisted add-node path by translating that gesture
+ * into the same synthetic contextmenu event already handled by App.svelte.
+ * Double-clicking an existing node is left untouched so drill-down keeps working.
+ */
+function installDoubleClickNodeSearch(canvas: LGraphCanvas): void {
+  const target = canvas as unknown as {
+    canvas?: HTMLCanvasElement
+    graph?: {
+      getNodeOnPos?: (x: number, y: number) => LGraphNode | null
+    } | null
+    convertEventToCanvasOffset?: (event: MouseEvent) => [number, number]
+  }
+  const element = target.canvas
+  if (!element || element.dataset.simulankaNodeSearch === '1') return
+  element.dataset.simulankaNodeSearch = '1'
+
+  element.addEventListener('dblclick', event => {
+    const pos = target.convertEventToCanvasOffset?.(event)
+    if (!pos) return
+    const hit = target.graph?.getNodeOnPos?.(pos[0], pos[1]) ?? null
+    if (hit) return
+
+    event.preventDefault()
+    event.stopPropagation()
+    element.dispatchEvent(new MouseEvent('contextmenu', {
+      bubbles: true,
+      cancelable: true,
+      clientX: event.clientX,
+      clientY: event.clientY,
+      button: 2,
+    }))
+  })
+}
+
+/**
+ * Add a tiny DRAFT tag at the center of existing proposed/ghost links. The App
+ * already wraps renderLink to add the dashed stroke and continues to own the
+ * authoritative accept/verdict actions. Patching the prototype here is useful:
+ * App's wrapper captures this decorated renderer and therefore composes with it
+ * rather than replacing the marker.
+ *
+ * This wrapper also applies selection attention to links: only links touching
+ * the selected semantic node stay at full opacity. It remains purely draw-time.
+ */
+function installDraftLinkMarkers(): void {
+  const proto = LGraphCanvas.prototype as unknown as {
+    renderLink: (...args: unknown[]) => void
+    simulankaDraftMarkerInstalled?: boolean
+  }
+  if (proto.simulankaDraftMarkerInstalled) return
+  proto.simulankaDraftMarkerInstalled = true
+
+  const baseRenderLink = proto.renderLink
+  proto.renderLink = function (this: LGraphCanvas, ...args: unknown[]): void {
+    const ctx = args[0] as CanvasRenderingContext2D | undefined
+    const link = args[3] as DraftLink | undefined
+    const scale = (this as unknown as { ds?: { scale?: number } }).ds?.scale ?? 1
+    const attention = selectionAttention(this as unknown as DensityCanvas)
+    const linkKey = link ? `${String(link.origin_id)}->${String(link.target_id)}` : null
+    const dimmed = attention !== null && linkKey !== null && !attention.directLinkIds.has(linkKey)
+
+    if (ctx && dimmed) {
+      ctx.save()
+      ctx.globalAlpha *= UNRELATED_LINK_ALPHA
+    }
+    try {
+      baseRenderLink.apply(this, args)
+      if (!ctx || !link?.simulanka_ghost || !link._pos || scale < DRAFT_LABEL_MIN_SCALE) return
+      drawDraftTag(ctx, link._pos[0], link._pos[1] - 10, scale < DETAIL_MIN_SCALE)
+    } finally {
+      if (ctx && dimmed) ctx.restore()
+    }
+  }
+}
+
+function installPortTypePalette(canvas: LGraphCanvas): void {
+  const target = canvas as unknown as {
+    default_connection_color_byType?: Record<string, string>
+    default_connection_color_byTypeOff?: Record<string, string>
+  }
+  target.default_connection_color_byType ??= {}
+  Object.assign(target.default_connection_color_byType, PORT_TYPE_COLORS)
+
+  // Newer LiteGraph/ComfyUI distinguishes connected vs idle slot palettes. Old
+  // LiteGraph safely ignores this property, so assigning it is backward-friendly.
+  target.default_connection_color_byTypeOff ??= {}
+  Object.assign(target.default_connection_color_byTypeOff, PORT_TYPE_OFF_COLORS)
+
+  const canvasType = LGraphCanvas as unknown as {
+    link_type_colors?: Record<string, string>
+  }
+  canvasType.link_type_colors ??= {}
+  Object.assign(canvasType.link_type_colors, PORT_TYPE_COLORS)
+}
+
+/** Apply the workspace palette and established Node/Port/Edge interactions. */
+export function applyWorkspaceTheme(canvas: LGraphCanvas): void {
+  const lg = LiteGraph as unknown as Record<string, unknown>
+  lg.NODE_TITLE_COLOR = '#edf4ff'
+  lg.NODE_SELECTED_TITLE_COLOR = '#ffffff'
+  lg.NODE_TEXT_COLOR = '#bfd0e4'
+  lg.NODE_DEFAULT_COLOR = '#14243a'
+  lg.NODE_DEFAULT_BGCOLOR = CARD
+  lg.NODE_DEFAULT_BOXCOLOR = '#71869f'
+  lg.NODE_BOX_OUTLINE_COLOR = '#68b8f2'
+  lg.WIDGET_BGCOLOR = '#091522'
+  lg.LINK_COLOR = LINEAGE_COLOR
+  lg.EVENT_LINK_COLOR = '#e6bf62'
+  lg.CONNECTING_LINK_COLOR = '#68b8f2'
+
+  const target = canvas as unknown as Record<string, unknown>
+  target.background_image = null
+  target.show_info = false
+  target.clear_background_color = CANVAS_BACKGROUND
+  target.render_canvas_border = false
+  target.render_connections_border = false
+  target.default_link_color = LINEAGE_COLOR
+  target.title_text_font = `600 12px ${CANVAS_FONT}`
+  target.inner_text_font = `normal 10px ${CANVAS_FONT}`
+  target.round_radius = 2
+
+  // LiteGraph's native property panel can delete canvas-only nodes. Simulanka
+  // keeps all details/actions in its own context UI so graph state stays honest.
+  target.onShowNodePanel = () => {}
+
+  installPortTypePalette(canvas)
+  installDraftLinkMarkers()
+  installZoomAwareNodeRendering(canvas)
+  installDoubleClickNodeSearch(canvas)
+
+  const fonts = (document as Document & { fonts?: FontFaceSet }).fonts
+  void fonts?.ready.then(() => canvas.setDirty(true, true))
 }

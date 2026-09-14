@@ -3,8 +3,9 @@
   import { filterGroups, type NodeTemplate, type TemplateGroup } from './templates'
   import type { AffordanceDTO, NodeDTO } from './types'
 
-  // Viewport coordinates of the right-click; the menu clamps itself to stay
-  // on screen.
+  // Viewport coordinates of the right-click / double-click summon point; the
+  // menu clamps itself to stay on screen. Add mode follows the mature ComfyUI
+  // node-search pattern: type to filter, arrows to select, Enter to create.
   export let x: number
   export let y: number
   export let mode: 'add' | 'node'
@@ -23,58 +24,112 @@
     'node.enter': '⤢',
     'node.rename': '✎',
     'node.delete': '✕',
-    'context.attach': '＋',
+    'context.attach': '✦',
     'template.save': '⧉',
   })[id] ?? '›'
+
+  // Affordance ids remain server-owned; only product-facing wording changes.
+  // `context.attach` means the deliberate act of pointing graph objects at the
+  // Agent, so expose that action directly instead of backend terminology.
+  const actionLabel = (action: AffordanceDTO): string =>
+    action.id === 'context.attach'
+      ? nodes.length > 1 ? `Ask Agent about ${nodes.length} objects` : 'Ask Agent'
+      : action.label
 
   let query = ''
   let searchEl: HTMLInputElement | null = null
   let menuEl: HTMLDivElement
+  let activeIndex = 0
 
   $: filtered = filterGroups(groups, query)
-  $: firstMatch = filtered[0]?.items[0] ?? null
+  $: flatItems = filtered.flatMap(group => group.items)
+  $: if (activeIndex >= flatItems.length) activeIndex = Math.max(0, flatItems.length - 1)
 
-  // Clamp inside the viewport (menu is max 420 tall / 260 wide).
-  $: left = Math.min(x, window.innerWidth - 270)
-  $: top = Math.min(y, window.innerHeight - 430)
+  $: left = Math.max(8, Math.min(x, window.innerWidth - 330))
+  $: top = Math.max(8, Math.min(y, window.innerHeight - 470))
 
   onMount(() => {
     searchEl?.focus()
   })
 
+  function moveSelection(delta: number) {
+    if (flatItems.length === 0) return
+    activeIndex = (activeIndex + delta + flatItems.length) % flatItems.length
+    queueMicrotask(() => {
+      menuEl
+        ?.querySelector<HTMLElement>(`[data-add-index="${activeIndex}"]`)
+        ?.scrollIntoView({ block: 'nearest' })
+    })
+  }
+
   function onKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') {
       e.preventDefault()
       onClose()
-    } else if (e.key === 'Enter' && mode === 'add' && firstMatch) {
-      e.preventDefault()
-      onPick(firstMatch)
+      return
     }
+    if (mode !== 'add') return
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      moveSelection(1)
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      moveSelection(-1)
+    } else if (e.key === 'Enter' && flatItems[activeIndex]) {
+      e.preventDefault()
+      onPick(flatItems[activeIndex])
+    }
+  }
+
+  function onQueryInput() {
+    activeIndex = 0
   }
 
   function onGlobalPointerDown(e: MouseEvent) {
     if (menuEl && !menuEl.contains(e.target as Node)) onClose()
   }
+
+  function portSummary(t: NodeTemplate): string {
+    const inputs = t.ports.filter(port => port.direction === 'in').length
+    const outputs = t.ports.length - inputs
+    if (inputs === 0 && outputs === 0) return 'no ports'
+    return `${inputs} in · ${outputs} out`
+  }
 </script>
 
-<!-- capture 相:LiteGraph 在画布 mousedown 里吃掉冒泡,常规监听收不到,
-     菜单就收不起来——捕获相先于画布处理器,点画布任意处都能关。 -->
 <svelte:window on:keydown={onKeydown} on:mousedown|capture={onGlobalPointerDown} />
 
 <div class="menu" bind:this={menuEl} style="left: {left}px; top: {top}px;" role="menu">
   {#if mode === 'add'}
-    <input
-      class="search"
-      placeholder="添加节点…"
-      bind:value={query}
-      bind:this={searchEl}
-    />
+    <div class="search-row">
+      <span class="search-icon" aria-hidden="true">＋</span>
+      <input
+        class="search"
+        placeholder="Search nodes…"
+        bind:value={query}
+        bind:this={searchEl}
+        on:input={onQueryInput}
+        autocomplete="off"
+        spellcheck="false"
+      />
+    </div>
+    <div class="hint">↑↓ select · Enter add · Esc close</div>
     <div class="list">
       {#each filtered as g (g.category)}
         <div class="cat">{g.category}</div>
         {#each g.items as t (t.category + '/' + t.label)}
-          <button class="row" on:click={() => onPick(t)}>
-            <span class="label">{t.label}</span>
+          {@const index = flatItems.indexOf(t)}
+          <button
+            class="row add-row"
+            class:active={index === activeIndex}
+            data-add-index={index}
+            on:mouseenter={() => (activeIndex = index)}
+            on:click={() => onPick(t)}
+          >
+            <span class="node-result">
+              <span class="label">{t.label}</span>
+              <span class="meta">{t.type} · {portSummary(t)}</span>
+            </span>
             {#if t.custom}
               <span
                 class="del"
@@ -89,71 +144,88 @@
         {/each}
       {/each}
       {#if filtered.length === 0}
-        <div class="empty">无匹配</div>
+        <div class="empty">No matching nodes</div>
       {/if}
     </div>
   {:else if node}
     <div class="node-head">
-      <span class="type-chip">{nodes.length > 1 ? `${nodes.length} 项` : node.type}</span>
-      <span class="node-name">{nodes.length > 1 ? '多选' : node.name}</span>
+      <span class="type-chip">{nodes.length > 1 ? `${nodes.length} objects` : node.type}</span>
+      <span class="node-name">{nodes.length > 1 ? 'Selection' : node.name}</span>
     </div>
     {#each affordances as action (action.id)}
       <button
         class="row action"
+        class:agent-action={action.id === 'context.attach'}
         class:danger={action.id === 'node.delete'}
         class:disabled={!action.enabled}
         disabled={!action.enabled}
-        title={action.enabled ? action.label : action.reason}
+        title={action.enabled ? actionLabel(action) : action.reason}
         on:click={() => onAction(action)}
       >
-        <span>{action.label} {actionIcon(action.id)}</span>
+        <span>{actionLabel(action)} {actionIcon(action.id)}</span>
         {#if !action.enabled}<span class="reason">{action.reason}</span>{/if}
       </button>
     {/each}
-    {#if affordances.length === 0}<div class="empty">无可用动作</div>{/if}
+    {#if affordances.length === 0}<div class="empty">No available actions</div>{/if}
   {/if}
 </div>
 
 <style>
-  /* 星图册: 夜漆浮层 + 金缘,与 header/inspector 同一调色板 */
   .menu {
     position: fixed;
     z-index: 50;
-    width: 260px;
-    background: linear-gradient(180deg, #1a2642 0%, #141e36 100%);
+    width: 318px;
+    max-height: 452px;
+    overflow: hidden;
+    background: rgba(10, 22, 36, 0.98);
     border: 1px solid var(--hairline);
-    border-radius: 8px;
-    box-shadow:
-      0 6px 24px rgba(0, 0, 0, 0.5),
-      0 0 0 1px rgba(217, 186, 125, 0.08);
+    border-radius: 5px;
+    box-shadow: 0 12px 34px rgba(0, 0, 0, 0.42);
     padding: 6px;
-    font-size: 13px;
+    font-size: 12px;
     display: flex;
     flex-direction: column;
   }
-  .search {
-    background: var(--panel-3);
-    color: var(--text);
+  .search-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     border: 1px solid var(--hairline);
-    border-radius: 5px;
-    padding: 6px 9px;
-    font: inherit;
-    margin-bottom: 6px;
+    border-radius: 3px;
+    background: var(--panel-3);
   }
-  .search:focus {
+  .search-icon {
+    padding-left: 8px;
+    color: var(--blue);
+    font: 700 13px var(--font-mono);
+  }
+  .search {
+    min-width: 0;
+    flex: 1;
+    background: transparent;
+    color: var(--ivory);
+    border: 0;
     outline: none;
-    border-color: var(--gold-dim);
-    box-shadow: 0 0 0 2px rgba(217, 186, 125, 0.15);
+    padding: 8px 8px 8px 0;
+    font: 12px var(--font-mono);
   }
-  .list {
-    overflow-y: auto;
-    max-height: 340px;
+  .search-row:focus-within { border-color: var(--blue); }
+  .hint {
+    padding: 5px 7px 4px;
+    color: var(--muted);
+    font: 9px var(--font-mono);
   }
+  .list { overflow-y: auto; max-height: 370px; }
   .cat {
-    color: var(--gold-dim);
-    font-size: 11px;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: rgba(10, 22, 36, 0.98);
+    color: var(--muted);
+    font: 9px var(--font-mono);
     letter-spacing: 0.08em;
-    padding: 7px 8px 3px;
+    text-transform: uppercase;
+    padding: 8px 7px 3px;
     user-select: none;
   }
   .row {
@@ -165,28 +237,48 @@
     border: none;
     color: var(--text);
     text-align: left;
-    padding: 5px 10px;
-    border-radius: 5px;
+    padding: 6px 8px;
+    border-radius: 3px;
     cursor: pointer;
     font: inherit;
   }
-  .row:hover {
+  .row:hover,
+  .add-row.active {
     background: var(--panel-2);
     color: var(--ivory);
+  }
+  .agent-action { color: var(--violet); }
+  .node-result {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    gap: 2px;
+  }
+  .node-result .label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--ivory);
+  }
+  .meta {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--muted);
+    font: 9px var(--font-mono);
   }
   .del {
     color: var(--muted);
     font-size: 11px;
-    padding: 0 3px;
-    border-radius: 3px;
+    padding: 3px;
+    border-radius: 2px;
   }
-  .del:hover {
-    color: var(--crimson);
-  }
+  .del:hover { color: var(--crimson); }
   .empty {
     color: var(--muted);
-    padding: 12px;
+    padding: 16px 10px;
     text-align: center;
+    font: 10px var(--font-mono);
   }
   .node-head {
     display: flex;
@@ -198,24 +290,24 @@
   }
   .type-chip {
     background: var(--panel-3);
-    color: var(--gold);
-    border: 1px solid var(--gold-dim);
-    border-radius: 8px;
-    font-size: 10px;
-    padding: 1px 7px;
+    color: var(--blue);
+    border: 1px solid var(--hairline);
+    border-radius: 3px;
+    font-size: 9px;
+    padding: 2px 6px;
   }
   .node-name {
+    min-width: 0;
+    flex: 1;
     color: var(--ivory);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .action {
-    padding: 7px 10px;
-  }
+  .action { padding: 7px 8px; }
   .danger:hover {
     color: var(--crimson);
-    background: rgba(224, 122, 104, 0.1);
+    background: rgba(238, 123, 115, 0.08);
   }
   .disabled,
   .disabled:hover {
@@ -229,6 +321,6 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     color: var(--muted);
-    font-size: 10px;
+    font-size: 9px;
   }
 </style>

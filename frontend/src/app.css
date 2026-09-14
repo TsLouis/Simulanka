@@ -1,90 +1,90 @@
-/* Simulanka 皮肤轮「星图册 · Starlit Atlas」— 研究图即星座图。
- * 夜空画布上节点是星卡、边是星光丝线；面板是深蓝漆器 + 金缘 + 象牙文字。
- * 主题量集中在此变量表；组件样式只引用变量。canvas 不吃 CSS 变量，
- * 对应常量在 lib/theme.ts —— 两处改动须同步（以注释互指）。 */
+/* Workspace tokens. Canvas colors are mirrored in lib/theme.ts. */
 
 :root {
-  /* 夜空基调 */
-  --night: #0e1626; /* body / 最深 */
-  --sky: #0b1322; /* 画布底色（= theme.ts SKY） */
-  --panel: #141e36;
-  --panel-2: #1a2642; /* 卡片 */
-  --panel-3: #0f1830; /* 输入 / 内嵌 */
-  --hairline: #2b3b60;
-  --hairline-2: #223252;
+  --workspace-bg: #07111d;
+  --canvas-bg: #081421;
+  --panel: #0c1726;
+  --panel-2: #101f31;
+  --panel-3: #091522;
+  --hairline: #27415d;
+  --hairline-2: #1b3047;
 
-  /* 金 —— 人的手笔与典籍缘饰 */
-  --gold: #d9ba7d;
-  --gold-bright: #f2d9a4;
-  --gold-dim: #93794a;
-  --gold-glow: rgba(217, 186, 125, 0.35);
+  /* Human / warm accent. */
+  --gold: #e6bf62;
+  --gold-bright: #f4d98c;
+  --gold-dim: #8b7544;
+  --gold-glow: rgba(230, 191, 98, 0.12);
 
-  /* 文字 */
-  --ivory: #ece3d0;
-  --text: #c9d2e4;
-  --muted: #8d99b5;
+  --ivory: #edf4ff;
+  --text: #bfd0e4;
+  --muted: #71869f;
 
-  /* 语义色（= theme.ts EDGE/PORT 常量；§13.2 三色区分） */
-  --jade: #7ecfa5; /* verified / correct / live */
-  --jade-deep: #1d3a30;
-  --crimson: #e07a68; /* wrong / reject */
-  --crimson-deep: #3a2020;
-  --star: #8fb8e8; /* trace —— 星蓝 */
-  --amber: #e3b566; /* user —— 金线 */
-  --violet: #b28ce0; /* agent —— 紫晶 */
+  --jade: #73d4b1;
+  --jade-deep: #102c27;
+  --crimson: #ee7b73;
+  --crimson-deep: #321b20;
+  --red: #ee7b73;
+  --blue: #68b8f2;
+  --amber: #e6bf62;
+  --violet: #b18af3;
 
-  --font-display: 'ZCOOL XiaoWei', 'Cinzel', 'STKaiti', 'KaiTi', serif;
-  --font-body: 'Noto Sans SC', ui-sans-serif, system-ui, sans-serif;
-  --font-mono: ui-monospace, 'SF Mono', Consolas, monospace;
+  --font-display: ui-monospace, 'SFMono-Regular', 'Cascadia Mono', Consolas, monospace;
+  --font-body: ui-monospace, 'SFMono-Regular', 'Cascadia Mono', Consolas, monospace;
+  --font-mono: ui-monospace, 'SFMono-Regular', 'Cascadia Mono', Consolas, monospace;
 
   color-scheme: dark;
 }
 
 html,
-body {
+body,
+#app {
   margin: 0;
-  padding: 0;
-  background: var(--night);
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--workspace-bg);
   color: var(--text);
   font-family: var(--font-body);
 }
 
+body {
+  image-rendering: pixelated;
+}
+
 ::selection {
-  background: rgba(217, 186, 125, 0.28);
+  background: rgba(104, 184, 242, 0.24);
   color: var(--ivory);
 }
 
-/* 纤细的漆器滚动条 */
 * {
   scrollbar-width: thin;
   scrollbar-color: var(--hairline) transparent;
 }
 *::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
 }
 *::-webkit-scrollbar-thumb {
   background: var(--hairline);
-  border-radius: 4px;
 }
 *::-webkit-scrollbar-thumb:hover {
-  background: var(--gold-dim);
+  background: #355674;
 }
 *::-webkit-scrollbar-track {
   background: transparent;
 }
 
-/* LiteGraph 右键菜单跟随夜空主题（litegraph.css 默认是另一套灰） */
+/* LiteGraph fallback DOM widgets; most menus are replaced by Svelte chrome. */
 .litecontextmenu {
   background: var(--panel) !important;
   border: 1px solid var(--hairline) !important;
-  border-radius: 6px !important;
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55) !important;
+  border-radius: 4px !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.38) !important;
   font-family: var(--font-body) !important;
 }
 .litecontextmenu .litemenu-title {
   background: var(--panel-2) !important;
-  color: var(--gold) !important;
+  color: var(--blue) !important;
 }
 .litecontextmenu .litemenu-entry {
   color: var(--text) !important;
@@ -92,5 +92,5 @@ body {
 }
 .litecontextmenu .litemenu-entry:hover {
   background: var(--panel-2) !important;
-  color: var(--gold-bright) !important;
+  color: var(--ivory) !important;
 }

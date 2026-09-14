@@ -4,9 +4,7 @@
   // searchbox, dialogs), all of which we disabled in favour of our own chrome.
   import { LGraphCanvas, type LGraphNode } from 'litegraph.js'
   import {
-    DEFAULT_PROVIDER_ID,
     acceptGhost,
-    archiveSession,
     createEdge,
     createNode,
     deleteEdge,
@@ -16,43 +14,28 @@
     getCachedRegistryDescriptor,
     fetchNodeInfo,
     fetchPositions,
-    fetchProviderDescriptors,
-    fetchSessionHistory,
-    fetchSessions,
     fetchTemplates,
-    forkSession,
     postVerdict,
-    previewSessionContext,
     renameNode,
     resolveAffordances,
     resolveNote,
     savePositions,
     saveTemplate,
     setDiscuss,
-    stopSession,
-    streamSessionMessage,
-    type ContextRefDTO,
-    type ContextPreviewDTO,
     type CustomTemplateDTO,
-    type FileOpenRequest,
     type HumanVerdict,
     type Positions,
-    type ProviderCapabilitiesDTO,
-    type SessionDTO,
-    type SessionEventDTO,
   } from './lib/api'
   import { subscribeEvents, type EventSubscription } from './lib/events'
   import { buildLiteGraph, type LineageEdge } from './lib/litegraph-adapter'
   import { buildGroups, type NodeTemplate } from './lib/templates'
-  import { applyNightSky, LINEAGE_COLOR } from './lib/theme'
-  import ChatDock from './lib/ChatDock.svelte'
-  import ChatNode, { type ChatMsg } from './lib/ChatNode.svelte'
+  import { applyWorkspaceTheme, LINEAGE_COLOR } from './lib/theme'
+  import { installConnectionFeedback } from './lib/connection-feedback'
+  import { createAgentSessionController } from './lib/agent-session'
+  import WorkspaceShell from './lib/WorkspaceShell.svelte'
+  import TopBar from './lib/TopBar.svelte'
   import ContextMenu from './lib/ContextMenu.svelte'
   import EdgeMenu from './lib/EdgeMenu.svelte'
-  import FileViewer from './lib/FileViewer.svelte'
-  import NodeInspector from './lib/NodeInspector.svelte'
-  import RegistryPanel from './lib/RegistryPanel.svelte'
-  import SessionRecovery from './lib/SessionRecovery.svelte'
   import type {
     AffordanceDTO,
     EdgeDTO,
@@ -80,6 +63,7 @@
   let selectedId: string | null = null
   let selectedNode: NodeDTO | null = null
   let portsById: Map<string, PortDTO> = new Map()
+  let agentPointHeld = false
 
   // 跳转并选中原语（S6 血缘链逐跳 / S7 卡片点击共用）：先问 locator 拿父容器，
   // 视图到位后在 load() 末尾兑现选中——跨下钻层级可达。
@@ -91,10 +75,6 @@
   let edgesById: Map<string, EdgeDTO> = new Map()
   let namesById: Map<string, string> = new Map()
   let edgeMenu: { x: number; y: number; edge: EdgeDTO } | null = null
-
-  // S4 file viewer: non-null = the drawer is open on this request. Assigning a
-  // new request re-loads in place (e.g. jumping 出处 from another atom).
-  let fileRequest: FileOpenRequest | null = null
 
   // Right-click menu: non-null = open. graphPos is where the click landed in
   // graph coordinates — a node added from the menu drops exactly there.
@@ -108,7 +88,6 @@
   } | null = null
   let customTemplates: Record<string, CustomTemplateDTO> = {}
   let registryDescriptor: RegistryDescriptorDTO | null = null
-  let registryOpen = false
   let createAffordance: AffordanceDTO | null = null
   // Type of the container the view is inside (null = top-level). The add-node
   // menu filters server-described Profiles/Templates against the resolved
@@ -120,10 +99,6 @@
     currentRootType,
     createAffordance,
   )
-
-  // Persisted conversation trees are always projected as ChatNodes in their
-  // creation scope. draftOpen controls only the not-yet-persisted new-tree shell.
-  let draftOpen = false
 
   // Set of node ids currently rendered; used to decide whether an SSE commit
   // is relevant to the active view.
@@ -179,15 +154,21 @@
         lgcanvas.setGraph(graph)
       } else {
         lgcanvas = new LGraphCanvas(canvasEl, graph)
-        applyNightSky(lgcanvas)
+        applyWorkspaceTheme(lgcanvas)
+        installConnectionFeedback(lgcanvas)
         wireSelection(lgcanvas)
+        wireAgentPointer(lgcanvas)
         wireNodeMoved(lgcanvas)
         wireGhostLinks(lgcanvas)
         wireContextMenu(lgcanvas)
         wireLinkMenu(lgcanvas)
         wireLineageLayer(lgcanvas)
       }
-      graph.start()
+      // LGraphCanvas owns rendering. Simulanka nodes are presentation/authoring
+      // objects, not executable LiteGraph programs, so starting LGraph would add
+      // an unnecessary requestAnimationFrame execution loop. More importantly,
+      // every SSE reload replaces the graph; starting each replacement can leave
+      // old execution loops alive and progressively degrade interaction latency.
       byNodeMap = byNode
       lineageEdges = lineage
       edgesById = new Map(
@@ -266,6 +247,115 @@
     }
   }
 
+  const agent = createAgentSessionController()
+
+  function contextAttachAction(
+    entity: { affordances: AffordanceDTO[] },
+  ): AffordanceDTO | null {
+    return entity.affordances.find(action => action.id === 'context.attach') ?? null
+  }
+
+  function pointNodeToAgent(node: NodeDTO): boolean {
+    const action = contextAttachAction(node)
+    if (action?.enabled !== true) {
+      status = action?.reason ?? '这个节点当前不能加入 Agent context'
+      return false
+    }
+    agent.addPendingRef(
+      { kind: 'node', ref_id: node.id },
+      `${node.type} · ${node.name}`,
+    )
+    status = `Agent ← ${node.name}`
+    return true
+  }
+
+  function pointPortToAgent(port: PortDTO, nodeName: string): boolean {
+    const action = contextAttachAction(port)
+    if (action?.enabled !== true) {
+      status = action?.reason ?? '这个 Port 当前不能加入 Agent context'
+      return false
+    }
+    agent.addPendingRef(
+      { kind: 'port', ref_id: port.id },
+      `port · ${nodeName}/${port.name}`,
+    )
+    status = `Agent ← ${nodeName}/${port.name}`
+    return true
+  }
+
+  function pointEdgeToAgent(edge: EdgeDTO): boolean {
+    const action = contextAttachAction(edge)
+    if (action?.enabled !== true) {
+      status = action?.reason ?? '这条边当前不能加入 Agent context'
+      return false
+    }
+    agent.addPendingRef(
+      { kind: 'edge', ref_id: edge.id },
+      `edge · ${namesById.get(edge.src) ?? edge.src} → ${namesById.get(edge.dst) ?? edge.dst}`,
+    )
+    status = `Agent ← ${edge.type}`
+    return true
+  }
+
+  function setAgentPointHeld(active: boolean) {
+    if (agentPointHeld === active) return
+    agentPointHeld = active
+    canvasEl?.classList.toggle('agent-pointing', active)
+  }
+
+  function isTypingTarget(target: EventTarget | null): boolean {
+    const element = target as HTMLElement | null
+    return element instanceof HTMLInputElement
+      || element instanceof HTMLTextAreaElement
+      || element?.isContentEditable === true
+  }
+
+  function wireAgentPointer(canvas: LGraphCanvas) {
+    canvasEl.addEventListener('mousedown', onAgentPointerMouseDown, true)
+    void canvas
+  }
+
+  function onAgentPointerMouseDown(e: MouseEvent) {
+    if (!agentPointHeld || e.button !== 0 || !lgcanvas) return
+    const pos = (lgcanvas as unknown as {
+      convertEventToCanvasOffset: (event: MouseEvent) => [number, number]
+    }).convertEventToCanvasOffset(e)
+    const graph = lgcanvas.graph as unknown as {
+      getNodeOnPos?: (x: number, y: number) => LGraphNode | null
+    } | null
+    const hit = graph?.getNodeOnPos?.(pos[0], pos[1]) ?? null
+    const dto = hit
+      ? ((hit as unknown as { simulanka?: NodeDTO }).simulanka ?? null)
+      : null
+    if (!hit || !dto) return
+
+    const nodeView = hit as unknown as {
+      getSlotInPosition?: (
+        x: number,
+        y: number,
+      ) => { input?: unknown; output?: unknown; slot: number } | null
+      simulanka_in_ports?: string[]
+      simulanka_out_ports?: string[]
+    }
+    const slot = nodeView.getSlotInPosition?.(pos[0], pos[1]) ?? null
+    const portId = slot?.input
+      ? nodeView.simulanka_in_ports?.[slot.slot]
+      : slot?.output
+        ? nodeView.simulanka_out_ports?.[slot.slot]
+        : undefined
+    const port = portId ? portsById.get(portId) : undefined
+
+    // `A + click` is a pointing gesture, not selection or movement. Consume the
+    // click before LiteGraph can begin a drag; the graph itself stays unchanged.
+    e.preventDefault()
+    e.stopImmediatePropagation()
+    if (port) {
+      pointPortToAgent(port, dto.name)
+    } else {
+      pointNodeToAgent(dto)
+    }
+  }
+
   // --- S7 就地裁决：链接中心点点击 → 锚定菜单 → server 人侧端点 --------------
 
   // LiteGraph 原生把「点中链接中心点」路由到 showLinkMenu(默认弹它自己的
@@ -277,6 +367,11 @@
       const id = (link as { simulanka_edge_id?: string }).simulanka_edge_id
       const dto = id ? edgesById.get(id) : undefined
       if (!dto) return
+      if (agentPointHeld) {
+        pointEdgeToAgent(dto)
+        edgeMenu = null
+        return
+      }
       edgeMenu = { x: e.clientX, y: e.clientY, edge: dto }
     }
   }
@@ -326,815 +421,6 @@
     }
   }
 
-  // S8 generic session shell. The durable session forest is projected into
-  // scope -> tree -> branch UI state. Provider-native history remains the
-  // authority; normalized events are only the visible/auditable transcript.
-  type PendingContextRef = ContextRefDTO & {
-    label: string
-    pinned: boolean
-  }
-  type TurnTarget = {
-    scopeKey: string
-    scopeRootId: string | null
-    chatKey: string
-    treeId: string | null
-    sessionId: string | null
-  }
-  const ACTIVE_BRANCH_KEY = 'simulanka.active_session_by_tree'
-  const SELECTED_TREE_KEY = 'simulanka.selected_tree_by_scope'
-  let sessionsById: Record<string, SessionDTO> = {}
-  let sessionIdsByScope: Record<string, string[]> = {}
-  let activeSessionByTree: Record<string, string> = {}
-  let selectedTreeByScope: Record<string, string> = {}
-  let selectedTreeId: string | null = null
-  let eventsBySession: Record<string, SessionEventDTO[]> = {}
-  let draftEventsByScope: Record<string, SessionEventDTO[]> = {}
-  let pendingRefsByChat: Record<string, PendingContextRef[]> = {}
-  let previewByChat: Record<string, ContextPreviewDTO | null> = {}
-  let previewErrorByChat: Record<string, string | null> = {}
-  let previewRequestByChat: Record<string, number> = {}
-  let previewBusyChatKeys = new Set<string>()
-  let busyChatKeys = new Set<string>()
-  let historyRequestBySession: Record<string, number> = {}
-  let sessionListRequest = 0
-  let sessionListBusy = false
-  let sessionActionBusy = false
-  let sessionListError: string | null = null
-  let providerCapabilitiesById: Record<string, ProviderCapabilitiesDTO> = {}
-  let stoppingSessionIds = new Set<string>()
-  let recoveryOpen = false
-  let recoverySessions: SessionDTO[] = []
-  let recoverySessionId: string | null = null
-  let recoveryEvents: SessionEventDTO[] = []
-  let recoveryBusy = false
-  let recoveryError: string | null = null
-
-  $: visibleSessionIds = sessionIdsByScope[rootKey] ?? []
-  $: visibleSessions = visibleSessionIds
-    .map(sessionId => sessionsById[sessionId])
-    .filter((session): session is SessionDTO => session !== undefined)
-  $: visibleTreeIds = [...new Set(visibleSessions.map(session => session.tree_id))]
-  $: visibleSessionsByTree = groupSessionsByTree(visibleSessions)
-  $: activeSessionIdsByTree = Object.fromEntries(
-    visibleTreeIds.map(treeId => [
-      treeId,
-      chooseActiveSessionId(
-        visibleSessionsByTree[treeId] ?? [],
-        activeSessionByTree[treeId],
-        treeId,
-      ),
-    ]),
-  ) as Record<string, string | null>
-  $: messagesByTree = Object.fromEntries(
-    visibleTreeIds.map(treeId => {
-      const sessionId = activeSessionIdsByTree[treeId]
-      return [
-        treeId,
-        sessionId
-          ? (eventsBySession[sessionId] ?? []).map(sessionEventMessage)
-          : [],
-      ]
-    }),
-  ) as Record<string, ChatMsg[]>
-  $: cacheLabelsByTree = Object.fromEntries(
-    visibleTreeIds.map(treeId => {
-      const sessionId = activeSessionIdsByTree[treeId]
-      return [
-        treeId,
-        cacheLabelForEvents(
-          sessionId ? eventsBySession[sessionId] ?? [] : [],
-        ),
-      ]
-    }),
-  ) as Record<string, string | null>
-  $: draftChatKey = `draft:${rootKey}`
-  $: selectedChatKey = selectedTreeId ?? draftChatKey
-  $: activeSessionId =
-    selectedTreeId === null
-      ? null
-      : activeSessionIdsByTree[selectedTreeId] ?? null
-  $: activeSession =
-    activeSessionId === null ? null : sessionsById[activeSessionId] ?? null
-  $: sessionEvents =
-    activeSessionId === null
-      ? draftEventsByScope[rootKey] ?? []
-      : eventsBySession[activeSessionId] ?? []
-  $: pendingRefs = pendingRefsByChat[selectedChatKey] ?? []
-  $: contextPreview = previewByChat[selectedChatKey] ?? null
-  $: previewError = previewErrorByChat[selectedChatKey] ?? null
-  $: previewBusy = previewBusyChatKeys.has(selectedChatKey)
-  $: chatBusy = busyChatKeys.has(selectedChatKey)
-  $: chatReadOnly = isReadOnly(activeSession)
-  $: contextLabel =
-    pendingRefs.length > 0
-      ? `${selectedTreeId ? '当前会话树' : '新树'} · 已附加 ${pendingRefs.length} 项`
-      : `${selectedTreeId ? '当前会话树' : '新树'} · 未附加上下文`
-
-  function latestSessionUsage(
-    events: SessionEventDTO[],
-  ): Record<string, unknown> | null {
-    for (let index = events.length - 1; index >= 0; index -= 1) {
-      const usage = events[index].details?.usage
-      if (usage && typeof usage === 'object' && !Array.isArray(usage)) {
-        return usage as Record<string, unknown>
-      }
-    }
-    return null
-  }
-
-  function isReadOnly(session: SessionDTO | null): boolean {
-    return (
-      session?.status === 'archived' ||
-      (session?.status === 'orphaned' && session.native_session_id === null) ||
-      session?.status === 'native_missing' ||
-      session?.status === 'stateless'
-    )
-  }
-
-  function readStoredMap(key: string): Record<string, string> {
-    try {
-      const value = JSON.parse(window.localStorage.getItem(key) ?? '{}')
-      if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
-      return Object.fromEntries(
-        Object.entries(value).filter(
-          (entry): entry is [string, string] => typeof entry[1] === 'string',
-        ),
-      )
-    } catch {
-      return {}
-    }
-  }
-
-  function persistSessionSelection() {
-    window.localStorage.setItem(
-      ACTIVE_BRANCH_KEY,
-      JSON.stringify(activeSessionByTree),
-    )
-    window.localStorage.setItem(
-      SELECTED_TREE_KEY,
-      JSON.stringify(selectedTreeByScope),
-    )
-  }
-
-  function invalidateSessionListSnapshot() {
-    // A list response represents an older server snapshot. Once a local
-    // mutation starts, that response must never overwrite the new tree,
-    // branch, or lifecycle state when it eventually resolves.
-    sessionListRequest += 1
-    sessionListBusy = false
-  }
-
-  function sessionsForTree(treeId: string): SessionDTO[] {
-    return visibleSessions.filter(session => session.tree_id === treeId)
-  }
-
-  function groupSessionsByTree(
-    sessions: SessionDTO[],
-  ): Record<string, SessionDTO[]> {
-    const grouped: Record<string, SessionDTO[]> = {}
-    for (const session of sessions) {
-      grouped[session.tree_id] = [...(grouped[session.tree_id] ?? []), session]
-    }
-    return grouped
-  }
-
-  function chooseActiveSessionId(
-    branches: SessionDTO[],
-    remembered: string | undefined,
-    treeId: string,
-  ): string | null {
-    return (
-      branches.find(session => session.session_id === remembered)?.session_id ??
-      branches.find(session => session.status !== 'archived')?.session_id ??
-      branches.find(session => session.session_id === treeId)?.session_id ??
-      branches[0]?.session_id ??
-      null
-    )
-  }
-
-  function activeSessionIdForTree(treeId: string): string | null {
-    return chooseActiveSessionId(
-      sessionsForTree(treeId),
-      activeSessionByTree[treeId],
-      treeId,
-    )
-  }
-
-  function selectTree(treeId: string) {
-    selectedTreeId = treeId
-    selectedTreeByScope = { ...selectedTreeByScope, [rootKey]: treeId }
-    draftOpen = false
-    const sessionId = activeSessionIdForTree(treeId)
-    if (sessionId) {
-      activeSessionByTree = { ...activeSessionByTree, [treeId]: sessionId }
-      if (!eventsBySession[sessionId]) void loadSessionHistory(sessionId)
-    }
-    persistSessionSelection()
-  }
-
-  async function loadSessionHistory(sessionId: string) {
-    const request = (historyRequestBySession[sessionId] ?? 0) + 1
-    historyRequestBySession = {
-      ...historyRequestBySession,
-      [sessionId]: request,
-    }
-    try {
-      const history = await fetchSessionHistory(sessionId)
-      if (historyRequestBySession[sessionId] !== request) return
-      sessionsById = {
-        ...sessionsById,
-        [history.session.session_id]: history.session,
-      }
-      eventsBySession = {
-        ...eventsBySession,
-        [history.session.session_id]: history.events,
-      }
-    } catch (err) {
-      if (historyRequestBySession[sessionId] === request) {
-        sessionListError = (err as Error).message
-      }
-    }
-  }
-
-  async function openSession(
-    sessionId: string,
-    sessionScopeKey: string = rootKey,
-  ) {
-    const session = sessionsById[sessionId]
-    if (!session) return
-    // Context delivery state belongs to the native branch, not merely the
-    // visible tree. A preview compiled for the previous branch is stale.
-    invalidatePreview(session.tree_id)
-    selectedTreeByScope = {
-      ...selectedTreeByScope,
-      [sessionScopeKey]: session.tree_id,
-    }
-    activeSessionByTree = {
-      ...activeSessionByTree,
-      [session.tree_id]: sessionId,
-    }
-    if (rootKey === sessionScopeKey) {
-      selectedTreeId = session.tree_id
-      draftOpen = false
-    }
-    persistSessionSelection()
-    await loadSessionHistory(sessionId)
-  }
-
-  async function restoreSessions(scopeRootId: string | null = currentRootId) {
-    const request = ++sessionListRequest
-    const requestedScopeKey = scopeRootId ?? 'top'
-    sessionListBusy = true
-    sessionListError = null
-    try {
-      const scopedSessions = await fetchSessions(scopeRootId)
-      if (request !== sessionListRequest) return
-      const nextSessions = { ...sessionsById }
-      for (const session of scopedSessions) {
-        nextSessions[session.session_id] = session
-      }
-      sessionsById = nextSessions
-      sessionIdsByScope = {
-        ...sessionIdsByScope,
-        [requestedScopeKey]: scopedSessions.map(session => session.session_id),
-      }
-      const treeIds = [...new Set(scopedSessions.map(session => session.tree_id))]
-      for (const treeId of treeIds) {
-        const branches = scopedSessions.filter(session => session.tree_id === treeId)
-        const remembered = activeSessionByTree[treeId]
-        const active =
-          branches.find(session => session.session_id === remembered) ??
-          branches.find(session => session.status !== 'archived') ??
-          branches.find(session => session.session_id === treeId) ??
-          branches[0]
-        if (active) {
-          activeSessionByTree = {
-            ...activeSessionByTree,
-            [treeId]: active.session_id,
-          }
-          if (!eventsBySession[active.session_id]) {
-            void loadSessionHistory(active.session_id)
-          }
-        }
-      }
-      if (request === sessionListRequest && rootKey === requestedScopeKey) {
-        const rememberedTree = selectedTreeByScope[requestedScopeKey]
-        const candidate =
-          treeIds.find(treeId => treeId === rememberedTree) ?? treeIds[0] ?? null
-        selectedTreeId = candidate
-        draftOpen = candidate === null
-      }
-      persistSessionSelection()
-    } catch (err) {
-      if (request === sessionListRequest) {
-        sessionListError = (err as Error).message
-      }
-    } finally {
-      if (request === sessionListRequest) sessionListBusy = false
-    }
-  }
-
-  async function openRecovery() {
-    recoveryOpen = true
-    recoveryBusy = true
-    recoveryError = null
-    try {
-      recoverySessions = await fetchSessions('unassigned')
-      const candidate =
-        recoverySessions.find(
-          session => session.session_id === recoverySessionId,
-        ) ?? recoverySessions[0]
-      if (candidate) await openRecoverySession(candidate.session_id)
-      else {
-        recoverySessionId = null
-        recoveryEvents = []
-      }
-    } catch (err) {
-      recoveryError = (err as Error).message
-    } finally {
-      recoveryBusy = false
-    }
-  }
-
-  async function openRecoverySession(sessionId: string) {
-    recoverySessionId = sessionId
-    recoveryBusy = true
-    recoveryError = null
-    try {
-      const history = await fetchSessionHistory(sessionId)
-      if (recoverySessionId === sessionId) recoveryEvents = history.events
-    } catch (err) {
-      if (recoverySessionId === sessionId) {
-        recoveryError = (err as Error).message
-      }
-    } finally {
-      if (recoverySessionId === sessionId) recoveryBusy = false
-    }
-  }
-
-  function startNewSession() {
-    selectedTreeId = null
-    draftOpen = true
-    draftEventsByScope = { ...draftEventsByScope, [rootKey]: [] }
-    pendingRefsByChat = { ...pendingRefsByChat, [draftChatKey]: [] }
-    previewByChat = { ...previewByChat, [draftChatKey]: null }
-    previewErrorByChat = { ...previewErrorByChat, [draftChatKey]: null }
-  }
-
-  function closeDraft() {
-    draftOpen = false
-    const candidate = visibleTreeIds[0]
-    if (candidate) selectTree(candidate)
-  }
-
-  async function forkActiveSession(treeId: string) {
-    const sessionId = activeSessionIdForTree(treeId)
-    if (!sessionId || sessionActionBusy) return
-    const sessionScopeKey = rootKey
-    invalidateSessionListSnapshot()
-    sessionActionBusy = true
-    sessionListError = null
-    try {
-      const child = await forkSession(sessionId)
-      sessionsById = { ...sessionsById, [child.session_id]: child }
-      sessionIdsByScope = {
-        ...sessionIdsByScope,
-        [sessionScopeKey]: [
-          child.session_id,
-          ...(sessionIdsByScope[sessionScopeKey] ?? []).filter(
-            candidate => candidate !== child.session_id,
-          ),
-        ],
-      }
-      activeSessionByTree = {
-        ...activeSessionByTree,
-        [treeId]: child.session_id,
-      }
-      await openSession(child.session_id, sessionScopeKey)
-    } catch (err) {
-      sessionListError = (err as Error).message
-    } finally {
-      sessionActionBusy = false
-    }
-  }
-
-  async function archiveActiveSession(treeId: string) {
-    const sessionId = activeSessionIdForTree(treeId)
-    if (!sessionId || sessionActionBusy) return
-    invalidateSessionListSnapshot()
-    sessionActionBusy = true
-    sessionListError = null
-    try {
-      const archived = await archiveSession(sessionId)
-      sessionsById = { ...sessionsById, [archived.session_id]: archived }
-    } catch (err) {
-      sessionListError = (err as Error).message
-    } finally {
-      sessionActionBusy = false
-    }
-  }
-
-  async function stopActiveSession(treeId: string) {
-    const sessionId = activeSessionIdForTree(treeId)
-    if (!sessionId || stoppingSessionIds.has(sessionId)) return
-    stoppingSessionIds = new Set([...stoppingSessionIds, sessionId])
-    sessionListError = null
-    try {
-      await stopSession(sessionId)
-    } catch (err) {
-      const nextStopping = new Set(stoppingSessionIds)
-      nextStopping.delete(sessionId)
-      stoppingSessionIds = nextStopping
-      sessionListError = (err as Error).message
-    }
-  }
-
-  function addPendingRef(ref: ContextRefDTO, label: string) {
-    const chatKey = selectedChatKey
-    const refs = pendingRefsByChat[chatKey] ?? []
-    const exists = refs.some(
-      item => item.kind === ref.kind && item.ref_id === ref.ref_id,
-    )
-    if (!exists) {
-      pendingRefsByChat = {
-        ...pendingRefsByChat,
-        [chatKey]: [...refs, { ...ref, label, pinned: false }],
-      }
-    }
-    invalidatePreview(chatKey)
-    if (selectedTreeId === null) draftOpen = true
-  }
-
-  function removePendingRef(ref: ContextRefDTO) {
-    const chatKey = selectedChatKey
-    pendingRefsByChat = {
-      ...pendingRefsByChat,
-      [chatKey]: (pendingRefsByChat[chatKey] ?? []).filter(
-        item => item.kind !== ref.kind || item.ref_id !== ref.ref_id,
-      ),
-    }
-    invalidatePreview(chatKey)
-  }
-
-  function togglePendingPin(ref: ContextRefDTO) {
-    const chatKey = selectedChatKey
-    pendingRefsByChat = {
-      ...pendingRefsByChat,
-      [chatKey]: (pendingRefsByChat[chatKey] ?? []).map(item =>
-        item.kind === ref.kind && item.ref_id === ref.ref_id
-          ? { ...item, pinned: !item.pinned }
-          : item,
-      ),
-    }
-  }
-
-  function invalidatePreview(chatKey: string) {
-    previewRequestByChat = {
-      ...previewRequestByChat,
-      [chatKey]: (previewRequestByChat[chatKey] ?? 0) + 1,
-    }
-    const nextBusy = new Set(previewBusyChatKeys)
-    nextBusy.delete(chatKey)
-    previewBusyChatKeys = nextBusy
-    previewByChat = { ...previewByChat, [chatKey]: null }
-    previewErrorByChat = { ...previewErrorByChat, [chatKey]: null }
-  }
-
-  async function previewPendingRefs() {
-    const chatKey = selectedChatKey
-    const request = (previewRequestByChat[chatKey] ?? 0) + 1
-    previewRequestByChat = { ...previewRequestByChat, [chatKey]: request }
-    previewBusyChatKeys = new Set([...previewBusyChatKeys, chatKey])
-    previewErrorByChat = { ...previewErrorByChat, [chatKey]: null }
-    const refs = (pendingRefsByChat[chatKey] ?? []).map(
-      ({ kind, ref_id }) => ({ kind, ref_id }),
-    )
-    const sessionId =
-      selectedTreeId === null ? null : activeSessionIdForTree(selectedTreeId)
-    try {
-      const result = await previewSessionContext(refs, sessionId)
-      if (request === previewRequestByChat[chatKey]) {
-        previewByChat = { ...previewByChat, [chatKey]: result }
-      }
-    } catch (err) {
-      if (request !== previewRequestByChat[chatKey]) return
-      previewByChat = { ...previewByChat, [chatKey]: null }
-      previewErrorByChat = {
-        ...previewErrorByChat,
-        [chatKey]: (err as Error).message,
-      }
-    } finally {
-      if (request === previewRequestByChat[chatKey]) {
-        const nextBusy = new Set(previewBusyChatKeys)
-        nextBusy.delete(chatKey)
-        previewBusyChatKeys = nextBusy
-      }
-    }
-  }
-
-  function sessionEventMessage(event: SessionEventDTO): ChatMsg {
-    if (event.type === 'user_msg') {
-      return { role: 'user', text: event.text ?? '', details: event.details }
-    }
-    if (event.type === 'agent_text') {
-      return { role: 'agent', text: event.text ?? '', details: event.details }
-    }
-    if (event.type === 'tool_call' || event.type === 'tool_result') {
-      return {
-        role: 'agent',
-        kind: event.type,
-        text: event.tool_name ?? 'tool',
-        status: event.status,
-        toolName: event.tool_name,
-        callId: event.call_id,
-        input: event.input,
-        output: event.output,
-        details: event.details,
-      }
-    }
-    if (event.type === 'error') {
-      return {
-        role: 'agent',
-        kind: 'error',
-        text: event.text ?? 'Agent 会话失败',
-        details: event.details,
-      }
-    }
-    return {
-      role: 'system',
-      kind: 'status',
-      status: event.status,
-      text: event.text ?? event.status ?? '状态更新',
-      details: event.details,
-    }
-  }
-
-  function sessionEvent(event: SessionEventDTO, target: TurnTarget) {
-    if (event.type === 'status' && event.status === 'created') {
-      const details = event.details
-      const sessionId = details?.session_id
-      const providerId = details?.provider_id
-      const workspace = details?.workspace
-      if (
-        typeof sessionId === 'string' &&
-        typeof providerId === 'string' &&
-        typeof workspace === 'string'
-      ) {
-        const previousChatKey = target.chatKey
-        target.sessionId = sessionId
-        target.treeId = sessionId
-        target.chatKey = sessionId
-        const session: SessionDTO = {
-          session_id: sessionId,
-          tree_id: sessionId,
-          scope_root_id: target.scopeRootId,
-          scope_status: 'bound',
-          provider_id: providerId,
-          model: typeof details?.model === 'string' ? details.model : null,
-          native_session_id: null,
-          workspace,
-          parent_session_id:
-            typeof details?.parent_session_id === 'string'
-              ? details.parent_session_id
-              : null,
-          forked_from_event_id:
-            typeof details?.forked_from_event_id === 'string'
-              ? details.forked_from_event_id
-              : null,
-          status: 'idle',
-          legacy: false,
-        }
-        sessionsById = { ...sessionsById, [sessionId]: session }
-        sessionIdsByScope = {
-          ...sessionIdsByScope,
-          [target.scopeKey]: [
-            sessionId,
-            ...(sessionIdsByScope[target.scopeKey] ?? []).filter(
-              candidate => candidate !== sessionId,
-            ),
-          ],
-        }
-        activeSessionByTree = { ...activeSessionByTree, [sessionId]: sessionId }
-        const draftRefs = pendingRefsByChat[previousChatKey] ?? []
-        const nextPendingRefs = { ...pendingRefsByChat }
-        delete nextPendingRefs[previousChatKey]
-        nextPendingRefs[sessionId] = draftRefs
-        pendingRefsByChat = nextPendingRefs
-        const nextPreview = { ...previewByChat }
-        delete nextPreview[previousChatKey]
-        nextPreview[sessionId] = null
-        previewByChat = nextPreview
-        const nextPreviewError = { ...previewErrorByChat }
-        delete nextPreviewError[previousChatKey]
-        nextPreviewError[sessionId] = null
-        previewErrorByChat = nextPreviewError
-        const draftPosition = positions[target.scopeKey]?.['chat:draft']
-        if (draftPosition) {
-          positions = {
-            ...positions,
-            [target.scopeKey]: {
-              ...(positions[target.scopeKey] ?? {}),
-              [`chat:${sessionId}`]: draftPosition,
-            },
-          }
-          void savePositions(target.scopeKey, {
-            [`chat:${sessionId}`]: draftPosition,
-          })
-        }
-        if (rootKey === target.scopeKey && selectedTreeId === null) {
-          selectedTreeId = sessionId
-          selectedTreeByScope = {
-            ...selectedTreeByScope,
-            [target.scopeKey]: sessionId,
-          }
-          draftOpen = false
-        }
-        const nextBusy = new Set(busyChatKeys)
-        nextBusy.delete(previousChatKey)
-        nextBusy.add(sessionId)
-        busyChatKeys = nextBusy
-        persistSessionSelection()
-      }
-    }
-    if (target.sessionId) {
-      eventsBySession = {
-        ...eventsBySession,
-        [target.sessionId]: [
-          ...(eventsBySession[target.sessionId] ?? []),
-          event,
-        ],
-      }
-      const lifecycle = event.status
-      const lifecycleStatuses: SessionDTO['status'][] = [
-        'idle',
-        'running',
-        'done',
-        'failed',
-        'interrupted',
-        'orphaned',
-        'native_missing',
-        'stateless',
-        'archived',
-      ]
-      const session = sessionsById[target.sessionId]
-      if (session) {
-        sessionsById = {
-          ...sessionsById,
-          [target.sessionId]: {
-            ...session,
-            native_session_id:
-              event.provider_session_id ?? session.native_session_id,
-            status:
-              lifecycle &&
-              lifecycleStatuses.includes(lifecycle as SessionDTO['status'])
-                ? (lifecycle as SessionDTO['status'])
-                : session.status,
-          },
-        }
-      }
-      if (
-        lifecycle &&
-        ['done', 'failed', 'interrupted', 'orphaned', 'native_missing', 'stateless'].includes(
-          lifecycle,
-        )
-      ) {
-        const nextStopping = new Set(stoppingSessionIds)
-        nextStopping.delete(target.sessionId)
-        stoppingSessionIds = nextStopping
-      }
-    }
-  }
-
-  async function chatSend(text: string) {
-    const originChatKey = selectedChatKey
-    const originTreeId = selectedTreeId
-    const target: TurnTarget = {
-      scopeKey: rootKey,
-      scopeRootId: currentRootId,
-      chatKey: originChatKey,
-      treeId: originTreeId,
-      sessionId:
-        originTreeId === null ? null : activeSessionIdForTree(originTreeId),
-    }
-    invalidateSessionListSnapshot()
-    if (target.sessionId) {
-      historyRequestBySession = {
-        ...historyRequestBySession,
-        [target.sessionId]:
-          (historyRequestBySession[target.sessionId] ?? 0) + 1,
-      }
-    }
-    busyChatKeys = new Set([...busyChatKeys, originChatKey])
-    invalidatePreview(originChatKey)
-    let turnDone = false
-    const sentRefs = (pendingRefsByChat[originChatKey] ?? []).map(ref => ({
-      ...ref,
-    }))
-    try {
-      const resolvedSessionId = await streamSessionMessage(
-        {
-          sessionId: target.sessionId,
-          scopeRootId: target.scopeRootId,
-          text,
-          providerId: DEFAULT_PROVIDER_ID,
-          refs: sentRefs.map(({ kind, ref_id }) => ({ kind, ref_id })),
-        },
-        event => {
-          if (event.type === 'status' && event.status === 'done') {
-            turnDone = true
-          }
-          sessionEvent(event, target)
-        },
-      )
-      target.sessionId = resolvedSessionId
-      if (turnDone) {
-        const sentKeys = new Set(
-          sentRefs.map(ref => `${ref.kind}:${ref.ref_id}`),
-        )
-        pendingRefsByChat = {
-          ...pendingRefsByChat,
-          [target.chatKey]: (pendingRefsByChat[target.chatKey] ?? []).filter(
-            ref => ref.pinned || !sentKeys.has(`${ref.kind}:${ref.ref_id}`),
-          ),
-        }
-        invalidatePreview(target.chatKey)
-      }
-    } catch (err) {
-      const failure: SessionEventDTO = {
-        type: 'error',
-        status: 'failed',
-        text: `⚠ 会话失败: ${(err as Error).message}`,
-      }
-      if (target.sessionId) {
-        eventsBySession = {
-          ...eventsBySession,
-          [target.sessionId]: [
-            ...(eventsBySession[target.sessionId] ?? []),
-            failure,
-          ],
-        }
-      } else {
-        draftEventsByScope = {
-          ...draftEventsByScope,
-          [target.scopeKey]: [
-            ...(draftEventsByScope[target.scopeKey] ?? []),
-            failure,
-          ],
-        }
-      }
-    } finally {
-      const nextBusy = new Set(busyChatKeys)
-      nextBusy.delete(originChatKey)
-      nextBusy.delete(target.chatKey)
-      busyChatKeys = nextBusy
-      if (target.sessionId) {
-        const nextStopping = new Set(stoppingSessionIds)
-        nextStopping.delete(target.sessionId)
-        stoppingSessionIds = nextStopping
-      }
-    }
-  }
-
-  function cacheLabelForEvents(events: SessionEventDTO[]): string | null {
-    const usage = latestSessionUsage(events)
-    if (usage) {
-      return `cache ${typeof usage.cached_input_tokens === 'number' ? usage.cached_input_tokens : '未报告'}`
-    }
-    return events.some(event => event.type === 'status' && event.status === 'done')
-      ? 'cache 未报告'
-      : null
-  }
-
-  function chatPosition(
-    chatId: string,
-    index: number,
-  ): [number, number] {
-    const nodeWidth = 360
-    const horizontalGap = 16
-    const verticalGap = 18
-    const availableWidth = Math.max(nodeWidth, window.innerWidth - 36)
-    const columns = Math.max(
-      1,
-      Math.floor(
-        (availableWidth + horizontalGap) / (nodeWidth + horizontalGap),
-      ),
-    )
-    const column = index % columns
-    const row = Math.floor(index / columns)
-    return (
-      viewPositions[chatId] ?? [
-        Math.max(
-          18,
-          window.innerWidth -
-            18 -
-            nodeWidth -
-            column * (nodeWidth + horizontalGap),
-        ),
-        64 + row * (Math.min(window.innerHeight * 0.6, 420) + verticalGap),
-      ]
-    )
-  }
-
   // §13.5.3: render ghost links (agent proposals, status="proposed") dashed.
   // LiteGraph has no per-link dash, so shadow the instance renderLink: set a
   // canvas line-dash around the original draw when the link is flagged ghost.
@@ -1175,7 +461,7 @@
 
   // A small chip at the link centre carrying the output-slice (§13.5.6). Drawn
   // in graph coordinates (the renderLink ctx is already canvas-transformed).
-  // 星图册: night-lacquer chip, hairline border in the link's own colour.
+  // The chip border uses the link's own colour.
   function drawSliceLabel(
     ctx: CanvasRenderingContext2D,
     pos: [number, number],
@@ -1193,7 +479,7 @@
     const r = 4
     ctx.beginPath()
     ctx.roundRect(x, y, bw, h, r)
-    ctx.fillStyle = 'rgba(11, 19, 34, 0.88)' // --sky @ 88%
+    ctx.fillStyle = 'rgba(11, 19, 34, 0.88)' // --canvas-bg @ 88%
     ctx.fill()
     ctx.strokeStyle = color
     ctx.globalAlpha = 0.55
@@ -1310,11 +596,9 @@
     navBack = [...navBack, currentRootId]
     navFwd = []
     currentRootId = target.id
-    selectedTreeId = null
-    draftOpen = false
     selectedId = null
+    await agent.setScope(target.id)
     await load()
-    void restoreSessions(target.id)
     menu = {
       ...anchor,
       mode: 'add',
@@ -1398,7 +682,7 @@
   function menuAttach() {
     const nodes = menu?.nodes ?? []
     for (const node of nodes) {
-      addPendingRef(
+      agent.addPendingRef(
         { kind: 'node', ref_id: node.id },
         `${node.type} · ${node.name}`,
       )
@@ -1581,11 +865,9 @@
     navBack = [...navBack, currentRootId]
     navFwd = []
     currentRootId = root
-    selectedTreeId = null
-    draftOpen = false
     selectedId = null
     void load()
-    void restoreSessions(root)
+    void agent.setScope(root)
   }
 
   function goBack() {
@@ -1593,11 +875,9 @@
     navFwd = [...navFwd, currentRootId]
     currentRootId = navBack[navBack.length - 1]
     navBack = navBack.slice(0, -1)
-    selectedTreeId = null
-    draftOpen = false
     selectedId = null
     void load()
-    void restoreSessions(currentRootId)
+    void agent.setScope(currentRootId)
   }
 
   function goForward() {
@@ -1605,11 +885,9 @@
     navBack = [...navBack, currentRootId]
     currentRootId = navFwd[navFwd.length - 1]
     navFwd = navFwd.slice(0, -1)
-    selectedTreeId = null
-    draftOpen = false
     selectedId = null
     void load()
-    void restoreSessions(currentRootId)
+    void agent.setScope(currentRootId)
   }
 
   // Mouse side buttons (3=back, 4=forward) and Alt+←/→.
@@ -1623,6 +901,16 @@
     }
   }
   function onNavKey(e: KeyboardEvent) {
+    if (isTypingTarget(e.target)) return
+    if (
+      e.key.toLowerCase() === 'a'
+      && !e.altKey
+      && !e.ctrlKey
+      && !e.metaKey
+    ) {
+      setAgentPointHeld(true)
+      return
+    }
     if (!e.altKey) return
     if (e.key === 'ArrowLeft') {
       e.preventDefault()
@@ -1631,6 +919,12 @@
       e.preventDefault()
       goForward()
     }
+  }
+  function onWorkspaceKeyUp(e: KeyboardEvent) {
+    if (e.key.toLowerCase() === 'a') setAgentPointHeld(false)
+  }
+  function onWindowBlur() {
+    setAgentPointHeld(false)
   }
 
   function goTo(idx: number) {
@@ -1641,8 +935,7 @@
   let subscription: EventSubscription | null = null
 
   onMount(async () => {
-    activeSessionByTree = readStoredMap(ACTIVE_BRANCH_KEY)
-    selectedTreeByScope = readStoredMap(SELECTED_TREE_KEY)
+    void agent.initialize()
     try {
       positions = await fetchPositions()
     } catch (err) {
@@ -1653,18 +946,7 @@
         customTemplates = t
       })
       .catch(() => undefined)
-    void fetchProviderDescriptors()
-      .then(descriptors => {
-        providerCapabilitiesById = Object.fromEntries(
-          descriptors.map(descriptor => [
-            descriptor.provider_id,
-            descriptor.capabilities,
-          ]),
-        )
-      })
-      .catch(() => undefined)
     void load()
-    void restoreSessions(null)
     subscription = subscribeEvents({
       onReady: gv => {
         liveOk = true
@@ -1691,6 +973,8 @@
     window.addEventListener('pagehide', beaconFlush)
     window.addEventListener('mouseup', onNavMouse)
     window.addEventListener('keydown', onNavKey)
+    window.addEventListener('keyup', onWorkspaceKeyUp)
+    window.addEventListener('blur', onWindowBlur)
     document.addEventListener('visibilitychange', flushIfHidden)
   })
 
@@ -1731,10 +1015,13 @@
   onDestroy(() => {
     subscription?.close()
     canvasEl?.removeEventListener('contextmenu', onCanvasContextMenu)
+    canvasEl?.removeEventListener('mousedown', onAgentPointerMouseDown, true)
     window.removeEventListener('resize', resizeCanvas)
     window.removeEventListener('pagehide', beaconFlush)
     window.removeEventListener('mouseup', onNavMouse)
     window.removeEventListener('keydown', onNavKey)
+    window.removeEventListener('keyup', onWorkspaceKeyUp)
+    window.removeEventListener('blur', onWindowBlur)
     document.removeEventListener('visibilitychange', flushIfHidden)
     beaconFlush()
   })
@@ -1742,71 +1029,35 @@
   // When the inspector opens/closes the canvas width changes — resize the
   // canvas backing buffer after the DOM settles. queueMicrotask, NOT tick():
   // Svelte 5's tick() flushSyncs, and calling it from a legacy `$:` re-enters
-  // the flush loop forever (the ChatNode freeze had exactly this shape).
+  // the flush loop forever.
   $: if (selectedNode !== undefined) queueMicrotask(resizeCanvas)
 </script>
 
-<header>
-  <strong class="brand"><span class="brand-star">✦</span>Simulanka</strong>
-  <span class="nav-btns">
-    <button on:click={goBack} disabled={navBack.length === 0} title="后退(Alt+← / 鼠标侧键)">‹</button>
-    <button on:click={goForward} disabled={navFwd.length === 0} title="前进(Alt+→ / 鼠标侧键)">›</button>
-  </span>
-  <nav class="crumbs">
-    <button class="crumb" on:click={() => goTo(-1)} class:active={crumbs.length === 0}>
-      top
-    </button>
-    {#each crumbs as c, i}
-      <span class="sep">/</span>
-      <button
-        class="crumb"
-        on:click={() => goTo(i)}
-        class:active={i === crumbs.length - 1}
-        title={c.id}
-      >
-        {c.name}
-      </button>
-    {/each}
-  </nav>
-  <button on:click={load}>Reload</button>
-  <button
-    on:click={() => (registryOpen = !registryOpen)}
-    class:active-tool={registryOpen}
-    aria-expanded={registryOpen}
-    title="查看当前 Profile/Capability Registry"
-  >
-    Registry
-  </button>
-  <button on:click={() => void openRecovery()} title="查看未分配或损坏的会话树">
-    会话恢复区
-  </button>
-  <span class="status">
-    <span class="live" class:on={liveOk} title={liveOk ? `live · v${liveVersion}` : 'disconnected'}></span>
-    {status} · {nodeCount}n / {edgeCount}e
-    {#if boundaryCount > 0}/ {boundaryCount}↔{/if}
-  </span>
-</header>
-
-<main class:with-inspector={selectedNode !== null}>
-  <canvas bind:this={canvasEl}></canvas>
-  <NodeInspector
-    node={selectedNode}
-    {portsById}
-    {registryDescriptor}
-    onOpenFile={(req) => (fileRequest = req)}
-    onJumpTo={(id) => void jumpToEntity(id)}
-    onResolveNote={(id) => void resolveEscalate(id)}
-    onAttachNode={(node) =>
-      addPendingRef({ kind: 'node', ref_id: node.id }, `${node.type} · ${node.name}`)}
-    onAttachPort={(port) =>
-      addPendingRef(
-        { kind: 'port', ref_id: port.id },
-        `port · ${selectedNode?.name ?? port.node_id}/${port.name}`,
-      )}
+<WorkspaceShell
+  {selectedNode}
+  {portsById}
+  {registryDescriptor}
+  {agent}
+  onJumpTo={(id) => void jumpToEntity(id)}
+  onResolveNote={(id) => void resolveEscalate(id)}
+>
+  <TopBar
+    slot="topbar"
+    {crumbs}
+    canBack={navBack.length > 0}
+    canForward={navFwd.length > 0}
+    {status}
+    {liveOk}
+    {liveVersion}
+    {nodeCount}
+    {edgeCount}
+    {boundaryCount}
+    onBack={goBack}
+    onForward={goForward}
+    onCrumb={goTo}
+    onReload={() => void load()}
   />
-  {#if fileRequest}
-    <FileViewer request={fileRequest} onClose={() => (fileRequest = null)} />
-  {/if}
+  <canvas bind:this={canvasEl} class:agent-pointing={agentPointHeld}></canvas>
   {#if edgeMenu}
     <EdgeMenu
       x={edgeMenu.x}
@@ -1820,7 +1071,7 @@
       onToggleDiscuss={() => void edgeToggleDiscuss(edgeMenu!.edge)}
       onAttach={() => {
         const activeEdge = edgeMenu!.edge
-        addPendingRef(
+        agent.addPendingRef(
           { kind: 'edge', ref_id: activeEdge.id },
           `edge · ${namesById.get(activeEdge.src) ?? activeEdge.src} → ${namesById.get(activeEdge.dst) ?? activeEdge.dst}`,
         )
@@ -1842,271 +1093,16 @@
       onDeleteTemplate={menuDeleteTemplate}
     />
   {/if}
-  <ChatDock
-    {contextLabel}
-    busy={chatBusy}
-    readOnly={chatReadOnly}
-    panelOpen={draftOpen}
-    refs={pendingRefs}
-    preview={contextPreview}
-    {previewBusy}
-    {previewError}
-    onSend={t => void chatSend(t)}
-    onTogglePanel={startNewSession}
-    onRemoveRef={removePendingRef}
-    onTogglePin={togglePendingPin}
-    onPreview={() => void previewPendingRefs()}
-  />
-  {#each visibleTreeIds as treeId, treeIndex (treeId)}
-    {@const branchSessions = visibleSessionsByTree[treeId] ?? []}
-    {@const branchSessionId = activeSessionIdsByTree[treeId] ?? null}
-    {@const branchSession = branchSessionId ? sessionsById[branchSessionId] : null}
-    {@const branchPosition = chatPosition(`chat:${treeId}`, treeIndex)}
-    <ChatNode
-      nodeId={`chat:${treeId}`}
-      messages={messagesByTree[treeId] ?? []}
-      active={branchSessionId !== null}
-      selected={selectedTreeId === treeId}
-      busy={busyChatKeys.has(treeId)}
-      title={`会话树 ${treeIndex + 1}`}
-      subtitle={branchSession
-        ? `${branchSession.provider_id} · ${branchSession.status}`
-        : '无可用分支'}
-      sessionId={branchSessionId}
-      sessions={branchSessions}
-      loading={sessionListBusy}
-      actionBusy={sessionActionBusy}
-      interruptSupported={branchSession
-        ? providerCapabilitiesById[branchSession.provider_id]?.interrupt ?? null
-        : null}
-      interruptReady={branchSession
-        ? (
-            providerCapabilitiesById[branchSession.provider_id]?.native_resume ===
-              false || branchSession.native_session_id !== null
-          )
-        : false}
-      stopping={branchSessionId
-        ? stoppingSessionIds.has(branchSessionId)
-        : false}
-      error={sessionListError}
-      cacheLabel={cacheLabelsByTree[treeId] ?? null}
-      x={branchPosition[0]}
-      y={branchPosition[1]}
-      onActivate={() => selectTree(treeId)}
-      onMove={(x, y) => recordMove(`chat:${treeId}`, x, y)}
-      onSelectSession={(sessionId) => void openSession(sessionId)}
-      onNewSession={startNewSession}
-      onRefreshSessions={() => void restoreSessions()}
-      onForkSession={() => void forkActiveSession(treeId)}
-      onArchiveSession={() => void archiveActiveSession(treeId)}
-      onStopSession={() => void stopActiveSession(treeId)}
-    />
-  {/each}
-  {#if draftOpen}
-    {@const draftPosition = chatPosition('chat:draft', visibleTreeIds.length)}
-    <ChatNode
-      nodeId="chat:draft"
-      draft
-      messages={(draftEventsByScope[rootKey] ?? []).map(sessionEventMessage)}
-      selected={selectedTreeId === null}
-      busy={busyChatKeys.has(draftChatKey)}
-      title="新会话树"
-      subtitle={`${DEFAULT_PROVIDER_ID} · 首条消息后持久化`}
-      sessions={[]}
-      loading={sessionListBusy}
-      actionBusy={sessionActionBusy}
-      error={sessionListError}
-      x={draftPosition[0]}
-      y={draftPosition[1]}
-      onActivate={() => (selectedTreeId = null)}
-      onMove={(x, y) => recordMove('chat:draft', x, y)}
-      onNewSession={startNewSession}
-      onRefreshSessions={() => void restoreSessions()}
-      onClose={closeDraft}
-    />
-  {/if}
-  {#if recoveryOpen}
-    <SessionRecovery
-      sessions={recoverySessions}
-      selectedSessionId={recoverySessionId}
-      events={recoveryEvents}
-      loading={recoveryBusy}
-      error={recoveryError}
-      onSelect={(sessionId) => void openRecoverySession(sessionId)}
-      onRefresh={() => void openRecovery()}
-      onClose={() => (recoveryOpen = false)}
-    />
-  {/if}
-  {#if registryOpen}
-    <RegistryPanel
-      descriptor={registryDescriptor}
-      onClose={() => (registryOpen = false)}
-    />
-  {/if}
-</main>
+</WorkspaceShell>
 
 <style>
-  /* 星图册壳层：漆器顶栏 + 金缘 + 夜空画布。调色板见 app.css :root。 */
-  header {
-    position: relative;
-    display: flex;
-    gap: 12px;
-    align-items: center;
-    padding: 9px 16px;
-    background: linear-gradient(180deg, #1a2642 0%, #141e36 100%);
-    font-size: 13px;
-  }
-  /* 顶栏下缘的一线金 —— 两端隐入夜色 */
-  header::after {
-    content: '';
-    position: absolute;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    height: 1px;
-    background: linear-gradient(
-      90deg,
-      transparent 0%,
-      var(--gold-dim) 12%,
-      var(--gold) 50%,
-      var(--gold-dim) 88%,
-      transparent 100%
-    );
-  }
-  .brand {
-    font-family: var(--font-display);
-    font-size: 19px;
-    font-weight: 400;
-    letter-spacing: 0.08em;
-    color: var(--gold-bright);
-    text-shadow: 0 0 14px var(--gold-glow);
-    display: flex;
-    align-items: baseline;
-    gap: 7px;
-    user-select: none;
-  }
-  .brand-star {
-    font-size: 13px;
-    color: var(--gold);
-    animation: star-breathe 4s ease-in-out infinite;
-  }
-  @keyframes star-breathe {
-    0%,
-    100% {
-      opacity: 0.65;
-      text-shadow: 0 0 4px var(--gold-glow);
-    }
-    50% {
-      opacity: 1;
-      text-shadow: 0 0 12px var(--gold-glow);
-    }
-  }
-  header button {
-    background: var(--panel-2);
-    color: var(--text);
-    border: 1px solid var(--hairline);
-    border-radius: 4px;
-    padding: 4px 12px;
-    cursor: pointer;
-    font-family: inherit;
-    transition:
-      border-color 0.15s,
-      color 0.15s,
-      box-shadow 0.15s;
-  }
-  header button:hover {
-    border-color: var(--gold-dim);
-    color: var(--ivory);
-  }
-  header button.active-tool {
-    border-color: var(--gold);
-    color: var(--gold-bright);
-    box-shadow: 0 0 10px rgba(217, 186, 125, 0.14);
-  }
-  .nav-btns {
-    display: flex;
-    gap: 4px;
-  }
-  .nav-btns button {
-    padding: 2px 9px;
-    font-size: 15px;
-    line-height: 1;
-  }
-  .nav-btns button:disabled {
-    opacity: 0.35;
-    cursor: default;
-  }
-  .crumbs {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-  }
-  .crumb {
-    background: transparent;
-    border: none;
-    color: var(--muted);
-    padding: 2px 7px;
-    border-radius: 4px;
-    cursor: pointer;
-    font: inherit;
-    transition:
-      color 0.15s,
-      background 0.15s;
-  }
-  .crumb:hover {
-    color: var(--ivory);
-    background: var(--panel-2);
-  }
-  .crumb.active {
-    color: var(--gold-bright);
-    font-weight: 500;
-  }
-  .sep {
-    color: var(--gold-dim);
-    font-size: 11px;
-  }
-  .status {
-    margin-left: auto;
-    color: var(--muted);
-    font-family: var(--font-mono);
-    font-size: 12px;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-  .live {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: #3a4763;
-    transition: background 0.2s;
-  }
-  .live.on {
-    background: var(--jade);
-    box-shadow: 0 0 6px rgba(126, 207, 165, 0.8);
-  }
-  main {
-    display: flex;
-    width: 100vw;
-    height: calc(100vh - 44px);
-    /* FileViewer 抽屉以此为定位容器（position: absolute; right: 0） */
-    position: relative;
-  }
   canvas {
     display: block;
-    flex: 1;
-    min-width: 0;
+    width: 100%;
     height: 100%;
-    background: var(--sky);
-    animation: sky-reveal 0.9s ease-out;
+    background: var(--canvas-bg);
   }
-  /* 开场：夜空自深处浮现一次，不循环不打扰 */
-  @keyframes sky-reveal {
-    from {
-      opacity: 0;
-    }
-    to {
-      opacity: 1;
-    }
+  canvas.agent-pointing {
+    cursor: crosshair !important;
   }
 </style>

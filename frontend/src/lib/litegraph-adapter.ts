@@ -49,8 +49,7 @@ interface LiteLink {
 
 // Link colour by edge provenance (§13.5.2): machine-traced vs human-drawn vs
 // agent-asserted, so the three read apart at a glance. LiteGraph honours
-// `link.color` in renderLink. Palette lives in theme.ts (星图册: trace=星蓝,
-// user=金线, agent=紫晶; ghost=灰蓝低语, rejected=绯红).
+// `link.color` in renderLink. The provenance palette lives in theme.ts.
 
 const TYPE_PREFIX = 'simulanka/'
 const BOUNDARY_PREFIX = 'simulanka-boundary/'
@@ -95,7 +94,13 @@ function ensureRegistered(typeName: string, prefix: string = TYPE_PREFIX): strin
   const full = prefix + typeName
   if (LiteGraph.registered_node_types[full]) return full
   function NodeCtor(this: LGraphNode) {}
-  ;(NodeCtor as unknown as { title: string }).title = typeName
+  const meta = NodeCtor as unknown as { title: string; collapsable?: boolean }
+  meta.title = typeName
+  // Semantic Ports are graph topology, not optional detail. LiteGraph's normal
+  // collapsed state visually compresses slots into the title silhouette, so
+  // real Simulanka nodes opt out while virtual boundary projections keep the
+  // library default. Zoom still handles text/card density independently.
+  if (prefix === TYPE_PREFIX) meta.collapsable = false
   LiteGraph.registerNodeType(full, NodeCtor as unknown as new () => LGraphNode)
   return full
 }
@@ -171,6 +176,18 @@ export function buildLiteGraph(
     outputIndex: number,
   ): boolean {
     if (building) return true
+    const rejection = connectionRejection.call(this, outputNode, outputIndex, inputIndex)
+    if (rejection) callbacks.onConnectionRejected?.(rejection)
+    return rejection === null
+  }
+
+  // Pure preview shared by native drop validation and draw-time target feedback.
+  function connectionRejection(
+    this: LGraphNode,
+    outputNode: LGraphNode,
+    outputIndex: number,
+    inputIndex: number,
+  ): string | null {
     const source = (outputNode as unknown as { simulanka?: NodeDTO }).simulanka
     const target = (this as unknown as { simulanka?: NodeDTO }).simulanka
     const sourcePortId = (outputNode as unknown as { simulanka_out_ports?: string[] })
@@ -180,10 +197,9 @@ export function buildLiteGraph(
     const sourcePort = sourcePortId ? portsById.get(sourcePortId) : undefined
     const targetPort = targetPortId ? portsById.get(targetPortId) : undefined
     if (!source || !target || !sourcePort || !targetPort) {
-      callbacks.onConnectionRejected?.('边界投影端点不可直接连接')
-      return false
+      return '边界投影端点不可直接连接'
     }
-    const rejection = edgeConnectionRejection(
+    return edgeConnectionRejection(
       descriptor,
       'data_flow',
       source,
@@ -191,8 +207,6 @@ export function buildLiteGraph(
       sourcePort,
       targetPort,
     )
-    if (rejection) callbacks.onConnectionRejected?.(rejection)
-    return rejection === null
   }
 
   function onConnectOutput(
@@ -252,6 +266,8 @@ export function buildLiteGraph(
       .onConnectionsChange = onConnectionsChange
     ;(lgnode as unknown as { onConnectInput: typeof onConnectInput }).onConnectInput = onConnectInput
     ;(lgnode as unknown as { onConnectOutput: typeof onConnectOutput }).onConnectOutput = onConnectOutput
+    ;(lgnode as unknown as { simulankaConnectionRejection: typeof connectionRejection })
+      .simulankaConnectionRejection = connectionRejection
 
     // S5 卡片：attr 驱动的展示模板（cards.ts 是唯一的字段清单来源）。
     // S6 trust 描边共用同一 foreground 钩子——只染节点体，边色不叠加。
@@ -336,7 +352,7 @@ function attachCard(
   }).onDrawForeground = drawCardForeground
 }
 
-// S6 trust 描边：环住整张星卡（含标题条）。unreviewed 刻意最淡——
+// S6 trust 描边：环住整张节点卡（含标题条）。unreviewed 刻意最淡——
 // 「未定」应显眼地不显眼；其余四级按 theme 五色发一圈微光。
 function drawTrustRing(
   ctx: CanvasRenderingContext2D,
