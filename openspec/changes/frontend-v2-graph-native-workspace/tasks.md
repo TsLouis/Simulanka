@@ -6,8 +6,8 @@
 
 ## 2. Quiet workspace shell
 
-- [ ] 2.1 Extract a minimal workspace shell from `App.svelte` without changing API semantics.
-- [ ] 2.2 Add lightweight TopBar and narrow Activity Bar.
+- [x] 2.1 Extract a minimal workspace shell from `App.svelte` without changing API semantics.
+- [x] 2.2 Add lightweight TopBar and narrow Activity Bar.
 - [x] 2.3 Make Inspector and long discussion surfaces closed by default; preserve explicit reopen paths.
 - [x] 2.4 Keep Graph Canvas as the dominant default surface across supported desktop sizes.
 
@@ -21,7 +21,7 @@
 - [x] 3.6 Treat ComfyUI as the baseline for ordinary Node Editor behavior (search, ports, links, selection, drag); diverge only where Simulanka graph/research semantics require it.
 - [x] 3.7 Prevent native node collapse from collapsing multiple semantic Ports into shared visual anchors; semantic node classes opt out of LiteGraph collapse while boundary projections keep library defaults.
 - [x] 3.8 Add a restrained datatype connection palette for common Port types (`tensor`, `scalar`, `any`, etc.) using LiteGraph's native connection palette hooks.
-- [ ] 3.9 Add Registry-aware drag-target feedback on top of LiteGraph's native datatype highlight. During a connection drag, targets rejected by `edgeConnectionRejection()` SHOULD NOT receive the normal compatible-target highlight; final persistence remains server-authoritative. Implement this as a narrow LiteGraph hook, not a second Port overlay/geometry system.
+- [x] 3.9 Add Registry-aware drag-target feedback on top of LiteGraph's native datatype highlight. During a connection drag, targets rejected by `edgeConnectionRejection()` SHOULD NOT receive the normal compatible-target highlight; final persistence remains server-authoritative. Implement this as a narrow LiteGraph hook, not a second Port overlay/geometry system.
 
 ## 4. Contextual object interaction
 
@@ -72,7 +72,7 @@
 - [x] 9.3 GitNexus detect-changes skipped for this user-authorized iteration.
 - [ ] 9.4 Manually verify default canvas, readable Node identity across working/overview zoom, persistent independent Ports, no semantic-node port collapse, datatype link colours, search gestures, selection attention/actions, Ask/Trace/Inspect semantics, Port Inspect details, Edge object/review action separation, continuous hold-A multi-object pointing on Node/Port/Edge, text-entry isolation, explicit Ask fallback, Draft presentation, pending-context overlay, turn-scoped fallback projection, structured attention/annotation, structured draft-graph rendering, terse Companion projection summary, and compact large RefSets.
 - [x] 9.5 Remove `LGraph.start()` from the read-only/editor graph lifecycle. Canvas rendering remains owned by `LGraphCanvas`; each SSE reload must not start another executable graph loop.
-- [ ] 9.6 Stress-test repeated connect/disconnect + SSE reload cycles to confirm the progressive freeze is fixed. If latency still accumulates, profile/coalesce overlapping `load()` calls before changing more interaction code.
+- [ ] 9.6 Stress-test repeated connect/disconnect + SSE reload cycles to confirm the progressive freeze is fixed. Automated coverage now exercises 100 connect/disconnect + graph-replacement cycles using native LiteGraph 0.7.18, with no executable graph loops or stacked feedback hooks. Real-backend SSE/manual latency validation remains open; if latency still accumulates, profile/coalesce overlapping `load()` calls before changing more interaction code.
 - [x] 9.7 Update frontend boundary README/OpenSpec to the accepted graph-native model and pointer-first explicit-context contract.
 - [ ] 9.8 Update the long-form `docs/frontend.md` S8 wording so it no longer says `agent→人的一切都是消息`; retain server API/domain terminology where it is authoritative. The surrounding S8 implementation text already references AgentCompanion/agent-session, so this should be a narrow documentation correction rather than another architecture change.
 - [x] 9.9 Remove the superseded drag-to-Agent implementation and its tests/imports after A-pointer validation; no hidden typed-DnD compatibility layer remains in the current frontend source tree.

@@ -12,7 +12,7 @@
   export let onAttachNode: (node: NodeDTO) => void = () => {}
   export let onAttachPort: (port: PortDTO) => void = () => {}
 
-  let expanded = false
+  export let expanded = false
   let traceOpen = false
   let inspectedPortId: string | null = null
   let lastNodeId: string | null = null

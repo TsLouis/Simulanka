@@ -27,12 +27,24 @@
 - **WHEN** 用户进入一个已有项目且没有恢复中的显式面板状态
 - **THEN** 页面主要显示 Graph Canvas，不自动展开 Inspector 或长对话面板
 
+#### Scenario: 显式进入辅助面
+- **WHEN** 用户点击 Activity Bar 的 Inspector、Registry、Files、Discussion 或 Session recovery
+- **THEN** 对应已有辅助面按需打开，开关状态与局部 Inspect / Discussion 按钮一致；Inspector 需要选中 Node，Files 需要所选 file 或已有显式文件请求；不增加常驻侧栏或改变导航/Session 语义
+
 ### Requirement: Node/Port 基础交互采用成熟 node-editor 范式
 前端 SHOULD 以 ComfyUI/LiteGraph 的成熟交互作为 Node/Port/connection 基线，而 MUST NOT 为像素视觉风格重新定义基础拓扑编辑语法。input Port SHOULD 独立排列在节点左侧，output Port SHOULD 独立排列在右侧；Node 尺寸 SHALL 足以容纳实际 Port 数量；拖线、目标命中与可连接反馈 SHOULD 优先复用原生 LiteGraph 行为。
 
 #### Scenario: 节点拥有多个 Port
 - **WHEN** 一个 Node 有 4 个 input Port 和 3 个 output Port
 - **THEN** UI 显示 7 个独立的 Port handle/row/anchor，不将同侧多个 Port 合并、堆叠到同一位置或用单一聚合 handle 替代
+
+#### Scenario: Registry 明确拒绝拖线目标
+- **WHEN** 用户拖动真实 output connection，真实 input 的 datatype 兼容但 `edgeConnectionRejection()` 返回拒绝原因
+- **THEN** 该 input 不显示普通 compatible hover highlight，原生 Port 使用轻量 rejected visual；不改变 hit-test、slot type、boundary projection 或最终 server/kernel 校验；取消/结束拖线或重载后不残留该 visual
+
+#### Scenario: Registry descriptor 不可用
+- **WHEN** 拖线时尚无 Registry descriptor
+- **THEN** 保留 LiteGraph datatype 反馈，不猜测额外 eligibility，也不把可连接提示视作 server 写入承诺
 
 ### Requirement: Node 信息密度随 zoom 渐进展开
 前端 SHALL 根据 Canvas zoom 采用稳定的信息密度层级，而 MUST NOT 在所有缩放级别显示同样的卡片内容。Port handle MUST 独立于这些层级始终保留；zoom 只控制 Port label、卡片字段和其他文字细节。

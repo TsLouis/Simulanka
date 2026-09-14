@@ -176,6 +176,18 @@ export function buildLiteGraph(
     outputIndex: number,
   ): boolean {
     if (building) return true
+    const rejection = connectionRejection.call(this, outputNode, outputIndex, inputIndex)
+    if (rejection) callbacks.onConnectionRejected?.(rejection)
+    return rejection === null
+  }
+
+  // Pure preview shared by native drop validation and draw-time target feedback.
+  function connectionRejection(
+    this: LGraphNode,
+    outputNode: LGraphNode,
+    outputIndex: number,
+    inputIndex: number,
+  ): string | null {
     const source = (outputNode as unknown as { simulanka?: NodeDTO }).simulanka
     const target = (this as unknown as { simulanka?: NodeDTO }).simulanka
     const sourcePortId = (outputNode as unknown as { simulanka_out_ports?: string[] })
@@ -185,10 +197,9 @@ export function buildLiteGraph(
     const sourcePort = sourcePortId ? portsById.get(sourcePortId) : undefined
     const targetPort = targetPortId ? portsById.get(targetPortId) : undefined
     if (!source || !target || !sourcePort || !targetPort) {
-      callbacks.onConnectionRejected?.('边界投影端点不可直接连接')
-      return false
+      return '边界投影端点不可直接连接'
     }
-    const rejection = edgeConnectionRejection(
+    return edgeConnectionRejection(
       descriptor,
       'data_flow',
       source,
@@ -196,8 +207,6 @@ export function buildLiteGraph(
       sourcePort,
       targetPort,
     )
-    if (rejection) callbacks.onConnectionRejected?.(rejection)
-    return rejection === null
   }
 
   function onConnectOutput(
@@ -257,6 +266,8 @@ export function buildLiteGraph(
       .onConnectionsChange = onConnectionsChange
     ;(lgnode as unknown as { onConnectInput: typeof onConnectInput }).onConnectInput = onConnectInput
     ;(lgnode as unknown as { onConnectOutput: typeof onConnectOutput }).onConnectOutput = onConnectOutput
+    ;(lgnode as unknown as { simulankaConnectionRejection: typeof connectionRejection })
+      .simulankaConnectionRejection = connectionRejection
 
     // S5 卡片：attr 驱动的展示模板（cards.ts 是唯一的字段清单来源）。
     // S6 trust 描边共用同一 foreground 钩子——只染节点体，边色不叠加。

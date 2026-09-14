@@ -40,12 +40,14 @@
 - **布局**：dagre 自动布局，人工拖动的位置持久化并覆盖 dagre 结果。
 - **边语义染色**（workspace palette，见 `theme.ts`）：user=金、agent=紫、ghost（proposed 未决）=灰蓝虚线、人拒=绯红；trace 边与「constructed 可信」同源同色（蓝）。
 - 画线时先按 Edge Profile descriptor 的 alias、端点 Profile/capabilities、port type、方向与 needs_ports 预过滤，再做 shape 校验（match/mismatch/unknown）；未知 descriptor 不猜测，放行到 server，由同一 Registry 返回最终 422/reason。
+- **拖线目标反馈（Frontend v2）**：真实 output 拖向真实 input 时，`connection-feedback.ts` 复用 adapter 的纯 preview（同一 `edgeConnectionRejection()`），去掉 Registry 明确拒绝目标的普通 compatible highlight，并临时调整原生 Port 颜色；不改 slot type、geometry、hit test 或 drop 路径。LiteGraph 0.7.18 的未命中松手会触发 `connectByType`，因此过滤只作用于绘制。boundary projection 与 server/kernel 最终校验保持原行为。
 - **右键菜单**（自绘 Svelte 层，LiteGraph 内建菜单/搜索框已灭）：空白处的 Profiles/Templates 目录来自 Registry descriptor，并以当前容器 `node.create` affordance 作为入口；节点、边、端口及多选菜单只渲染 server affordances，不按 task/model/module 或 Provider 名称分支。禁用项直接展示 server reason。菜单收起仍使用 window 捕获相 mousedown。
 - **鼠标/导航（2026-07-14）**：视图历史前进/后退（顶栏 ‹ › + Alt+←/→ + 鼠标侧键；一切导航走 navigateTo 单入口）；框选=引擎原生 **Ctrl+拖**、加选=Shift+点。创建目录以 descriptor 的 Profile parent rule 预过滤，server/kernel 仍是硬闸；手放节点的模板 attrs/ports 由 TemplateSpec 给出，落点先持久化再等 SSE 重载。研究原子默认模板仍不进目录，其正路是 plan ingest（§14）。
 
 ## 面板
 
-- **RegistryPanel**：顶栏 `Registry` 打开只读语义浏览器，直接显示当前 version/digest、可信 packages、capabilities/consumers、Node/Edge Profiles 与 Templates；内容只来自已经过 digest 对齐的 server descriptor。
+- **WorkspaceShell / TopBar / ActivityBar**：shell 承接布局与辅助面开关；TopBar 展示导航、breadcrumb 与状态，42px Activity Bar 统一进入 Inspector、Registry、Files、Discussion、Session recovery。辅助面默认关闭，按需浮现；Files 复用所选 file 或最后显式打开的文件。`App.svelte` 保留 loading/navigation/SSE/selection/graph actions，`agent-session.ts` 职责不变；Frontend v2 设计权威仍是现有 OpenSpec change。
+- **RegistryPanel**：Activity Bar 的 `Registry` 打开只读语义浏览器，直接显示当前 version/digest、可信 packages、capabilities/consumers、Node/Edge Profiles 与 Templates；内容只来自已经过 digest 对齐的 server descriptor。
 - **NodeInspector**：按 PresentationSpec 分组显示声明字段，并始终保留 attrs 检查能力；未知 Profile 显示 raw attrs。端口附加与节点上下文动作读取 affordances，不按类型判断。
 - **消息面（S8 Agent Companion）**：设计原则=**不出现领域工作流按钮，agent→人的一切都是消息**。`AgentCompanion.svelte` 负责当前 scope 的新树草稿、显式附加 node/edge/port refs，以及同一 Session 的发送/状态反馈；`agent-session.ts` controller 负责 tree/branch、provider、streaming、history、recovery 和生命周期动作。当前层级、当前选择与祖先都不会自动注入。Session tree 只保留 server scope 归属，不投影成 Canvas 窗口；fork 在按需展开的 history surface 内切换分支。首条消息懒创建 Provider Session；消息与工具事件持久化在 JSONL sidecar，刷新从 history 恢复。
 - **VerifyPanel / DiscussPanel——已删除（2026-07-14）**：顶栏「核对」按钮一并退役。就地裁决/跳转选中已随 S7 余项落地（2026-07-15，见下）。

@@ -47,8 +47,8 @@
     : (turnProjection.text ?? '')
   $: hasSuggestion = !busy && feedback?.type === 'agent_text' && Boolean(turnProjection.text || turnProjection.visuals.length)
 
-  let discussionOpen = false
-  let recoveryOpen = false
+  export let discussionOpen = false
+  export let recoveryOpen = false
   let text = ''
   let open = false
   let lastRefCount = 0
@@ -106,12 +106,17 @@
     pointerCollecting = false
   }
 
+  export function openDiscussion() {
+    open = true
+    discussionOpen = true
+  }
+
   function close() {
     open = false
     discussionOpen = false
   }
 
-  function openRecovery() {
+  export function openRecovery() {
     recoveryOpen = true
     void controller.openRecovery()
   }

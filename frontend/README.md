@@ -36,6 +36,12 @@ server-authoritative review layer; Port uses `Ask / Inspect` inside the node int
 
 ## Frontend v2 boundaries
 
+- `src/lib/WorkspaceShell.svelte` owns the Canvas container and secondary-surface
+  visibility. `TopBar.svelte` presents navigation/breadcrumb/status callbacks;
+  the 42px `ActivityBar.svelte` opens Inspector, Registry, Files, Discussion and
+  Session recovery. Full surfaces start closed; Files reuses the selected file or
+  the last explicit file request. Local Inspect/Discussion controls share the same
+  open state. These surfaces float over Canvas rather than reserving sidebars.
 - `src/App.svelte` owns graph loading/navigation, selection, graph actions and
   graph-position persistence. It passes scope changes and **explicit** object refs
   to the Agent controller. Current viewport, neighbours and ancestors are not silently
@@ -62,6 +68,14 @@ server-authoritative review layer; Port uses `Ask / Inspect` inside the node int
 - `NodeInspector.svelte` treats a node's independent input/output ports as first-class
   interface structure. Zoom may hide labels/card detail on Canvas, but never collapses
   multiple semantic ports into shared anchors.
+- `src/lib/connection-feedback.ts` filters native LiteGraph 0.7.18 hover highlights
+  during real output drags and gives Registry-rejected inputs a muted red native
+  Port color. The adapter's pure preview shares `edgeConnectionRejection()` with
+  final client validation. Slot types, hit tests, geometry, boundary projection and
+  drop behavior stay native; color overrides are restored after every draw.
+  Output-only nodes are supported, and orphaned native drag fields are cleared
+  after graph replacement so the next frame cannot dereference a removed source.
+  Missing descriptors defer to native datatype feedback and server validation.
 - Existing proposed Agent graph changes are rendered as `DRAFT` objects. Keep/Dismiss
   product actions continue to map to the authoritative server accept/verdict contracts.
 - `SessionHistory.svelte` offers tree/branch selection and lifecycle controls;
@@ -76,8 +90,11 @@ rewritten as session windows.
 The Add Node transaction/initial-position correctness bug is tracked separately in #17
 and must not be hidden by presentation code.
 
-`npm test` covers Session/Context orchestration and Conversation Projection safety,
+`npm test` covers native connection feedback, Session/Context orchestration and Conversation Projection safety,
 including stale asynchronous Session responses, scope changes during streaming,
 latest-turn explicit-ref scoping, invented-target rejection, protocol stripping and
-projection fences split across streamed Agent text chunks. Tests use the existing Vite
+projection fences split across streamed Agent text chunks. Connection tests exercise
+LiteGraph 0.7.18 mouse move/up, native Port rendering, boundary-link deletion, and
+100 connect/disconnect/graph-replacement cycles without executable graph loops.
+Tests use the existing Vite
 TS loader and Node's test runner.

@@ -37,6 +37,8 @@ Node editor 的基础交互不重新发明。ComfyUI 作为成熟参考基线：
 
 `App.svelte` 不再作为所有 UI concern 的永久宿主；实现阶段逐步提取 WorkspaceShell、TopBar、ActivityBar、ContextPopover、AgentCompanion 等组件，但保持现有数据加载和导航语义。
 
+本轮完成 `WorkspaceShell`、`TopBar` 与 42px `ActivityBar`：shell 持有辅助面的可见状态；Activity Bar 提供 Inspector、Registry、Files、Discussion、Session recovery 的显式入口，与对象 Inspect / Companion Discussion 的开关同步。Files 只复用所选 file 或最后显式打开的文件，不增加文件浏览 API。Canvas 占据剩余空间，辅助面浮现而不保留左右栏；App 保留 graph loading/navigation/SSE/selection/position 语义，Session controller 不变。
+
 ### 2. ComfyUI is the node-editor interaction baseline
 
 Node/Port/Edge 的基础行为优先参考 ComfyUI，而不是为 Simulanka 单独发明交互：
@@ -63,6 +65,8 @@ Node presentation 分层，但用户不感知“模式”：
 ### 4. Port is a first-class visual affordance
 
 Port 不是“详情属性”，而是 Node 的结构轮廓。所有 zoom 下，每个真实 input/output Port SHALL 保持独立 handle，不得为了降噪把多个 Port 合并、堆叠或整体隐藏。输入 Port 固定投影在左侧、输出 Port 在右侧；zoom 只控制 Port 的名称、type、shape 等文字密度。方向、type 和连接 eligibility 继续由 Registry/Edge Profile 约束。
+
+真实 output 拖线的 Registry 反馈复用 adapter 的纯 `connectionRejection` preview 与 `edgeConnectionRejection()`。LiteGraph 0.7.18 的 `processMouseMove` 仅检查 datatype，`processMouseUp` 在 input 未命中时会 `connectByType`；因此不覆写 hit-test 返回值。canvas 实例的 draw hook 用原生 `getNodeOnPos` / `isOverNodeInput` 过滤 hover highlight，并临时修改被拒绝 input 的原生 color_on/color_off（finally 还原）；不改 slot type、geometry、全局 compatibility 函数或 boundary projection。hook 每个 canvas 只安装一次并随 setGraph 使用新节点的 Registry preview；无 descriptor 时仍由原生 datatype 与 server 作判断。仅有 output 的节点不假定存在 inputs 数组；0.7.18 clear/setGraph 已清空 source 时同时清理其遗留拖线绘制字段，避免下一帧访问空 source。
 
 root boundary IO 仍遵守现有括号/隧道规则；本 change 只统一其视觉语言。
 

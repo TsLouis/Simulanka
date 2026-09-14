@@ -23,7 +23,6 @@
     saveTemplate,
     setDiscuss,
     type CustomTemplateDTO,
-    type FileOpenRequest,
     type HumanVerdict,
     type Positions,
   } from './lib/api'
@@ -31,13 +30,12 @@
   import { buildLiteGraph, type LineageEdge } from './lib/litegraph-adapter'
   import { buildGroups, type NodeTemplate } from './lib/templates'
   import { applyWorkspaceTheme, LINEAGE_COLOR } from './lib/theme'
-  import AgentCompanion from './lib/AgentCompanion.svelte'
+  import { installConnectionFeedback } from './lib/connection-feedback'
   import { createAgentSessionController } from './lib/agent-session'
+  import WorkspaceShell from './lib/WorkspaceShell.svelte'
+  import TopBar from './lib/TopBar.svelte'
   import ContextMenu from './lib/ContextMenu.svelte'
   import EdgeMenu from './lib/EdgeMenu.svelte'
-  import FileViewer from './lib/FileViewer.svelte'
-  import NodeInspector from './lib/NodeInspector.svelte'
-  import RegistryPanel from './lib/RegistryPanel.svelte'
   import type {
     AffordanceDTO,
     EdgeDTO,
@@ -78,10 +76,6 @@
   let namesById: Map<string, string> = new Map()
   let edgeMenu: { x: number; y: number; edge: EdgeDTO } | null = null
 
-  // S4 file viewer: non-null = the drawer is open on this request. Assigning a
-  // new request re-loads in place (e.g. jumping 出处 from another atom).
-  let fileRequest: FileOpenRequest | null = null
-
   // Right-click menu: non-null = open. graphPos is where the click landed in
   // graph coordinates — a node added from the menu drops exactly there.
   let menu: {
@@ -94,7 +88,6 @@
   } | null = null
   let customTemplates: Record<string, CustomTemplateDTO> = {}
   let registryDescriptor: RegistryDescriptorDTO | null = null
-  let registryOpen = false
   let createAffordance: AffordanceDTO | null = null
   // Type of the container the view is inside (null = top-level). The add-node
   // menu filters server-described Profiles/Templates against the resolved
@@ -162,6 +155,7 @@
       } else {
         lgcanvas = new LGraphCanvas(canvasEl, graph)
         applyWorkspaceTheme(lgcanvas)
+        installConnectionFeedback(lgcanvas)
         wireSelection(lgcanvas)
         wireAgentPointer(lgcanvas)
         wireNodeMoved(lgcanvas)
@@ -1039,64 +1033,31 @@
   $: if (selectedNode !== undefined) queueMicrotask(resizeCanvas)
 </script>
 
-<header>
-  <strong class="brand"><span class="brand-mark">✦</span>Simulanka</strong>
-  <span class="nav-btns">
-    <button on:click={goBack} disabled={navBack.length === 0} title="后退(Alt+← / 鼠标侧键)">‹</button>
-    <button on:click={goForward} disabled={navFwd.length === 0} title="前进(Alt+→ / 鼠标侧键)">›</button>
-  </span>
-  <nav class="crumbs">
-    <button class="crumb" on:click={() => goTo(-1)} class:active={crumbs.length === 0}>
-      top
-    </button>
-    {#each crumbs as c, i}
-      <span class="sep">/</span>
-      <button
-        class="crumb"
-        on:click={() => goTo(i)}
-        class:active={i === crumbs.length - 1}
-        title={c.id}
-      >
-        {c.name}
-      </button>
-    {/each}
-  </nav>
-  <button on:click={load}>Reload</button>
-  <button
-    on:click={() => (registryOpen = !registryOpen)}
-    class:active-tool={registryOpen}
-    aria-expanded={registryOpen}
-    title="查看当前 Profile/Capability Registry"
-  >
-    Registry
-  </button>
-  <span class="status">
-    <span class="live" class:on={liveOk} title={liveOk ? `live · v${liveVersion}` : 'disconnected'}></span>
-    {status} · {nodeCount}n / {edgeCount}e
-    {#if boundaryCount > 0}/ {boundaryCount}↔{/if}
-  </span>
-</header>
-
-<main class:with-inspector={selectedNode !== null}>
-  <canvas bind:this={canvasEl}></canvas>
-  <NodeInspector
-    node={selectedNode}
-    {portsById}
-    {registryDescriptor}
-    onOpenFile={(req) => (fileRequest = req)}
-    onJumpTo={(id) => void jumpToEntity(id)}
-    onResolveNote={(id) => void resolveEscalate(id)}
-    onAttachNode={(node) =>
-      agent.addPendingRef({ kind: 'node', ref_id: node.id }, `${node.type} · ${node.name}`)}
-    onAttachPort={(port) =>
-      agent.addPendingRef(
-        { kind: 'port', ref_id: port.id },
-        `port · ${selectedNode?.name ?? port.node_id}/${port.name}`,
-      )}
+<WorkspaceShell
+  {selectedNode}
+  {portsById}
+  {registryDescriptor}
+  {agent}
+  onJumpTo={(id) => void jumpToEntity(id)}
+  onResolveNote={(id) => void resolveEscalate(id)}
+>
+  <TopBar
+    slot="topbar"
+    {crumbs}
+    canBack={navBack.length > 0}
+    canForward={navFwd.length > 0}
+    {status}
+    {liveOk}
+    {liveVersion}
+    {nodeCount}
+    {edgeCount}
+    {boundaryCount}
+    onBack={goBack}
+    onForward={goForward}
+    onCrumb={goTo}
+    onReload={() => void load()}
   />
-  {#if fileRequest}
-    <FileViewer request={fileRequest} onClose={() => (fileRequest = null)} />
-  {/if}
+  <canvas bind:this={canvasEl} class:agent-pointing={agentPointHeld}></canvas>
   {#if edgeMenu}
     <EdgeMenu
       x={edgeMenu.x}
@@ -1132,137 +1093,12 @@
       onDeleteTemplate={menuDeleteTemplate}
     />
   {/if}
-  <AgentCompanion controller={agent} />
-  {#if registryOpen}
-    <RegistryPanel
-      descriptor={registryDescriptor}
-      onClose={() => (registryOpen = false)}
-    />
-  {/if}
-</main>
+</WorkspaceShell>
 
 <style>
-  /* Workspace shell; component styles own the effective v2 appearance. */
-  header {
-    position: relative;
-    display: flex;
-    gap: 8px;
-    align-items: center;
-    min-height: 46px;
-    box-sizing: border-box;
-    padding: 7px 12px;
-    background: #0a1624;
-    border-bottom: 1px solid var(--hairline-2);
-    font-size: 13px;
-  }
-  .brand {
-    font-family: var(--font-display);
-    font-size: 16px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    color: var(--ivory);
-    display: flex;
-    align-items: baseline;
-    gap: 7px;
-    user-select: none;
-  }
-  .brand-mark {
-    font-size: 13px;
-    color: var(--blue);
-  }
-  header button {
-    background: var(--panel);
-    color: var(--text);
-    border: 1px solid var(--hairline);
-    border-radius: 3px;
-    padding: 4px 12px;
-    cursor: pointer;
-    font-family: inherit;
-    transition:
-      border-color 0.15s,
-      color 0.15s;
-  }
-  header button:hover {
-    border-color: var(--gold-dim);
-    color: var(--ivory);
-  }
-  header button.active-tool {
-    border-color: var(--gold);
-    color: var(--gold-bright);
-  }
-  .nav-btns {
-    display: flex;
-    gap: 4px;
-  }
-  .nav-btns button {
-    padding: 2px 9px;
-    font-size: 15px;
-    line-height: 1;
-  }
-  .nav-btns button:disabled {
-    opacity: 0.35;
-    cursor: default;
-  }
-  .crumbs {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-  }
-  .crumb {
-    background: transparent;
-    border: none;
-    color: var(--muted);
-    padding: 2px 7px;
-    border-radius: 4px;
-    cursor: pointer;
-    font: inherit;
-    transition:
-      color 0.15s,
-      background 0.15s;
-  }
-  .crumb:hover {
-    color: var(--ivory);
-    background: var(--panel-2);
-  }
-  .crumb.active {
-    color: var(--gold-bright);
-    font-weight: 500;
-  }
-  .sep {
-    color: var(--gold-dim);
-    font-size: 11px;
-  }
-  .status {
-    margin-left: auto;
-    color: var(--muted);
-    font-family: var(--font-mono);
-    font-size: 12px;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-  .live {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: #3a4763;
-    transition: background 0.2s;
-  }
-  .live.on {
-    background: var(--jade);
-    box-shadow: 0 0 6px rgba(126, 207, 165, 0.8);
-  }
-  main {
-    display: flex;
-    width: 100vw;
-    height: calc(100vh - 46px);
-    /* FileViewer 抽屉以此为定位容器（position: absolute; right: 0） */
-    position: relative;
-  }
   canvas {
     display: block;
-    flex: 1;
-    min-width: 0;
+    width: 100%;
     height: 100%;
     background: var(--canvas-bg);
   }
