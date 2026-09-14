@@ -4,12 +4,14 @@ on:
   pull_request:
     paths:
       - 'frontend/**'
+      - '.opencode/agent/graph-chat.md'
       - '.github/workflows/frontend.yml'
   push:
     branches:
       - main
     paths:
       - 'frontend/**'
+      - '.opencode/agent/graph-chat.md'
       - '.github/workflows/frontend.yml'
 
 permissions:
