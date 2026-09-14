@@ -55,8 +55,12 @@
   let composerEl: HTMLTextAreaElement | null = null
   let pointerCollecting = false
   let pointerStartRefCount: number | null = null
+  let contextExpanded = false
 
   $: hasContext = refs.length > 0
+  $: visibleRefs = contextExpanded ? refs : refs.slice(0, 4)
+  $: hiddenRefCount = Math.max(0, refs.length - visibleRefs.length)
+  $: if (refs.length <= 4 && contextExpanded) contextExpanded = false
 
   // Pointing is a collection gesture, not a focus gesture. While A is held the
   // user may click several nodes/ports/edges into one RefSet. We reveal the
@@ -226,7 +230,7 @@
             </button>
           </div>
           <div class="chips">
-            {#each refs as ref (`${ref.kind}:${ref.ref_id}`)}
+            {#each visibleRefs as ref (`${ref.kind}:${ref.ref_id}`)}
               <span class="ref-chip" title={`${ref.kind}:${ref.ref_id}`}>
                 <span class="kind">{ref.kind}</span>
                 <span class="label">{ref.label}</span>
@@ -245,6 +249,13 @@
                 >×</button>
               </span>
             {/each}
+            {#if refs.length > 4}
+              <button
+                class="context-more"
+                on:click={() => (contextExpanded = !contextExpanded)}
+                aria-expanded={contextExpanded}
+              >{contextExpanded ? 'show less' : `+${hiddenRefCount} more`}</button>
+            {/if}
           </div>
         </div>
       {/if}
@@ -538,11 +549,17 @@
     text-transform: uppercase;
     letter-spacing: 0.05em;
   }
-  .text-button {
+  .text-button,
+  .context-more {
     padding: 2px 6px;
     border: 0;
     background: transparent;
     color: var(--blue);
+  }
+  .context-more {
+    min-height: 24px;
+    color: var(--muted);
+    font: 9px var(--font-mono);
   }
   .chips { display: flex; flex-wrap: wrap; gap: 5px; }
   .ref-chip {
