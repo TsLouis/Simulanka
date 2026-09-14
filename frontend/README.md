@@ -24,6 +24,16 @@ ports stay visible, connection anchors remain stable across zoom, datatype is re
 from the link/slot system, and search/selection gestures should follow mature node-editor
 conventions unless Simulanka research semantics require a deliberate divergence.
 
+Object-level product language is intentionally small and capability-separated:
+
+- **Ask** adds the exact object Ref to explicit Agent context.
+- **Trace** reads deterministic graph provenance/lineage and never invokes the Agent.
+  It is only shown where a real system trace resolver exists.
+- **Inspect** reveals the object's own interface, attrs and state without mutating the graph.
+
+Node currently uses `Ask / Trace / Inspect`; Edge uses `Ask / Inspect` plus a separate
+server-authoritative review layer; Port uses `Ask / Inspect` inside the node interface.
+
 ## Frontend v2 boundaries
 
 - `src/App.svelte` owns graph loading/navigation, selection, graph actions and
@@ -39,7 +49,7 @@ conventions unless Simulanka research semantics require a deliberate divergence.
   **hold `A` → click one or more Node/Port/Edge objects → release `A` → type**.
   Successive clicks accumulate one de-duplicated pending RefSet without moving graph
   objects or stealing focus; releasing `A` focuses the composer when new refs were
-  added. Explicit `Ask Agent` actions are the non-keyboard fallback. The abandoned
+  added. Explicit `Ask` actions are the non-keyboard fallback. The abandoned
   drag-to-Pet interaction is intentionally not retained as a second context model.
 - `src/lib/agent-projection.ts` validates the latest-turn Conversation Projection.
   Real projection targets must be exact refs delivered in that turn's server-authored
