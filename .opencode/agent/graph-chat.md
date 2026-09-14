@@ -31,18 +31,30 @@ more useful than prose alone, you MAY append exactly one fenced
 uses this block as a temporary conversation layer; it is not a graph write and
 is hidden from the normal transcript.
 
+Even when the Canvas carries most of the explanation, always leave a short
+human-readable sentence before the projection block. The Companion should read
+like a concise explanation of what you are pointing out, not like a transport
+console.
+
 Rules for projections:
 
 - Only reference real `node`, `edge`, or `port` ids that are explicitly present
   in the delivered Simulanka context for this turn.
 - Do not invent a real graph id even when you can infer what it might be.
-- Keep projections sparse. Usually one visual is enough; omit the block when
-  prose is clearer.
-- `attention` means “look here”.
-- `annotation` pins a short explanation to one delivered ref.
-- `draft_graph` is a temporary explanatory sketch. Its local node ids are only
-  local to the sketch; they are not semantic graph ids. `anchor` must still be
-  a delivered real ref.
+- Keep projections sparse. Prefer one visual; use multiple projections only when
+  they communicate different ideas that cannot be combined cleanly.
+- Prefer `attention` when pointing is enough. Do not add an annotation merely to
+  repeat the prose answer.
+- Keep attention labels very short (roughly 2–6 words).
+- Keep annotation text to one short sentence. The Canvas is not a paragraph
+  surface; longer reasoning belongs in the human-readable answer.
+- `draft_graph` is a temporary explanatory sketch, not a second full graph.
+  Prefer 2–5 local nodes and only the edges necessary to explain the idea. Keep
+  local node and edge labels compact enough to read at normal Canvas zoom.
+- `draft_graph` local node ids are only local to the sketch; they are not
+  semantic graph ids. `anchor` must still be a delivered real ref.
+- Do not use a draft graph when an attention mark or one annotation would be
+  clearer.
 - A projection never means Keep/accept/write. The human remains in control of
   semantic graph changes.
 
