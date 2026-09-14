@@ -21,6 +21,7 @@
 - [x] 3.6 Treat ComfyUI as the baseline for ordinary Node Editor behavior (search, ports, links, selection, drag); diverge only where Simulanka graph/research semantics require it.
 - [x] 3.7 Prevent native node collapse from collapsing multiple semantic Ports into shared visual anchors; semantic node classes opt out of LiteGraph collapse while boundary projections keep library defaults.
 - [x] 3.8 Add a restrained datatype connection palette for common Port types (`tensor`, `scalar`, `any`, etc.) using LiteGraph's native connection palette hooks.
+- [ ] 3.9 Add Registry-aware drag-target feedback on top of LiteGraph's native datatype highlight. During a connection drag, targets rejected by `edgeConnectionRejection()` SHOULD NOT receive the normal compatible-target highlight; final persistence remains server-authoritative. Implement this as a narrow LiteGraph hook, not a second Port overlay/geometry system.
 
 ## 4. Contextual object interaction
 
