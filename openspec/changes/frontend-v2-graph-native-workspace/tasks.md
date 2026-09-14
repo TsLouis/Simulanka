@@ -24,10 +24,11 @@
 
 ## 4. Contextual object interaction
 
-- [ ] 4.1 Node selection has lightweight `Ask / Why / Open`; overflow/general affordance projection still pending.
+- [x] 4.1 Node selection uses the stable object grammar `Ask / Trace / Inspect`: Ask attaches the exact Node Ref to Agent context, Trace opens deterministic graph provenance without invoking the Agent, and Inspect reveals the Node interface/details.
 - [x] 4.2 Single selection quietly emphasizes the selected Node, one-hop neighbours and direct links; unrelated graph content recedes without entering a named mode. Multi-select disables this attention treatment.
 - [x] 4.3 Full Inspector opens only on explicit request and remains Registry/affordance-driven.
-- [x] 4.4 Node, Edge and Port surfaces expose the same object-first `Ask Agent` language; Edge keeps simplified Keep/Dismiss/Needs attention actions and server authority.
+- [x] 4.4 Node, Edge and Port surfaces share object-first semantics. Ask means explicit Agent context; Inspect means object details; Trace is shown only when a deterministic system provenance/lineage resolver exists. Edge keeps Keep/Dismiss/Needs attention in a separate affordance-driven review layer; Port Inspect exposes direction/type/shape/confidence/id/attrs without altering topology.
+- [ ] 4.5 Add a lightweight affordance-driven overflow/general-action projection so less-common server actions do not require type-specific hardcoding. Keep the core `Ask / Trace / Inspect` verbs stable and small.
 
 ## 5. Agent Companion and explicit context
 
@@ -68,7 +69,7 @@
 - [x] 9.1 Frontend CI runs `npm ci`, `npm test`, `npm run check`, and `npm run build` on frontend changes and the graph-chat projection contract. Repeated runs through the latest Companion/projection/pending-context changes are green.
 - [ ] 9.2 Run backend regression tests for Registry/affordance/session/context contracts touched by the UI integration.
 - [x] 9.3 GitNexus detect-changes skipped for this user-authorized iteration.
-- [ ] 9.4 Manually verify default canvas, readable Node identity across working/overview zoom, persistent independent Ports, no semantic-node port collapse, datatype link colours, search gestures, selection attention/actions, continuous hold-A multi-object pointing on Node/Port/Edge, text-entry isolation, explicit Ask fallback, Draft presentation, pending-context overlay, turn-scoped fallback projection, structured attention/annotation, structured draft-graph rendering, terse Companion projection summary, and compact large RefSets.
+- [ ] 9.4 Manually verify default canvas, readable Node identity across working/overview zoom, persistent independent Ports, no semantic-node port collapse, datatype link colours, search gestures, selection attention/actions, Ask/Trace/Inspect semantics, Port Inspect details, Edge object/review action separation, continuous hold-A multi-object pointing on Node/Port/Edge, text-entry isolation, explicit Ask fallback, Draft presentation, pending-context overlay, turn-scoped fallback projection, structured attention/annotation, structured draft-graph rendering, terse Companion projection summary, and compact large RefSets.
 - [x] 9.5 Remove `LGraph.start()` from the read-only/editor graph lifecycle. Canvas rendering remains owned by `LGraphCanvas`; each SSE reload must not start another executable graph loop.
 - [ ] 9.6 Stress-test repeated connect/disconnect + SSE reload cycles to confirm the progressive freeze is fixed. If latency still accumulates, profile/coalesce overlapping `load()` calls before changing more interaction code.
 - [x] 9.7 Update frontend boundary README/OpenSpec to the accepted graph-native model and pointer-first explicit-context contract.
