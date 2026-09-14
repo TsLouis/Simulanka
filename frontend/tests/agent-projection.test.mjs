@@ -180,3 +180,72 @@ test('an unfinished projection fence never leaks partial protocol JSON into visi
   const raw = 'Readable answer.\n\n```simulanka-projection\n{"kind":"annotation"'
   assert.equal(stripProjectionBlocks(raw), 'Readable answer.')
 })
+
+test('attention de-duplicates repeated refs and bounds a crowded visual', () => {
+  const refs = Array.from({ length: 14 }, (_, index) => ({
+    kind: 'node',
+    ref_id: `n${index + 1}`,
+  }))
+  const projection = conversationProjectionFromEvents([
+    userEvent(refs),
+    {
+      type: 'agent_text',
+      text: block({
+        kind: 'attention',
+        refs: [refs[0], refs[0], ...refs.slice(1)],
+      }),
+    },
+  ])
+
+  const [visual] = projection.visuals
+  assert.equal(visual.kind, 'attention')
+  assert.equal(visual.refs.length, 12)
+  assert.equal(new Set(visual.refs.map(ref => `${ref.kind}:${ref.ref_id}`)).size, 12)
+  assert.deepEqual(visual.refs[0], refs[0])
+})
+
+test('draft graph de-duplicates local ids and edges and enforces sketch size bounds', () => {
+  const projection = conversationProjectionFromEvents([
+    userEvent([{ kind: 'node', ref_id: 'n1' }]),
+    {
+      type: 'agent_text',
+      text: block({
+        kind: 'draft_graph',
+        anchor: { kind: 'node', ref_id: 'n1' },
+        nodes: [
+          { id: 'a', label: 'A' },
+          { id: 'a', label: 'Duplicate A' },
+          { id: 'b', label: 'B' },
+          { id: 'c', label: 'C' },
+          { id: 'd', label: 'D' },
+          { id: 'e', label: 'E' },
+          { id: 'f', label: 'F' },
+          { id: 'g', label: 'G should be truncated' },
+        ],
+        edges: [
+          { src: 'a', dst: 'b', label: 'x' },
+          { src: 'a', dst: 'b', label: 'x' },
+          { src: 'b', dst: 'c', label: 'y' },
+          { src: 'c', dst: 'd', label: 'z' },
+          { src: 'd', dst: 'e' },
+          { src: 'e', dst: 'f' },
+          { src: 'f', dst: 'a' },
+          { src: 'a', dst: 'c' },
+          { src: 'b', dst: 'd' },
+          { src: 'c', dst: 'e' },
+          { src: 'a', dst: 'g', label: 'invalid after truncation' },
+        ],
+      }),
+    },
+  ])
+
+  const [visual] = projection.visuals
+  assert.equal(visual.kind, 'draft_graph')
+  assert.deepEqual(visual.nodes.map(node => node.id), ['a', 'b', 'c', 'd', 'e', 'f'])
+  assert.equal(visual.edges.length, 8)
+  assert.equal(
+    new Set(visual.edges.map(edge => `${edge.src}:${edge.dst}:${edge.label ?? ''}`)).size,
+    visual.edges.length,
+  )
+  assert.equal(visual.edges.some(edge => edge.dst === 'g'), false)
+})
