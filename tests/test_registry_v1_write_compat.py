@@ -22,37 +22,35 @@ def test_registry_v1_project_can_still_author_nodes_ports_and_edges(tmp_path: Pa
     layout = init_project(tmp_path, with_scaffold=False).layout
     _set_registry_v1(layout.manifest_path)
 
-    source = apply_patch_now(
+    directory = apply_patch_now(
         layout,
-        ops=[CreateNodeOp(type="module", name="source")],
+        ops=[CreateNodeOp(type="directory", name="context")],
         actor="user",
-    )
-    target = apply_patch_now(
-        layout,
-        ops=[CreateNodeOp(type="module", name="target")],
-        actor="user",
-    )
-    source_port = apply_patch_now(
+    ).nodes[0]
+    nodes = apply_patch_now(
         layout,
         ops=[
-            CreatePortOp(
-                node=source.nodes[0],
-                name="out",
-                direction="out",
-                port_type="tensor",
-            )
+            CreateNodeOp(type="claim", name="source", parent=directory),
+            CreateNodeOp(type="claim", name="target", parent=directory),
         ],
         actor="user",
     )
-    target_port = apply_patch_now(
+    source, target = nodes.nodes
+    ports = apply_patch_now(
         layout,
         ops=[
             CreatePortOp(
-                node=target.nodes[0],
+                node=source,
+                name="out",
+                direction="out",
+                port_type="any",
+            ),
+            CreatePortOp(
+                node=target,
                 name="in",
                 direction="in",
-                port_type="tensor",
-            )
+                port_type="any",
+            ),
         ],
         actor="user",
     )
@@ -61,8 +59,8 @@ def test_registry_v1_project_can_still_author_nodes_ports_and_edges(tmp_path: Pa
         ops=[
             CreateEdgeOp(
                 type="data_flow",
-                source=source_port.ports[0],
-                target=target_port.ports[0],
+                source=ports.ports[0],
+                target=ports.ports[1],
             )
         ],
         actor="user",
