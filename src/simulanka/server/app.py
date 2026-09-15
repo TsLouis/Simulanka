@@ -476,9 +476,8 @@ def create_app(
         ``[{name, direction, port_type?}]``. ``parent`` is the container the
         user is standing in (None = top-level), so a node lands where it was
         summoned. A sibling name collision gets a numeric suffix instead of a
-        422 — dropping three Conv2d from the menu must just work. Ports go in
-        a second patch: the disk resolver can't see pending nodes by design,
-        and the importer commits node-then-ports the same way.
+        422 — dropping three Conv2d from the menu must just work. The node and
+        all template ports commit together using an intent-local node ref.
         """
         node_type = body.get("type")
         name = body.get("name")
@@ -519,7 +518,21 @@ def create_app(
         try:
             receipt = apply_patch_now(
                 layout,
-                ops=[CreateNodeOp(type=node_type.strip(), name=final, parent=parent, attrs=attrs)],
+                ops=[
+                    CreateNodeOp(
+                        type=node_type.strip(), name=final, parent=parent,
+                        attrs=attrs, ref="new_node",
+                    ),
+                    *[
+                        CreatePortOp(
+                            node="@new_node",
+                            name=p["name"],
+                            direction=p["direction"],
+                            port_type=p["port_type"],
+                        )
+                        for p in ports
+                    ],
+                ],
                 actor="user",
                 note=f"frontend: add node {final}",
                 registry=registry,
@@ -528,32 +541,10 @@ def create_app(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         node_id = receipt.nodes[0]
 
-        port_ids: list[str] = []
-        if ports:
-            try:
-                receipt = apply_patch_now(
-                    layout,
-                    ops=[
-                        CreatePortOp(
-                            node=node_id,
-                            name=p["name"],
-                            direction=p["direction"],
-                            port_type=p["port_type"],
-                        )
-                        for p in ports
-                    ],
-                    actor="user",
-                    note=f"frontend: ports for {final}",
-                    registry=registry,
-                )
-            except ValidationError as exc:
-                raise HTTPException(status_code=422, detail=str(exc)) from exc
-            port_ids = receipt.ports
-
         return {
             "node_id": node_id,
             "name": final,
-            "port_ids": port_ids,
+            "port_ids": receipt.ports,
             "graph_version": receipt.graph_version,
         }
 

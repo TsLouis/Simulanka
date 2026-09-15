@@ -72,10 +72,27 @@ class MigrationPlan(BaseModel):
         return not self.steps
 
 
+def _registry_write_compatible(version: int) -> bool:
+    """Return whether *version* can safely use the current Registry on writes.
+
+    Registry v1 -> v2 is deliberately entity-preserving: the registered
+    migration rewrites no Node/Port/Edge data. Existing local projects from
+    before Profile Registry v2 can therefore continue authoring immediately
+    while still retaining an explicit ``graph migrate`` path that records the
+    manifest/event upgrade. Keep this compatibility bridge intentionally
+    narrow; future Registry migrations are not assumed write-compatible.
+    """
+    return version == REGISTRY_VERSION or (
+        version == 1 and REGISTRY_VERSION == 2
+    )
+
+
 def check_versions(layout: ProjectLayout) -> None:
-    """Raise SchemaMismatch if manifest versions are behind code constants."""
+    """Block writes only for incompatible schema/Registry versions."""
     m = layout.load_manifest()
-    if m.schema_version != SCHEMA_VERSION or m.registry_version != REGISTRY_VERSION:
+    if m.schema_version != SCHEMA_VERSION or not _registry_write_compatible(
+        m.registry_version
+    ):
         raise SchemaMismatch(
             f"Project versions schema={m.schema_version}, registry={m.registry_version} "
             f"do not match code (schema={SCHEMA_VERSION}, registry={REGISTRY_VERSION}). "

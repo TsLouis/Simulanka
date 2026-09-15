@@ -32,6 +32,7 @@
   import { applyWorkspaceTheme, LINEAGE_COLOR } from './lib/theme'
   import { installConnectionFeedback } from './lib/connection-feedback'
   import { createAgentSessionController } from './lib/agent-session'
+  import { CreateReloadGate } from './lib/create-reload-gate'
   import WorkspaceShell from './lib/WorkspaceShell.svelte'
   import TopBar from './lib/TopBar.svelte'
   import ContextMenu from './lib/ContextMenu.svelte'
@@ -46,6 +47,8 @@
 
   let canvasEl: HTMLCanvasElement
   let status = 'idle'
+  let positionSaveError: string | null = null
+  const createReloadGate = new CreateReloadGate()
   let nodeCount = 0
   let edgeCount = 0
   let boundaryCount = 0
@@ -116,6 +119,9 @@
     createAffordance = null
     try {
       const payload = await fetchGraph(currentRootId)
+      // A reload may already be fetching when Add Node begins. Never render
+      // that response until every create has handed off its initial position.
+      if (createReloadGate.deferIfBusy()) return
       registryDescriptor = getCachedRegistryDescriptor()
       createAffordance = (
         payload.root_info?.affordances ?? payload.view_affordances
@@ -562,21 +568,36 @@
   }
 
   async function menuAddNode(t: NodeTemplate) {
-    const at = menu?.graphPos ?? [120, 120]
+    const at: [number, number] = [...(menu?.graphPos ?? [120, 120])]
+    const parent = currentRootId
+    const requestRootKey = parent ?? 'top'
     menu = null
+    createReloadGate.begin()
     try {
       const res = await createNode({
         type: t.type,
         name: t.name,
-        parent: currentRootId,
+        parent,
         attrs: t.attrs,
         ports: t.ports,
       })
-      // Drop the node where the user clicked: record the position before the
-      // SSE-triggered reload, so dagre doesn't fling it elsewhere.
-      recordMove(res.node_id, at[0], at[1])
+      // Keep this request's view and point even if navigation or another create
+      // occurs while it is in flight. Initial placement bypasses drag debounce.
+      positions = {
+        ...positions,
+        [requestRootKey]: { ...positions[requestRootKey], [res.node_id]: at },
+      }
+      try {
+        await savePositions(requestRootKey, { [res.node_id]: at })
+      } catch (err) {
+        // The graph transaction succeeded. Retain the local position and keep
+        // this error visible through the deferred reload.
+        positionSaveError = `Node ${res.name} created; position save failed: ${(err as Error).message}`
+      }
     } catch (err) {
       status = `add node failed: ${(err as Error).message}`
+    } finally {
+      if (createReloadGate.finish()) scheduleReload()
     }
   }
 
@@ -984,9 +1005,12 @@
   // one reload of the final state.
   let reloadTimer: number | null = null
   function scheduleReload() {
+    if (createReloadGate.deferIfBusy()) return
     if (reloadTimer !== null) window.clearTimeout(reloadTimer)
     reloadTimer = window.setTimeout(() => {
       reloadTimer = null
+      // A new create can start during the trailing debounce window.
+      if (createReloadGate.deferIfBusy()) return
       void load()
     }, 250)
   }
@@ -1046,7 +1070,7 @@
     {crumbs}
     canBack={navBack.length > 0}
     canForward={navFwd.length > 0}
-    {status}
+    status={positionSaveError ?? status}
     {liveOk}
     {liveVersion}
     {nodeCount}
