@@ -2,18 +2,18 @@
 
 ## 1. Contract / Registry
 
-- [ ] 1.1 Add explicit Registry actions for Edge topology delete and Port create/update/delete.
-- [ ] 1.2 Define live-state policies for connected Port update/delete and disabled reasons.
-- [ ] 1.3 Keep existing Node rename/delete affordances unchanged except for presentation/discoverability.
+- [x] 1.1 Add explicit Registry actions for Edge topology delete and Port create/update/delete.
+- [x] 1.2 Define live-state policies for connected Port update/delete and disabled reasons.
+- [x] 1.3 Keep existing Node rename/delete affordances unchanged except for presentation/discoverability.
 
 ## 2. Kernel + server (backend lane)
 
-- [ ] 2.1 Add validated Port update operation covering name, type, safe direction change, and bounded attrs.
-- [ ] 2.2 Add validated Port delete operation; initial policy rejects Ports with incident Edges.
-- [ ] 2.3 Reuse existing CreatePortOp for explicit Port creation on an eligible Node.
-- [ ] 2.4 Expose explicit Port create/update/delete endpoints that revalidate current affordances.
-- [ ] 2.5 Project existing `DELETE /edge/{id}` as `edge.delete` / product `Disconnect` affordance.
-- [ ] 2.6 Add backend tests for happy paths, connected-Port rejection, stale/invalid refs, Registry authority, and graph-version atomicity.
+- [x] 2.1 Add validated Port update operation covering name, type, safe direction change, and bounded attrs.
+- [x] 2.2 Add validated Port delete operation; initial policy rejects Ports with incident Edges.
+- [x] 2.3 Reuse existing CreatePortOp for explicit Port creation on an eligible Node.
+- [x] 2.4 Expose explicit Port create/update/delete endpoints that revalidate current affordances.
+- [x] 2.5 Project existing `DELETE /edge/{id}` as `edge.delete` / product `Disconnect` affordance.
+- [x] 2.6 Add backend tests for happy paths, connected-Port rejection, stale/invalid refs, Registry authority, and graph-version atomicity.
 
 ## 3. Frontend authoring UX (frontend lane)
 

@@ -390,6 +390,7 @@ def test_graph_payload_exposes_capabilities_affordances_and_unknown_profiles(
         "node.create",
         "node.rename",
         "node.delete",
+        "port.create",
         "node.enter",
         "template.save",
     }
@@ -411,16 +412,27 @@ def test_graph_payload_exposes_capabilities_affordances_and_unknown_profiles(
                 "context.attach",
                 "edge.accept",
                 "edge.discuss",
+                "edge.delete",
                 "edge.verdict",
             }
             assert actions["edge.accept"]["reason_code"] == "state_locked"
             assert all(
                 actions[action]["enabled"]
-                for action in ("context.attach", "edge.discuss", "edge.verdict")
+                for action in (
+                    "context.attach",
+                    "edge.delete",
+                    "edge.discuss",
+                    "edge.verdict",
+                )
             )
     for port in payload["ports"]:
         assert set(port) >= {"capabilities", "unknown_profile", "affordances"}
-        assert {item["id"] for item in port["affordances"]} == {"context.attach"}
+        actions = {item["id"]: item for item in port["affordances"]}
+        assert set(actions) == {"context.attach", "port.delete", "port.update"}
+        assert actions["context.attach"]["enabled"]
+        assert actions["port.update"]["enabled"]
+        assert not actions["port.delete"]["enabled"]
+        assert actions["port.delete"]["reason_code"] == "state_locked"
     assert set(payload["root_info"]) >= {
         "capabilities",
         "unknown_profile",
