@@ -27,8 +27,8 @@
 
 ## 4. Integration
 
-- [ ] 4.1 Merge/rebase backend lane into the integration branch without changing the frozen interaction grammar.
-- [ ] 4.2 Wire frontend client calls to final backend contract.
+- [x] 4.1 Merge/rebase backend lane into the integration branch without changing the frozen interaction grammar.
+- [x] 4.2 Wire frontend client calls to final backend contract.
 - [ ] 4.3 Verify create/edit/delete Port followed by reload/SSE keeps graph and canvas consistent.
 - [ ] 4.4 Verify Edge Disconnect and physical wire removal converge on one persisted result.
 - [ ] 4.5 Verify Node delete never creates canvas-only phantom state.
