@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import click
 import pytest
+from typer.main import get_command
 from typer.testing import CliRunner
 
 from simulanka.cli.app import app
@@ -37,11 +39,29 @@ from simulanka.layout.project import ProjectLayout
         ["note", "resolve"],
     ],
 )
-def test_graph_write_commands_expose_actor_option(command: list[str]) -> None:
-    result = CliRunner().invoke(app, [*command, "--help"])
+def test_graph_write_commands_register_actor_option(command: list[str]) -> None:
+    """Assert the command model, not a particular Rich help rendering.
 
-    assert result.exit_code == 0, result.output
-    assert "--actor" in result.output
+    The actor-passthrough contract is that every graph-mutating command accepts
+    explicit ``--actor``. Typer/Click may change terminal help formatting while
+    leaving the registered option and parsing semantics intact, so inspect the
+    generated Click command directly and keep execution/precedence covered by
+    the functional test below.
+    """
+    current: click.Command = get_command(app)
+    for token in command:
+        assert isinstance(current, click.Group), command
+        assert token in current.commands, command
+        current = current.commands[token]
+
+    actor_options = [
+        param
+        for param in current.params
+        if isinstance(param, click.Option) and "--actor" in param.opts
+    ]
+    assert len(actor_options) == 1, command
+    assert actor_options[0].name == "actor"
+    assert actor_options[0].envvar == "SIMULANKA_ACTOR"
 
 
 def test_cli_actor_precedence_and_task_event_accounting(tmp_path: Path) -> None:
