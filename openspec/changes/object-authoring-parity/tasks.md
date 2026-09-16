@@ -17,11 +17,11 @@
 
 ## 3. Frontend authoring UX (frontend lane)
 
-- [ ] 3.1 Node Inspect exposes Rename/Delete from server affordances; right-click and Delete/Backspace converge on same path.
-- [ ] 3.2 Edge Inspect exposes explicit `Disconnect`, visually separated from review actions.
-- [ ] 3.3 Node Inspect Interface exposes Add input / Add output when `port.create` is enabled.
-- [ ] 3.4 Port Inspect exposes an Edit surface for name/type/safe direction/allowed attrs when `port.update` is enabled.
-- [ ] 3.5 Port Inspect exposes Delete when `port.delete` is enabled; disabled reason is visible when connected.
+- [x] 3.1 Node Inspect exposes Rename/Delete from server affordances; right-click and Delete/Backspace converge on same path.
+- [x] 3.2 Edge Inspect exposes explicit `Disconnect`, visually separated from review actions.
+- [x] 3.3 Node Inspect Interface exposes Add input / Add output when `port.create` is enabled.
+- [x] 3.4 Port Inspect exposes an Edit surface for name/type/safe direction/allowed attrs when `port.update` is enabled.
+- [x] 3.5 Port Inspect exposes Delete when `port.delete` is enabled; disabled reason is visible when connected.
 - [ ] 3.6 Preserve native LiteGraph Port geometry and independent Port visibility after edits/reloads.
 - [ ] 3.7 Add frontend tests for action projection, disabled reasons, form validation, and reload consistency.
 
