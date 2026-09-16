@@ -1,12 +1,12 @@
 <script lang="ts">
   import ObjectStructuralActions from './ObjectStructuralActions.svelte'
-  import { objectAction } from './object-authoring'
+  import { edgeAction } from './object-authoring'
   import type { EdgeDTO } from './types'
 
   export let edge: EdgeDTO
   export let onDisconnect: () => void = () => {}
 
-  $: disconnectAction = objectAction(edge.affordances, 'edge.delete')
+  $: disconnectAction = edgeAction(edge, 'edge.delete')
 </script>
 
 {#if disconnectAction}
