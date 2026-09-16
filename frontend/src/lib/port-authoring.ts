@@ -53,24 +53,21 @@ export function validatePortDraft(
 }
 
 export function updateRequestFromDraft(
-  port: PortDTO,
+  _port: PortDTO,
   draft: PortEditDraft,
 ): UpdatePortRequest {
-  const attrs = { ...port.attrs }
+  // Send only the bounded authoring attrs. UpdatePortOp merges this partial
+  // object into the persisted attrs, so importer/runtime metadata survives
+  // without the client echoing read-only keys that the API correctly rejects.
+  const attrs: Record<string, unknown> = {}
   if (draft.label.trim()) attrs.label = draft.label.trim()
-  else delete attrs.label
-
   if (draft.confidence.trim()) attrs.confidence = draft.confidence.trim()
-  else delete attrs.confidence
-
   if (draft.shape.trim()) {
     attrs.shape = draft.shape
       .trim()
       .split(/[x×,\s]+/)
       .filter(Boolean)
       .map(value => Number(value))
-  } else {
-    delete attrs.shape
   }
 
   return {
