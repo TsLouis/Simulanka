@@ -12,11 +12,13 @@ from simulanka.kernel.intent import (
     CreatePortOp,
     DeleteEdgeOp,
     DeleteNodeOp,
+    DeletePortOp,
     IntentOp,
     PatchIntent,
     Receipt,
     RenameNodeOp,
     UpdateAttrsOp,
+    UpdatePortOp,
 )
 from simulanka.kernel.manifest import compute_content_hash, load_manifest, write_manifest
 from simulanka.kernel.migration import check_versions
@@ -55,6 +57,9 @@ class VersionConflict(RuntimeError):
     """base_graph_version did not match current manifest.graph_version."""
 
 
+EDITABLE_PORT_ATTRS = frozenset({"label", "shape", "confidence"})
+
+
 @dataclass
 class _Pending:
     nodes: list[Node]
@@ -62,6 +67,7 @@ class _Pending:
     ports: list[Port]
     updated_nodes: list[Node]
     updated_edges: list[Edge]
+    updated_ports: list[Port]
     canonical_ops: list[dict[str, Any]]
     deleted_edges: list[Edge]
     deleted_nodes: list[Node]
@@ -84,7 +90,7 @@ def _validation_view(
         nodes[node.id] = node
     for edge in (*pending.edges, *pending.updated_edges, *extra_edges):
         edges[edge.id] = edge
-    for port in (*pending.ports, *extra_ports):
+    for port in (*pending.ports, *pending.updated_ports, *extra_ports):
         ports[port.id] = port
     for node in pending.deleted_nodes:
         nodes.pop(node.id, None)
@@ -145,6 +151,7 @@ def apply_patch(
     now = datetime.now(timezone.utc)
     pending = _Pending(
         nodes=[], edges=[], ports=[], updated_nodes=[], updated_edges=[],
+        updated_ports=[],
         canonical_ops=[], deleted_edges=[], deleted_nodes=[], deleted_ports=[],
         refs={},
     )
@@ -176,6 +183,8 @@ def apply_patch(
         save_node(layout, node)
     for edge in pending.updated_edges:
         save_edge(layout, edge)
+    for port in pending.updated_ports:
+        save_port(layout, port)
     for edge in pending.deleted_edges:
         delete_edge(layout, edge.id)
     for port in pending.deleted_ports:
@@ -219,6 +228,7 @@ def apply_patch(
         ports=[p.id for p in pending.ports],
         updated_nodes=[n.id for n in pending.updated_nodes],
         updated_edges=[e.id for e in pending.updated_edges],
+        updated_ports=[p.id for p in pending.updated_ports],
         deleted_edges=[e.id for e in pending.deleted_edges],
         deleted_nodes=[n.id for n in pending.deleted_nodes],
         deleted_ports=[p.id for p in pending.deleted_ports],
@@ -244,6 +254,10 @@ def _apply_op(
         return _handle_create_port(
             layout, op, actor, now, pending, registry, prefix=prefix
         )
+    if isinstance(op, UpdatePortOp):
+        return _handle_update_port(layout, op, pending, registry, prefix=prefix)
+    if isinstance(op, DeletePortOp):
+        return _handle_delete_port(layout, op, pending, prefix=prefix)
     if isinstance(op, CreateEdgeOp):
         return _handle_create_edge(
             layout, op, actor, now, pending, registry, prefix=prefix
@@ -421,6 +435,154 @@ def _handle_create_port(
         }
     )
     return []
+
+
+def _handle_update_port(
+    layout: ProjectLayout,
+    op: UpdatePortOp,
+    pending: _Pending,
+    registry: Registry,
+    *,
+    prefix: str,
+) -> list[str]:
+    try:
+        existing = resolve_port(layout, op.port)
+    except ValueError as exc:
+        return [f"{prefix}: {exc}"]
+
+    if any(port.id == existing.id for port in pending.deleted_ports):
+        return [f"{prefix}: port `{existing.id}` is deleted earlier in this patch."]
+    for staged in pending.updated_ports:
+        if staged.id == existing.id:
+            existing = staged
+            break
+
+    if all(value is None for value in (op.name, op.direction, op.port_type, op.attrs)):
+        return [f"{prefix}: at least one Port field must be provided."]
+    if op.name is not None and not op.name:
+        return [f"{prefix}: name must be non-empty."]
+    if op.attrs is not None:
+        unknown_attrs = op.attrs.keys() - EDITABLE_PORT_ATTRS
+        if unknown_attrs:
+            return [
+                f"{prefix}: Port attrs are read-only unless explicitly editable; "
+                f"unknown attrs: {sorted(unknown_attrs)}."
+            ]
+
+    topology_change = (
+        op.direction is not None
+        and op.direction != existing.direction
+        or op.port_type is not None
+        and op.port_type != existing.port_type
+    )
+    incident = _incident_edges(layout, pending, existing.id)
+    if topology_change and incident:
+        return [
+            f"{prefix}: disconnect incident Edges before changing Port direction "
+            f"or type: {sorted(edge.id for edge in incident)}."
+        ]
+
+    attrs = existing.attrs
+    if op.attrs is not None:
+        attrs = {**attrs, **op.attrs}
+    updated = existing.model_copy(
+        update={
+            "name": existing.name if op.name is None else op.name,
+            "direction": existing.direction if op.direction is None else op.direction,
+            "port_type": existing.port_type if op.port_type is None else op.port_type,
+            "attrs": attrs,
+        }
+    )
+    node_ports_by_id = {
+        port.id: port
+        for port in list_ports_of(layout, existing.node_id)
+        if port.id != existing.id
+    }
+    for port in (*pending.ports, *pending.updated_ports):
+        if port.node_id == existing.node_id and port.id != existing.id:
+            node_ports_by_id[port.id] = port
+    for port in pending.deleted_ports:
+        node_ports_by_id.pop(port.id, None)
+    errors = [
+        f"{prefix}: {error}"
+        for error in validate_port(
+            updated,
+            node_ports=list(node_ports_by_id.values()),
+            registry=registry,
+        )
+    ]
+    if errors:
+        return errors
+
+    pending.updated_ports = [port for port in pending.updated_ports if port.id != existing.id]
+    pending.updated_ports.append(updated)
+    changed_fields = sorted(
+        field
+        for field, value in (
+            ("name", op.name),
+            ("direction", op.direction),
+            ("port_type", op.port_type),
+            ("attrs", op.attrs),
+        )
+        if value is not None
+    )
+    pending.canonical_ops.append(
+        {
+            "kind": "update_port",
+            "entity_id": existing.id,
+            "node_id": existing.node_id,
+            "changed_fields": changed_fields,
+            "changed_attr_keys": sorted(op.attrs) if op.attrs is not None else [],
+        }
+    )
+    return []
+
+
+def _handle_delete_port(
+    layout: ProjectLayout,
+    op: DeletePortOp,
+    pending: _Pending,
+    *,
+    prefix: str,
+) -> list[str]:
+    try:
+        port = resolve_port(layout, op.port)
+    except ValueError as exc:
+        return [f"{prefix}: {exc}"]
+    if any(deleted.id == port.id for deleted in pending.deleted_ports):
+        return []
+
+    incident = _incident_edges(layout, pending, port.id)
+    if incident:
+        return [
+            f"{prefix}: disconnect incident Edges before deleting the Port: "
+            f"{sorted(edge.id for edge in incident)}."
+        ]
+
+    pending.updated_ports = [updated for updated in pending.updated_ports if updated.id != port.id]
+    pending.deleted_ports.append(port)
+    pending.canonical_ops.append(
+        {
+            "kind": "delete_port",
+            "entity_id": port.id,
+            "node_id": port.node_id,
+        }
+    )
+    return []
+
+
+def _incident_edges(
+    layout: ProjectLayout,
+    pending: _Pending,
+    port_id: str,
+) -> list[Edge]:
+    deleted = {edge.id for edge in pending.deleted_edges}
+    disk_edges = [edge for edge in iter_edges(layout) if edge.id not in deleted]
+    return [
+        edge
+        for edge in (*disk_edges, *pending.edges)
+        if edge.source_port_id == port_id or edge.target_port_id == port_id
+    ]
 
 
 def _handle_create_edge(
