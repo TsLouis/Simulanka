@@ -66,13 +66,26 @@ Expected semantic operations:
 - new Port update operation (single validated semantic op; exact class name may be `UpdatePortOp`)
 - new Port delete operation (`DeletePortOp` or equivalent)
 
-Expected server authoring surface:
+### Frozen HTTP contract
 
-- Node rename/delete: existing endpoints retained
-- Edge disconnect/delete: existing `DELETE /edge/{edge_id}` retained and projected as an affordance
-- Port create: explicit endpoint targeting a Node
-- Port update: explicit endpoint targeting a Port
-- Port delete: explicit endpoint targeting a Port
+Node and Edge retain their existing endpoints:
+
+- `POST /node/{node_id}/rename`
+- `DELETE /node/{node_id}`
+- `DELETE /edge/{edge_id}`
+
+Port authoring uses these explicit endpoints:
+
+- `POST /node/{node_id}/ports`
+  - request: `{ name: string, direction: "in" | "out", port_type?: string, attrs?: object }`
+  - response: `{ port_id: string, graph_version: number }`
+- `POST /port/{port_id}/update`
+  - request: any subset of `{ name, direction, port_type, attrs }`
+  - response: `{ port_id: string, graph_version: number }`
+- `DELETE /port/{port_id}`
+  - response: `{ deleted: string[], graph_version: number }`
+
+`attrs` is a bounded merge/replace surface defined by the server/Registry implementation; it is not permission for arbitrary raw entity JSON editing.
 
 Every endpoint must re-resolve current server affordances and rely on kernel validation. Frontend affordance state is advisory, never authority.
 
@@ -94,7 +107,7 @@ Action availability may depend on live graph state. In particular, connected Por
 
 Avoid adding more orchestration to `App.svelte` where possible.
 
-- Keep API calls in a focused object-authoring client/module if that avoids bloating `api.ts`.
+- Keep Port API calls in a focused object-authoring client/module so backend contract changes stay localized.
 - Port editing should live in a dedicated small component or isolated NodeInspector section.
 - EdgeMenu remains responsible for Edge-specific review presentation but should expose structural Disconnect separately from review actions.
 - NodeInspector should project Node structural actions from affordances rather than hard-code domain type rules.
