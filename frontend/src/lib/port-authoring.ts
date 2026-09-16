@@ -56,18 +56,20 @@ export function updateRequestFromDraft(
   _port: PortDTO,
   draft: PortEditDraft,
 ): UpdatePortRequest {
-  // Send only the bounded authoring attrs. UpdatePortOp merges this partial
-  // object into the persisted attrs, so importer/runtime metadata survives
-  // without the client echoing read-only keys that the API correctly rejects.
-  const attrs: Record<string, unknown> = {}
-  if (draft.label.trim()) attrs.label = draft.label.trim()
-  if (draft.confidence.trim()) attrs.confidence = draft.confidence.trim()
-  if (draft.shape.trim()) {
-    attrs.shape = draft.shape
-      .trim()
-      .split(/[x×,\s]+/)
-      .filter(Boolean)
-      .map(value => Number(value))
+  // Send only the bounded authoring attrs. Empty values are explicit too:
+  // the kernel merges this partial object into persisted attrs, preserving
+  // importer/runtime metadata while allowing the presentation fields to be
+  // visually cleared without echoing read-only keys back to the API.
+  const attrs: Record<string, unknown> = {
+    label: draft.label.trim(),
+    confidence: draft.confidence.trim(),
+    shape: draft.shape.trim()
+      ? draft.shape
+          .trim()
+          .split(/[x×,\s]+/)
+          .filter(Boolean)
+          .map(value => Number(value))
+      : [],
   }
 
   return {
