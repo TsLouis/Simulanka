@@ -1,3 +1,4 @@
+export { deleteEdge as disconnectEdge } from './api'
 import type { AffordanceDTO, EdgeDTO, PortDTO } from './types'
 
 export interface CreatePortRequest {
