@@ -77,8 +77,23 @@ test('update request sends only bounded attrs and leaves read-only attrs server-
     direction: 'out',
     port_type: 'any',
     attrs: {
+      label: '',
       shape: [2, 4],
       confidence: 'inferred',
     },
+  })
+})
+
+test('blank presentation fields are sent explicitly so the server merge clears their display value', () => {
+  const draft = {
+    ...draftFromPort(port),
+    label: '',
+    shape: '',
+    confidence: '',
+  }
+  assert.deepEqual(updateRequestFromDraft(port, draft).attrs, {
+    label: '',
+    shape: [],
+    confidence: '',
   })
 })
