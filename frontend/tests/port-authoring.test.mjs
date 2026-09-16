@@ -62,7 +62,7 @@ test('validation rejects empty names, unknown types, and invalid shapes', () => 
   assert.equal(validatePortDraft({ ...base, shape: '1 3 224 224' }, descriptor).valid, true)
 })
 
-test('update request preserves non-editable attrs while changing bounded fields', () => {
+test('update request sends only bounded attrs and leaves read-only attrs server-side', () => {
   const draft = {
     ...draftFromPort(port),
     name: 'pixels',
@@ -79,7 +79,6 @@ test('update request preserves non-editable attrs while changing bounded fields'
     attrs: {
       shape: [2, 4],
       confidence: 'inferred',
-      source: 'importer',
     },
   })
 })
