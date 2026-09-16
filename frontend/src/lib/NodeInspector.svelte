@@ -1,5 +1,19 @@
 <script lang="ts">
-  import { fetchProvenance, type FileOpenRequest, type ProvenanceHop } from './api'
+  import {
+    deleteNode,
+    fetchProvenance,
+    renameNode,
+    type FileOpenRequest,
+    type ProvenanceHop,
+  } from './api'
+  import {
+    createPort,
+    deletePort,
+    updatePort,
+    type CreatePortRequest,
+    type UpdatePortRequest,
+  } from './object-authoring'
+  import NodeAuthoringSection from './NodeAuthoringSection.svelte'
   import { orderedAttributeEntries, resolveNodePresentation } from './presentation'
   import type { NodeDTO, PortDTO, RegistryDescriptorDTO } from './types'
 
@@ -14,20 +28,21 @@
 
   export let expanded = false
   let traceOpen = false
-  let inspectedPortId: string | null = null
   let lastNodeId: string | null = null
   let chain: ProvenanceHop[] = []
   let chainFor: string | null = null
   let traceBusy = false
+  let mutationBusy = false
+  let mutationError: string | null = null
 
   $: currentNodeId = node?.id ?? null
   $: if (currentNodeId !== lastNodeId) {
     lastNodeId = currentNodeId
     expanded = false
     traceOpen = false
-    inspectedPortId = null
     chain = []
     chainFor = null
+    mutationError = null
   }
 
   $: ports = node
@@ -40,9 +55,6 @@
     ? orderedAttributeEntries(node.attrs, presentation?.inspector_fields ?? [])
     : []
   $: nodeAttachAction = node?.affordances.find(action => action.id === 'context.attach') ?? null
-
-  const portAttachAction = (port: PortDTO) =>
-    port.affordances.find(action => action.id === 'context.attach') ?? null
 
   const strAttr = (n: NodeDTO | null, key: string): string | null =>
     n && typeof n.attrs[key] === 'string' ? (n.attrs[key] as string) : null
@@ -58,22 +70,11 @@
     strAttr(node, 'kind') === 'escalate' &&
     strAttr(node, 'status') !== 'resolved'
 
-  const portLabel = (p: PortDTO): string | null =>
-    typeof p.attrs.label === 'string' ? p.attrs.label : null
-  const portShape = (p: PortDTO): string | null =>
-    Array.isArray(p.attrs.shape) ? (p.attrs.shape as number[]).join('×') : null
-  const portConfidence = (p: PortDTO): string | null =>
-    typeof p.attrs.confidence === 'string' ? p.attrs.confidence : null
-
   function formatVal(v: unknown): string {
     if (typeof v === 'string') return v
     if (v === null || v === undefined) return String(v)
     if (typeof v === 'object') {
-      try {
-        return JSON.stringify(v, null, 2)
-      } catch {
-        return String(v)
-      }
+      try { return JSON.stringify(v, null, 2) } catch { return String(v) }
     }
     return String(v)
   }
@@ -94,8 +95,51 @@
     }
   }
 
-  function togglePortInspect(portId: string) {
-    inspectedPortId = inspectedPortId === portId ? null : portId
+  async function runMutation(work: () => Promise<unknown>) {
+    if (mutationBusy) return
+    mutationBusy = true
+    mutationError = null
+    try {
+      await work()
+    } catch (err) {
+      mutationError = (err as Error).message
+    } finally {
+      mutationBusy = false
+    }
+  }
+
+  function renameCurrentNode() {
+    if (!node || mutationBusy) return
+    const value = window.prompt('Rename node', node.name)
+    if (value === null) return
+    const next = value.trim()
+    if (!next || next === node.name) return
+    const id = node.id
+    void runMutation(() => renameNode(id, next))
+  }
+
+  function deleteCurrentNode() {
+    if (!node || mutationBusy) return
+    const portPart = ports.length > 0 ? ` ${ports.length} port${ports.length === 1 ? '' : 's'} will be removed.` : ''
+    const childPart = node.child_count > 0 ? ` This node contains ${node.child_count} child object${node.child_count === 1 ? '' : 's'}; server policy will decide whether deletion is allowed.` : ''
+    if (!window.confirm(`Delete “${node.name}”?${portPart}${childPart} Incident edges are handled by the graph transaction.`)) return
+    const id = node.id
+    void runMutation(() => deleteNode(id))
+  }
+
+  function createNodePort(request: CreatePortRequest) {
+    if (!node) return
+    const id = node.id
+    void runMutation(() => createPort(id, request))
+  }
+
+  function updateNodePort(port: PortDTO, request: UpdatePortRequest) {
+    void runMutation(() => updatePort(port.id, request))
+  }
+
+  function deleteNodePort(port: PortDTO) {
+    if (!window.confirm(`Delete port “${port.name}”? Connected ports must be disconnected first.`)) return
+    void runMutation(() => deletePort(port.id))
   }
 </script>
 
@@ -159,126 +203,31 @@
           <code title={node.id}>{node.id}</code>
         </div>
 
-        {#if inputPorts.length > 0 || outputPorts.length > 0}
-          <section class="io-section">
-            <h3>Interface</h3>
-            <div class="io-columns">
-              <div>
-                <h4>IN · {inputPorts.length}</h4>
-                {#if inputPorts.length === 0}<span class="muted">none</span>{/if}
-                {#each inputPorts as port (port.id)}
-                  {@const attachAction = portAttachAction(port)}
-                  {@const shape = portShape(port)}
-                  {@const confidence = portConfidence(port)}
-                  <div class="port-item" class:inspecting={inspectedPortId === port.id}>
-                    <div class="port-row">
-                      <span class="port-dot in"></span>
-                      <div class="port-name">
-                        <strong>{portLabel(port) ?? port.name}</strong>
-                        <small>
-                          {portLabel(port) ? `${port.name} · ` : ''}{port.port_type || 'any'}{shape ? ` · ${shape}` : ''}{confidence ? ` · ${confidence}` : ''}
-                        </small>
-                      </div>
-                      <div class="port-actions">
-                        {#if attachAction}
-                          <button
-                            class="port-action ask"
-                            disabled={!attachAction.enabled}
-                            title={attachAction.enabled ? 'Ask the Agent about this input' : attachAction.reason}
-                            on:click={() => onAttachPort(port)}
-                          >Ask</button>
-                        {/if}
-                        <button
-                          class="port-action"
-                          class:active={inspectedPortId === port.id}
-                          aria-expanded={inspectedPortId === port.id}
-                          on:click={() => togglePortInspect(port.id)}
-                        >Inspect</button>
-                      </div>
-                    </div>
-                    {#if inspectedPortId === port.id}
-                      <div class="port-inspect">
-                        <dl>
-                          <dt>id</dt><dd><code>{port.id}</code></dd>
-                          <dt>direction</dt><dd>input</dd>
-                          <dt>type</dt><dd>{port.port_type || 'any'}</dd>
-                          {#if shape}<dt>shape</dt><dd>{shape}</dd>{/if}
-                          {#if confidence}<dt>confidence</dt><dd>{confidence}</dd>{/if}
-                        </dl>
-                        {#if Object.keys(port.attrs).length > 0}
-                          <pre>{formatVal(port.attrs)}</pre>
-                        {/if}
-                      </div>
-                    {/if}
-                  </div>
-                {/each}
-              </div>
-              <div>
-                <h4>OUT · {outputPorts.length}</h4>
-                {#if outputPorts.length === 0}<span class="muted">none</span>{/if}
-                {#each outputPorts as port (port.id)}
-                  {@const attachAction = portAttachAction(port)}
-                  {@const shape = portShape(port)}
-                  {@const confidence = portConfidence(port)}
-                  <div class="port-item" class:inspecting={inspectedPortId === port.id}>
-                    <div class="port-row">
-                      <span class="port-dot out"></span>
-                      <div class="port-name">
-                        <strong>{portLabel(port) ?? port.name}</strong>
-                        <small>
-                          {portLabel(port) ? `${port.name} · ` : ''}{port.port_type || 'any'}{shape ? ` · ${shape}` : ''}{confidence ? ` · ${confidence}` : ''}
-                        </small>
-                      </div>
-                      <div class="port-actions">
-                        {#if attachAction}
-                          <button
-                            class="port-action ask"
-                            disabled={!attachAction.enabled}
-                            title={attachAction.enabled ? 'Ask the Agent about this output' : attachAction.reason}
-                            on:click={() => onAttachPort(port)}
-                          >Ask</button>
-                        {/if}
-                        <button
-                          class="port-action"
-                          class:active={inspectedPortId === port.id}
-                          aria-expanded={inspectedPortId === port.id}
-                          on:click={() => togglePortInspect(port.id)}
-                        >Inspect</button>
-                      </div>
-                    </div>
-                    {#if inspectedPortId === port.id}
-                      <div class="port-inspect">
-                        <dl>
-                          <dt>id</dt><dd><code>{port.id}</code></dd>
-                          <dt>direction</dt><dd>output</dd>
-                          <dt>type</dt><dd>{port.port_type || 'any'}</dd>
-                          {#if shape}<dt>shape</dt><dd>{shape}</dd>{/if}
-                          {#if confidence}<dt>confidence</dt><dd>{confidence}</dd>{/if}
-                        </dl>
-                        {#if Object.keys(port.attrs).length > 0}
-                          <pre>{formatVal(port.attrs)}</pre>
-                        {/if}
-                      </div>
-                    {/if}
-                  </div>
-                {/each}
-              </div>
-            </div>
-          </section>
+        {#if mutationError}
+          <div class="mutation-error" role="status">{mutationError}</div>
         {/if}
+        {#if mutationBusy}
+          <div class="mutation-status">Applying graph change…</div>
+        {/if}
+
+        <NodeAuthoringSection
+          {node}
+          {portsById}
+          {registryDescriptor}
+          {onAttachPort}
+          onRename={renameCurrentNode}
+          onDelete={deleteCurrentNode}
+          onCreatePort={createNodePort}
+          onUpdatePort={updateNodePort}
+          onDeletePort={deleteNodePort}
+        />
 
         {#if node.type === 'file' || planFile || stdoutPath || stderrPath || metricsPath}
           <section>
             <h3>Files</h3>
             <div class="actions">
-              {#if node.type === 'file'}
-                <button on:click={() => onOpenFile({ node: node!.id })}>Open file</button>
-              {/if}
-              {#if planFile}
-                <button on:click={() => onOpenFile({ path: planFile!, highlight: planLid ?? undefined })}>
-                  Source {planLid ?? ''}
-                </button>
-              {/if}
+              {#if node.type === 'file'}<button on:click={() => onOpenFile({ node: node!.id })}>Open file</button>{/if}
+              {#if planFile}<button on:click={() => onOpenFile({ path: planFile!, highlight: planLid ?? undefined })}>Source {planLid ?? ''}</button>{/if}
               {#if stdoutPath}<button on:click={() => onOpenFile({ path: stdoutPath! })}>stdout</button>{/if}
               {#if stderrPath}<button on:click={() => onOpenFile({ path: stderrPath! })}>stderr</button>{/if}
               {#if metricsPath}<button on:click={() => onOpenFile({ path: metricsPath! })}>metrics</button>{/if}
@@ -296,9 +245,7 @@
         </section>
 
         {#if openEscalate}
-          <section>
-            <button class="done" on:click={() => onResolveNote(node!.id)}>Mark done</button>
-          </section>
+          <section><button class="done" on:click={() => onResolveNote(node!.id)}>Mark done</button></section>
         {/if}
 
         <details class="attrs-panel">
@@ -306,8 +253,7 @@
           {#if attrEntries.length > 0}
             <dl>
               {#each attrEntries as [key, value]}
-                <dt>{key}</dt>
-                <dd><pre>{formatVal(value)}</pre></dd>
+                <dt>{key}</dt><dd><pre>{formatVal(value)}</pre></dd>
               {/each}
             </dl>
           {:else}
@@ -321,279 +267,58 @@
 
 <style>
   .selection-ui {
-    position: absolute;
-    top: 14px;
-    right: 14px;
-    z-index: 22;
-    display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    gap: 6px;
-    max-width: min(520px, calc(100% - 28px));
-    color: var(--text);
-    font-size: 12px;
+    position: absolute; top: 14px; right: 14px; z-index: 22;
+    display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
+    max-width: min(560px, calc(100% - 28px)); color: var(--text); font-size: 12px;
     pointer-events: none;
   }
   .selection-ui > * { pointer-events: auto; }
   .selection-bar {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    min-height: 38px;
-    padding: 5px 6px 5px 8px;
-    box-sizing: border-box;
-    border: 1px solid var(--hairline);
-    border-radius: 6px;
-    background: rgba(12, 23, 38, 0.94);
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+    display: flex; align-items: center; gap: 6px; min-height: 38px; padding: 5px 6px 5px 8px;
+    box-sizing: border-box; border: 1px solid var(--hairline); border-radius: 6px;
+    background: rgba(12,23,38,.94); box-shadow: 0 8px 24px rgba(0,0,0,.28);
   }
-  .node-mark {
-    width: 8px;
-    height: 8px;
-    border: 1px solid var(--blue);
-    background: var(--panel-3);
-  }
+  .node-mark { width: 8px; height: 8px; border: 1px solid var(--blue); background: var(--panel-3); }
   .node-mark.trusted { background: var(--amber); border-color: var(--amber); }
-  .identity {
-    min-width: 120px;
-    max-width: 210px;
-    display: flex;
-    flex-direction: column;
-    line-height: 1.15;
-  }
-  .identity strong {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: var(--ivory);
-    font-weight: 600;
-  }
-  .identity span {
-    margin-top: 2px;
-    color: var(--muted);
-    font: 9px var(--font-mono);
-  }
+  .identity { min-width: 120px; max-width: 210px; display: flex; flex-direction: column; line-height: 1.15; }
+  .identity strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ivory); font-weight: 600; }
+  .identity span { margin-top: 2px; color: var(--muted); font: 9px var(--font-mono); }
   button {
-    min-height: 28px;
-    padding: 3px 8px;
-    border: 1px solid var(--hairline);
-    border-radius: 4px;
-    background: var(--panel-2);
-    color: var(--text);
-    cursor: pointer;
-    font: 11px var(--font-body);
+    min-height: 28px; padding: 3px 8px; border: 1px solid var(--hairline); border-radius: 4px;
+    background: var(--panel-2); color: var(--text); cursor: pointer; font: 10px var(--font-body);
   }
-  button:hover:not(:disabled),
-  button.active {
-    border-color: var(--blue);
-    color: var(--ivory);
+  button:hover:not(:disabled), button.active { border-color: var(--blue); color: var(--ivory); }
+  button:disabled { opacity: .55; cursor: not-allowed; }
+  button.primary { color: var(--violet); border-color: rgba(178,140,224,.45); }
+  .context-strip {
+    display: flex; align-items: center; gap: 6px; max-width: 540px; padding: 5px 7px;
+    border: 1px solid var(--hairline); border-radius: 5px; background: rgba(12,23,38,.94);
   }
-  button.primary {
-    border-color: rgba(178, 140, 224, 0.5);
-    color: var(--violet);
-  }
-  button:disabled { opacity: 0.45; cursor: default; }
-  .context-strip,
+  .context-label { color: var(--muted); font: 8px var(--font-mono); text-transform: uppercase; }
+  .context-path { display: flex; gap: 4px; overflow-x: auto; }
+  .context-hop { display: flex; flex-direction: column; align-items: flex-start; min-width: 86px; }
+  .context-hop span { max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .context-hop small { color: var(--muted); font: 8px var(--font-mono); }
   .details {
-    width: 100%;
-    box-sizing: border-box;
-    border: 1px solid var(--hairline);
-    border-radius: 6px;
-    background: rgba(12, 23, 38, 0.97);
-    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.34);
+    width: min(540px, calc(100vw - 28px)); max-height: min(76vh, 720px); overflow: auto;
+    box-sizing: border-box; padding: 10px; border: 1px solid var(--hairline); border-radius: 6px;
+    background: rgba(12,23,38,.97); box-shadow: 0 12px 34px rgba(0,0,0,.34);
   }
-  .context-strip { padding: 7px 8px; }
-  .context-label {
-    display: block;
-    margin-bottom: 5px;
-    color: var(--muted);
-    font: 9px var(--font-mono);
-    text-transform: uppercase;
-  }
-  .context-path { display: flex; flex-wrap: wrap; gap: 4px; }
-  .context-hop {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    max-width: 160px;
-    padding: 4px 6px;
-  }
-  .context-hop span {
-    max-width: 145px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .context-hop small { color: var(--muted); font: 9px var(--font-mono); }
-  .details {
-    max-height: calc(100vh - 120px);
-    overflow: auto;
-    padding: 12px;
-  }
-  .detail-head {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 12px;
-    padding-bottom: 10px;
-    border-bottom: 1px solid var(--hairline-2);
-  }
-  .eyebrow {
-    color: var(--muted);
-    font: 9px var(--font-mono);
-    text-transform: uppercase;
-  }
-  h2 {
-    margin: 3px 0 0;
-    color: var(--ivory);
-    font: 600 16px var(--font-body);
-  }
-  .detail-head code {
-    max-width: 130px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    color: var(--muted);
-    font-size: 9px;
-  }
-  section { margin-top: 12px; }
-  h3,
-  h4 {
-    margin: 0;
-    color: var(--muted);
-    font: 10px var(--font-mono);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-  }
-  h3 { margin-bottom: 7px; }
-  h4 { margin-bottom: 5px; font-size: 9px; }
-  .io-columns {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 12px;
-  }
-  .port-item {
-    border-bottom: 1px solid rgba(43, 59, 96, 0.35);
-  }
-  .port-item.inspecting { background: rgba(105, 184, 242, 0.035); }
-  .port-row {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    min-height: 34px;
-  }
-  .port-dot {
-    flex: 0 0 auto;
-    width: 6px;
-    height: 6px;
-    border: 1px solid currentColor;
-  }
-  .port-dot.in { color: var(--blue); background: var(--blue); }
-  .port-dot.out { color: var(--amber); background: var(--amber); }
-  .port-name {
-    min-width: 0;
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-  }
-  .port-name strong {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: var(--text);
-    font-size: 10px;
-    font-weight: 500;
-  }
-  .port-name small {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: var(--muted);
-    font: 8px var(--font-mono);
-  }
-  .port-actions {
-    display: flex;
-    flex: 0 0 auto;
-    gap: 3px;
-  }
-  .port-action {
-    min-width: auto;
-    min-height: 22px;
-    padding: 1px 5px;
-    font-size: 9px;
-  }
-  .port-action.ask { color: var(--violet); }
-  .port-inspect {
-    padding: 6px 6px 8px 12px;
-    border-top: 1px solid rgba(43, 59, 96, 0.24);
-  }
-  .port-inspect dl {
-    display: grid;
-    grid-template-columns: 62px minmax(0, 1fr);
-    gap: 3px 6px;
-    margin: 0;
-  }
-  .port-inspect code { font: 8px var(--font-mono); color: var(--muted); }
-  .port-inspect pre {
-    margin: 7px 0 0;
-    padding: 5px 6px;
-    max-height: 110px;
-    overflow: auto;
-    border: 1px solid var(--hairline-2);
-    border-radius: 3px;
-    background: var(--panel-3);
-    color: #a9b9cf;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-    font: 8px/1.4 var(--font-mono);
-  }
+  .detail-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--hairline-2); }
+  .detail-head h2 { margin: 2px 0 0; color: var(--ivory); font-size: 15px; }
+  .detail-head code { max-width: 220px; overflow: hidden; text-overflow: ellipsis; color: var(--muted); font: 8px var(--font-mono); }
+  .eyebrow { color: var(--muted); font: 8px var(--font-mono); text-transform: uppercase; letter-spacing: .08em; }
+  .details > section, .details > details, .details > :global(.authoring) { margin-top: 10px; }
+  h3 { margin: 0 0 6px; color: var(--ivory); font-size: 11px; }
   .actions { display: flex; flex-wrap: wrap; gap: 5px; }
-  .facts dl,
-  .attrs-panel dl {
-    display: grid;
-    grid-template-columns: 72px 1fr;
-    gap: 4px 8px;
-    margin: 0;
-  }
+  .facts dl, .attrs-panel dl { display: grid; grid-template-columns: 72px minmax(0,1fr); gap: 4px 7px; margin: 0; }
   dt { color: var(--muted); font: 9px var(--font-mono); }
-  dd {
-    min-width: 0;
-    margin: 0;
-    color: var(--text);
-    overflow-wrap: anywhere;
-  }
-  .done {
-    width: 100%;
-    border-color: rgba(126, 207, 165, 0.5);
-    color: var(--jade);
-  }
-  .attrs-panel {
-    margin-top: 12px;
-    padding-top: 9px;
-    border-top: 1px solid var(--hairline-2);
-  }
-  .attrs-panel summary {
-    cursor: pointer;
-    color: var(--muted);
-    font: 10px var(--font-mono);
-  }
-  .attrs-panel dl { margin-top: 8px; }
-  .attrs-panel pre {
-    margin: 0;
-    padding: 4px 6px;
-    border: 1px solid var(--hairline-2);
-    border-radius: 3px;
-    background: var(--panel-3);
-    color: #a9b9cf;
-    white-space: pre-wrap;
-    word-break: break-word;
-    font: 9px/1.4 var(--font-mono);
-  }
-  .muted { color: var(--muted); font-size: 10px; }
-  @media (max-width: 760px) {
-    .selection-ui { left: 12px; right: 12px; max-width: none; }
-    .selection-bar { width: 100%; }
-    .identity { flex: 1; }
-    .details { max-height: calc(100vh - 150px); }
-    .io-columns { grid-template-columns: 1fr; }
-  }
+  dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+  .attrs-panel summary { cursor: pointer; color: var(--muted); font: 9px var(--font-mono); }
+  pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: #a9b9cf; font: 8px/1.4 var(--font-mono); }
+  .mutation-error, .mutation-status { margin-top: 8px; padding: 6px 7px; border-radius: 4px; font: 9px/1.35 var(--font-mono); }
+  .mutation-error { border: 1px solid rgba(238,123,115,.38); color: var(--crimson); background: rgba(238,123,115,.06); }
+  .mutation-status { border: 1px solid var(--hairline-2); color: var(--muted); background: var(--panel-3); }
+  .muted { color: var(--muted); font: 9px var(--font-mono); }
+  .done { color: var(--jade); }
 </style>
