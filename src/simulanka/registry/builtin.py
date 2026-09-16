@@ -309,7 +309,7 @@ def _node_profile(key: str) -> NodeProfileSpec:
     if key not in {"directory", "file"}:
         capabilities.add("renamable")
     if key in {"model", "module"}:
-        capabilities.add("deletable")
+        capabilities.update({"deletable", "port_authorable"})
     if key in _CONTAINER_TYPES:
         capabilities.add("container")
     if key in _TRUST_SUBJECT_TYPES:
@@ -455,6 +455,16 @@ CORE_PACKAGE = RegistryPackage(
             consumers=frozenset({"action"}),
             description="May receive human verdict and discussion actions.",
         ),
+        CapabilitySpec(
+            key="disconnectable",
+            consumers=frozenset({"action"}),
+            description="May be removed as an explicit topology action.",
+        ),
+        CapabilitySpec(
+            key="port_authorable",
+            consumers=frozenset({"action"}),
+            description="May own Ports created through explicit authoring actions.",
+        ),
     ),
     edge_profiles=(
         EdgeProfileSpec(
@@ -465,7 +475,7 @@ CORE_PACKAGE = RegistryPackage(
         ),
         _edge_profile(
             "data_flow",
-            capabilities=frozenset({"reviewable"}),
+            capabilities=frozenset({"disconnectable", "reviewable"}),
         ),
     ),
     port_types=frozenset({"any"}),
@@ -473,6 +483,10 @@ CORE_PACKAGE = RegistryPackage(
         ActionExecutorSpec(key="graph.create_node", family="GraphCommand"),
         ActionExecutorSpec(key="graph.rename_node", family="GraphCommand"),
         ActionExecutorSpec(key="graph.delete_node", family="GraphCommand"),
+        ActionExecutorSpec(key="graph.delete_edge", family="GraphCommand"),
+        ActionExecutorSpec(key="graph.create_port", family="GraphCommand"),
+        ActionExecutorSpec(key="graph.update_port", family="GraphCommand"),
+        ActionExecutorSpec(key="graph.delete_port", family="GraphCommand"),
         ActionExecutorSpec(key="graph.edge_verdict", family="GraphCommand"),
         ActionExecutorSpec(key="graph.accept_edge", family="GraphCommand"),
         ActionExecutorSpec(key="graph.toggle_edge_discussion", family="GraphCommand"),
@@ -530,6 +544,78 @@ CORE_PACKAGE = RegistryPackage(
                 capabilities=frozenset({"deletable"}),
             ),
             executor="graph.delete_node",
+            executor_family="GraphCommand",
+        ),
+        ActionSpec(
+            key="port.create",
+            label="添加端口",
+            target=RefSetPredicate(
+                entity_kinds=frozenset({"node"}),
+                capabilities=frozenset({"port_authorable"}),
+            ),
+            executor="graph.create_port",
+            executor_family="GraphCommand",
+            input_schema={
+                "type": "object",
+                "required": ["name", "direction"],
+                "properties": {
+                    "name": {"type": "string", "minLength": 1},
+                    "direction": {"type": "string", "enum": ["in", "out"]},
+                    "port_type": {"type": "string", "minLength": 1},
+                    "attrs": {
+                        "type": "object",
+                        "properties": {
+                            "label": {"type": "string"},
+                            "shape": {"type": "array"},
+                            "confidence": {"type": "string"},
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+                "additionalProperties": False,
+            },
+        ),
+        ActionSpec(
+            key="port.update",
+            label="编辑端口",
+            target=RefSetPredicate(entity_kinds=frozenset({"port"})),
+            executor="graph.update_port",
+            executor_family="GraphCommand",
+            input_schema={
+                "type": "object",
+                "minProperties": 1,
+                "properties": {
+                    "name": {"type": "string", "minLength": 1},
+                    "direction": {"type": "string", "enum": ["in", "out"]},
+                    "port_type": {"type": "string", "minLength": 1},
+                    "attrs": {
+                        "type": "object",
+                        "properties": {
+                            "label": {"type": "string"},
+                            "shape": {"type": "array"},
+                            "confidence": {"type": "string"},
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+                "additionalProperties": False,
+            },
+        ),
+        ActionSpec(
+            key="port.delete",
+            label="删除端口",
+            target=RefSetPredicate(entity_kinds=frozenset({"port"})),
+            executor="graph.delete_port",
+            executor_family="GraphCommand",
+        ),
+        ActionSpec(
+            key="edge.delete",
+            label="Disconnect",
+            target=RefSetPredicate(
+                entity_kinds=frozenset({"edge"}),
+                capabilities=frozenset({"disconnectable"}),
+            ),
+            executor="graph.delete_edge",
             executor_family="GraphCommand",
         ),
         ActionSpec(

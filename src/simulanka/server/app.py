@@ -10,7 +10,7 @@ import tempfile
 import threading
 import uuid
 from collections.abc import AsyncIterator, Iterable, Iterator, Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -50,9 +50,11 @@ from simulanka.kernel.intent import (
     CreatePortOp,
     DeleteEdgeOp,
     DeleteNodeOp,
+    DeletePortOp,
     Receipt,
     RenameNodeOp,
     UpdateAttrsOp,
+    UpdatePortOp,
 )
 from simulanka.kernel.manifest import load_manifest
 from simulanka.kernel.validator import ValidationError
@@ -60,7 +62,7 @@ from simulanka.layout.project import ProjectLayout
 from simulanka.plan import PlanError, resolve_escalate
 from simulanka.registry.builtin import DEFAULT_REGISTRY
 from simulanka.registry.profiles import Registry
-from simulanka.schema.entities import Edge, Node
+from simulanka.schema.entities import Edge, Node, Port
 from simulanka.server.action_resolver import ActionResolver, ActionTarget
 from simulanka.server.agent_ops import apply_agent_ops
 from simulanka.server.sessions import (
@@ -100,6 +102,10 @@ SSE_POLL_INTERVAL = 0.25  # seconds between event_log polls
 # S4 file viewer: one human reads one page — a 1 MiB head is plenty, and a
 # runaway training log must not take the browser down with it.
 FILE_CONTENT_CAP = 1_048_576
+
+EDITABLE_PORT_ATTRS = frozenset({"label", "shape", "confidence"})
+CONNECTED_PORT_UPDATE_REASON = "disconnect incident Edges before changing Port direction or type"
+CONNECTED_PORT_DELETE_REASON = "disconnect incident Edges before deleting the Port"
 
 
 @dataclass
@@ -264,6 +270,10 @@ def create_app(
             "graph.create_node": "GraphCommand",
             "graph.rename_node": "GraphCommand",
             "graph.delete_node": "GraphCommand",
+            "graph.delete_edge": "GraphCommand",
+            "graph.create_port": "GraphCommand",
+            "graph.update_port": "GraphCommand",
+            "graph.delete_port": "GraphCommand",
             "graph.edge_verdict": "GraphCommand",
             "graph.accept_edge": "GraphCommand",
             "graph.toggle_edge_discussion": "GraphCommand",
@@ -271,7 +281,10 @@ def create_app(
             "projection.enter_node": "ProjectionCommand",
             "projection.save_template": "ProjectionCommand",
         },
-        state_policies={"edge.accept": _edge_accept_state_policy},
+        state_policies={
+            "edge.accept": _edge_accept_state_policy,
+            "port.delete": _port_delete_state_policy,
+        },
     )
 
     @app.get("/registry")
@@ -451,6 +464,19 @@ def create_app(
     def delete_edge(edge_id: str) -> dict[str, Any]:
         """Remove an edge by id (§13.5.2 disconnect). 422 if it doesn't exist or
         is a structural ``contains`` edge the kernel refuses to drop."""
+        target = _load_action_target(
+            layout,
+            registry,
+            kind="edge",
+            entity_id=edge_id,
+        )
+        _require_registered_action(
+            registry,
+            action_resolver,
+            "edge.delete",
+            (target,),
+            actor="user",
+        )
         try:
             receipt = apply_patch_now(
                 layout,
@@ -545,6 +571,163 @@ def create_app(
             "node_id": node_id,
             "name": final,
             "port_ids": receipt.ports,
+            "graph_version": receipt.graph_version,
+        }
+
+    @app.post("/node/{node_id}/ports")
+    def create_port(
+        node_id: str,
+        body: dict[str, Any] = Body(default_factory=dict),
+    ) -> dict[str, Any]:
+        """Create one explicit Port on a Registry-eligible Node."""
+        _reject_unknown_fields(
+            body,
+            allowed=frozenset({"name", "direction", "port_type", "attrs"}),
+        )
+        name = body.get("name")
+        direction = body.get("direction")
+        port_type = body.get("port_type", "any")
+        if not isinstance(name, str) or not name.strip():
+            raise HTTPException(status_code=422, detail="name is required")
+        if direction not in {"in", "out"}:
+            raise HTTPException(status_code=422, detail="direction must be 'in' or 'out'")
+        if not isinstance(port_type, str) or not port_type.strip():
+            raise HTTPException(status_code=422, detail="port_type must be a non-empty string")
+        attrs = _editable_port_attrs(body.get("attrs", {}))
+
+        target = _load_action_target(
+            layout,
+            registry,
+            kind="node",
+            entity_id=node_id,
+        )
+        _require_registered_action(
+            registry,
+            action_resolver,
+            "port.create",
+            (target,),
+            actor="user",
+        )
+        try:
+            receipt = apply_patch_now(
+                layout,
+                ops=[
+                    CreatePortOp(
+                        node=node_id,
+                        name=name.strip(),
+                        direction=direction,
+                        port_type=port_type.strip(),
+                        attrs=attrs,
+                    )
+                ],
+                actor="user",
+                note=f"frontend: add Port {name.strip()} to {node_id}",
+                registry=registry,
+            )
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"port_id": receipt.ports[0], "graph_version": receipt.graph_version}
+
+    @app.post("/port/{port_id}/update")
+    def update_port(
+        port_id: str,
+        body: dict[str, Any] = Body(default_factory=dict),
+    ) -> dict[str, Any]:
+        """Patch bounded Port fields without rewriting incident Edges."""
+        allowed = frozenset({"name", "direction", "port_type", "attrs"})
+        _reject_unknown_fields(body, allowed=allowed)
+        if not body:
+            raise HTTPException(status_code=422, detail="at least one Port field is required")
+
+        name = body.get("name")
+        direction = body.get("direction")
+        port_type = body.get("port_type")
+        if "name" in body and (not isinstance(name, str) or not name.strip()):
+            raise HTTPException(status_code=422, detail="name must be a non-empty string")
+        if "direction" in body and direction not in {"in", "out"}:
+            raise HTTPException(status_code=422, detail="direction must be 'in' or 'out'")
+        if "port_type" in body and (not isinstance(port_type, str) or not port_type.strip()):
+            raise HTTPException(status_code=422, detail="port_type must be a non-empty string")
+        attrs = _editable_port_attrs(body["attrs"]) if "attrs" in body else None
+
+        target = _load_action_target(
+            layout,
+            registry,
+            kind="port",
+            entity_id=port_id,
+        )
+        _require_registered_action(
+            registry,
+            action_resolver,
+            "port.update",
+            (target,),
+            actor="user",
+        )
+        port = load_port(layout, port_id)
+        topology_change = (
+            "direction" in body
+            and direction != port.direction
+            or "port_type" in body
+            and port_type != port.port_type
+        )
+        if target.incident_edge_ids and topology_change:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "action": "port.update",
+                    "reason": CONNECTED_PORT_UPDATE_REASON,
+                    "reason_code": "state_locked",
+                },
+            )
+
+        try:
+            receipt = apply_patch_now(
+                layout,
+                ops=[
+                    UpdatePortOp(
+                        port=port_id,
+                        name=name.strip() if isinstance(name, str) else None,
+                        direction=direction if direction in {"in", "out"} else None,
+                        port_type=(port_type.strip() if isinstance(port_type, str) else None),
+                        attrs=attrs,
+                    )
+                ],
+                actor="user",
+                note=f"frontend: update Port {port_id}",
+                registry=registry,
+            )
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"port_id": port_id, "graph_version": receipt.graph_version}
+
+    @app.delete("/port/{port_id}")
+    def delete_port_endpoint(port_id: str) -> dict[str, Any]:
+        """Delete one unconnected Port; incident Edges must be removed first."""
+        target = _load_action_target(
+            layout,
+            registry,
+            kind="port",
+            entity_id=port_id,
+        )
+        _require_registered_action(
+            registry,
+            action_resolver,
+            "port.delete",
+            (target,),
+            actor="user",
+        )
+        try:
+            receipt = apply_patch_now(
+                layout,
+                ops=[DeletePortOp(port=port_id)],
+                actor="user",
+                note=f"frontend: delete Port {port_id}",
+                registry=registry,
+            )
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {
+            "deleted": receipt.deleted_ports,
             "graph_version": receipt.graph_version,
         }
 
@@ -1636,6 +1819,37 @@ def _edge_accept_state_policy(
     return "state_locked", "only a proposed ghost edge can be accepted"
 
 
+def _port_delete_state_policy(
+    refs: Sequence[ActionTarget],
+) -> tuple[Literal["state_locked"], str] | None:
+    if refs[0].incident_edge_ids:
+        return "state_locked", CONNECTED_PORT_DELETE_REASON
+    return None
+
+
+def _port_action_target(
+    layout: ProjectLayout,
+    port: Port,
+    registry: Registry,
+    *,
+    incident_edge_ids: Sequence[str] | None = None,
+) -> ActionTarget:
+    if incident_edge_ids is None:
+        incident_edge_ids = tuple(
+            edge.id
+            for edge in iter_edges(layout)
+            if edge.source_port_id == port.id or edge.target_port_id == port.id
+        )
+    target = _entity_action_target(
+        registry,
+        kind="port",
+        entity_id=port.id,
+        profile=port.port_type,
+        attrs=port.attrs,
+    )
+    return replace(target, incident_edge_ids=tuple(sorted(incident_edge_ids)))
+
+
 def _load_action_target(
     layout: ProjectLayout,
     registry: Registry,
@@ -1663,13 +1877,7 @@ def _load_action_target(
                 attrs=edge.attrs,
             )
         port = load_port(layout, entity_id)
-        return _entity_action_target(
-            registry,
-            kind=kind,
-            entity_id=port.id,
-            profile=port.port_type,
-            attrs=port.attrs,
-        )
+        return _port_action_target(layout, port, registry)
     except FileNotFoundError:
         raise HTTPException(
             status_code=404,
@@ -1699,6 +1907,60 @@ def _require_action(
                 else affordance.reason
             ),
         )
+
+
+def _require_registered_action(
+    registry: Registry,
+    resolver: ActionResolver,
+    action_id: str,
+    targets: Sequence[ActionTarget],
+    *,
+    actor: str,
+) -> None:
+    if action_id not in registry.actions:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "action": action_id,
+                "reason": f"action {action_id!r} is not registered",
+                "reason_code": "executor_unavailable",
+            },
+        )
+    _require_action(resolver, action_id, targets, actor=actor)
+
+
+def _reject_unknown_fields(
+    body: Mapping[str, Any],
+    *,
+    allowed: frozenset[str],
+) -> None:
+    unknown = body.keys() - allowed
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=f"unknown fields: {sorted(unknown)}",
+        )
+
+
+def _editable_port_attrs(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise HTTPException(status_code=422, detail="attrs must be an object")
+    unknown = value.keys() - EDITABLE_PORT_ATTRS
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Port attrs are read-only unless explicitly editable: {sorted(unknown)}",
+        )
+    label = value.get("label")
+    shape = value.get("shape")
+    confidence = value.get("confidence")
+    if "label" in value and not isinstance(label, str):
+        raise HTTPException(status_code=422, detail="attrs.label must be a string")
+    if "shape" in value and not isinstance(shape, list):
+        raise HTTPException(status_code=422, detail="attrs.shape must be an array")
+    if "confidence" in value and not isinstance(confidence, str):
+        raise HTTPException(status_code=422, detail="attrs.confidence must be a string")
+    return dict(value)
 
 
 def _apply_user_op(
@@ -1772,7 +2034,11 @@ def _build_payload(
     boundary_payload: list[dict[str, Any]] = []
     external_ids: set[str] = set()
     external_port_ids: set[str] = set()
+    incident_edges_by_port: dict[str, list[str]] = {}
     for e in iter_edges(layout):
+        for port_id in (e.source_port_id, e.target_port_id):
+            if port_id is not None:
+                incident_edges_by_port.setdefault(port_id, []).append(e.id)
         src_in = e.source_id in included
         dst_in = e.target_id in included
         if src_in and dst_in:
@@ -1804,12 +2070,11 @@ def _build_payload(
             ports_of.setdefault(p.node_id, []).append(p.id)
         elif p.node_id != root and p.id not in external_port_ids:
             continue
-        target = _entity_action_target(
+        target = _port_action_target(
+            layout,
+            p,
             registry,
-            kind="port",
-            entity_id=p.id,
-            profile=p.port_type,
-            attrs=p.attrs,
+            incident_edge_ids=incident_edges_by_port.get(p.id, ()),
         )
         ports_payload.append(
             {
@@ -2087,7 +2352,7 @@ def _affected(event: Event) -> dict[str, list[str]]:
             v = op.get("parent_id")
             if isinstance(v, str):
                 nodes[v] = None
-        elif kind == "create_port":
+        elif kind in {"create_port", "update_port", "delete_port"}:
             ports[eid] = None
             node_id = op.get("node_id")
             if isinstance(node_id, str):

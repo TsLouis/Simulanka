@@ -36,6 +36,32 @@ class CreatePortOp(BaseModel):
     attrs: dict[str, Any] = Field(default_factory=dict)
 
 
+class UpdatePortOp(BaseModel):
+    """Update one Port without implicitly rewriting incident Edges.
+
+    ``attrs`` is a bounded shallow merge.  The kernel owns the allow-list so
+    non-HTTP callers cannot bypass the authoring contract.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["update_port"] = "update_port"
+    port: str
+    name: str | None = None
+    direction: PortDirection | None = None
+    port_type: str | None = None
+    attrs: dict[str, Any] | None = None
+
+
+class DeletePortOp(BaseModel):
+    """Delete one unconnected Port; incident Edges are never cascaded."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["delete_port"] = "delete_port"
+    port: str
+
+
 class CreateEdgeOp(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -119,6 +145,8 @@ class DeleteNodeOp(BaseModel):
 IntentOp = Annotated[
     CreateNodeOp
     | CreatePortOp
+    | UpdatePortOp
+    | DeletePortOp
     | CreateEdgeOp
     | UpdateAttrsOp
     | RenameNodeOp
@@ -145,6 +173,7 @@ class Receipt(BaseModel):
     ports: list[str] = Field(default_factory=list)
     updated_nodes: list[str] = Field(default_factory=list)
     updated_edges: list[str] = Field(default_factory=list)
+    updated_ports: list[str] = Field(default_factory=list)
     deleted_edges: list[str] = Field(default_factory=list)
     deleted_nodes: list[str] = Field(default_factory=list)
     deleted_ports: list[str] = Field(default_factory=list)
