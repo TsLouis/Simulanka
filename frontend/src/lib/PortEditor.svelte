@@ -3,6 +3,7 @@
   import {
     allowedPortTypes,
     draftFromPort,
+    portTopologyEditingEnabled,
     updateRequestFromDraft,
     validatePortDraft,
     type PortEditDraft,
@@ -27,6 +28,7 @@
   $: validation = validatePortDraft(draft, registryDescriptor)
   $: updateEnabled = updateAction?.enabled === true
   $: deleteEnabled = deleteAction?.enabled === true
+  $: topologyEnabled = portTopologyEditingEnabled(updateAction, deleteAction)
 
   function submit() {
     if (!updateEnabled || !validation.valid) return
@@ -43,14 +45,22 @@
   <div class="pair">
     <label>
       <span>Direction</span>
-      <select bind:value={draft.direction} disabled={!updateEnabled}>
+      <select
+        bind:value={draft.direction}
+        disabled={!topologyEnabled}
+        title={topologyEnabled ? 'Port direction' : (deleteAction?.reason ?? updateAction?.reason ?? 'Topology editing unavailable')}
+      >
         <option value="in">Input</option>
         <option value="out">Output</option>
       </select>
     </label>
     <label>
       <span>Type</span>
-      <select bind:value={draft.portType} disabled={!updateEnabled}>
+      <select
+        bind:value={draft.portType}
+        disabled={!topologyEnabled}
+        title={topologyEnabled ? 'Port type' : (deleteAction?.reason ?? updateAction?.reason ?? 'Topology editing unavailable')}
+      >
         {#each types as type}
           <option value={type}>{type}</option>
         {/each}
@@ -76,6 +86,8 @@
 
   {#if !updateEnabled && updateAction}
     <p class="reason">{updateAction.reason}</p>
+  {:else if updateEnabled && !topologyEnabled && deleteAction}
+    <p class="reason">Direction and Type are locked until the Port is disconnected. {deleteAction.reason}</p>
   {:else if !validation.valid}
     <p class="reason">{validation.reason}</p>
   {/if}
