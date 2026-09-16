@@ -62,13 +62,6 @@ export async function deletePort(portId: string): Promise<DeletePortResult> {
   return (await resp.json()) as DeletePortResult
 }
 
-export async function disconnectEdge(edgeId: string): Promise<void> {
-  const resp = await fetch(`/edge/${encodeURIComponent(edgeId)}`, {
-    method: 'DELETE',
-  })
-  if (!resp.ok) throw await responseError(resp, 'disconnect edge')
-}
-
 export function objectAction(
   affordances: AffordanceDTO[],
   id: string,
