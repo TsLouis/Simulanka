@@ -1,4 +1,4 @@
-import type { AffordanceDTO, PortDTO } from './types'
+import type { AffordanceDTO, EdgeDTO, PortDTO } from './types'
 
 export interface CreatePortRequest {
   name: string
@@ -62,6 +62,13 @@ export async function deletePort(portId: string): Promise<DeletePortResult> {
   return (await resp.json()) as DeletePortResult
 }
 
+export async function disconnectEdge(edgeId: string): Promise<void> {
+  const resp = await fetch(`/edge/${encodeURIComponent(edgeId)}`, {
+    method: 'DELETE',
+  })
+  if (!resp.ok) throw await responseError(resp, 'disconnect edge')
+}
+
 export function objectAction(
   affordances: AffordanceDTO[],
   id: string,
@@ -71,4 +78,8 @@ export function objectAction(
 
 export function portAction(port: PortDTO, id: string): AffordanceDTO | null {
   return objectAction(port.affordances, id)
+}
+
+export function edgeAction(edge: EdgeDTO, id: string): AffordanceDTO | null {
+  return objectAction(edge.affordances, id)
 }
