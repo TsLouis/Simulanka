@@ -1,4 +1,4 @@
-import type { PortDTO, RegistryDescriptorDTO } from './types'
+import type { AffordanceDTO, PortDTO, RegistryDescriptorDTO } from './types'
 import type { UpdatePortRequest } from './object-authoring'
 
 export interface PortEditDraft {
@@ -50,6 +50,17 @@ export function validatePortDraft(
     }
   }
   return { valid: true, reason: null }
+}
+
+export function portTopologyEditingEnabled(
+  updateAction: AffordanceDTO | null,
+  deleteAction: AffordanceDTO | null,
+): boolean {
+  // The server keeps port.update enabled for safe connected-Port edits such as
+  // name/label. port.delete becomes state-locked while incident edges exist,
+  // which is the server-authoritative signal that topology fields must stay
+  // read-only until the wire is disconnected. The endpoint still revalidates.
+  return updateAction?.enabled === true && (deleteAction?.enabled ?? true)
 }
 
 export function updateRequestFromDraft(
