@@ -30,10 +30,12 @@ class ActionTarget:
     writable: bool = True
     locked: bool = False
     lock_reason: str = "实体当前已锁定"
+    incident_edge_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "capabilities", frozenset(self.capabilities))
         object.__setattr__(self, "attrs", MappingProxyType(dict(self.attrs)))
+        object.__setattr__(self, "incident_edge_ids", tuple(self.incident_edge_ids))
 
     @classmethod
     def from_profile(
@@ -48,6 +50,7 @@ class ActionTarget:
         writable: bool = True,
         locked: bool = False,
         lock_reason: str = "实体当前已锁定",
+        incident_edge_ids: Sequence[str] = (),
     ) -> ActionTarget:
         if kind == "node":
             resolved = registry.node(profile)
@@ -74,6 +77,7 @@ class ActionTarget:
             writable=writable,
             locked=locked,
             lock_reason=lock_reason,
+            incident_edge_ids=tuple(incident_edge_ids),
         )
 
 
