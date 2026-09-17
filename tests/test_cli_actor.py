@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import click
 import pytest
 from typer.main import get_command
 from typer.testing import CliRunner
@@ -40,28 +39,28 @@ from simulanka.layout.project import ProjectLayout
     ],
 )
 def test_graph_write_commands_register_actor_option(command: list[str]) -> None:
-    """Assert the command model, not a particular Rich help rendering.
+    """Assert the stable command contract, not renderer or implementation classes.
 
     The actor-passthrough contract is that every graph-mutating command accepts
-    explicit ``--actor``. Typer/Click may change terminal help formatting while
-    leaving the registered option and parsing semantics intact, so inspect the
-    generated Click command directly and keep execution/precedence covered by
-    the functional test below.
+    explicit ``--actor`` and binds it to ``SIMULANKA_ACTOR``. Typer versions may
+    change Rich rendering and even the concrete Click classes they expose, so
+    traverse the generated command model by its stable attributes instead.
     """
-    current: click.Command = get_command(app)
+    current = get_command(app)
     for token in command:
-        assert isinstance(current, click.Group), command
-        assert token in current.commands, command
-        current = current.commands[token]
+        commands = getattr(current, "commands", None)
+        assert isinstance(commands, dict), command
+        assert token in commands, command
+        current = commands[token]
 
     actor_options = [
         param
-        for param in current.params
-        if isinstance(param, click.Option) and "--actor" in param.opts
+        for param in getattr(current, "params", [])
+        if "--actor" in getattr(param, "opts", [])
     ]
     assert len(actor_options) == 1, command
-    assert actor_options[0].name == "actor"
-    assert actor_options[0].envvar == "SIMULANKA_ACTOR"
+    assert getattr(actor_options[0], "name", None) == "actor"
+    assert getattr(actor_options[0], "envvar", None) == "SIMULANKA_ACTOR"
 
 
 def test_cli_actor_precedence_and_task_event_accounting(tmp_path: Path) -> None:
