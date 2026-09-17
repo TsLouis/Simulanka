@@ -23,15 +23,15 @@
 - [x] 3.4 Port Inspect exposes an Edit surface for name/type/safe direction/allowed attrs when `port.update` is enabled.
 - [x] 3.5 Port Inspect exposes Delete when `port.delete` is enabled; disabled reason is visible when connected.
 - [ ] 3.6 Preserve native LiteGraph Port geometry and independent Port visibility after edits/reloads.
-- [ ] 3.7 Add frontend tests for action projection, disabled reasons, form validation, and reload consistency.
+- [x] 3.7 Add frontend tests for action projection, disabled reasons, form validation, and connected-Port topology locking. Reload/persistence coverage is verified in integration tests 4.3–4.5.
 
 ## 4. Integration
 
 - [x] 4.1 Merge/rebase backend lane into the integration branch without changing the frozen interaction grammar.
 - [x] 4.2 Wire frontend client calls to final backend contract.
-- [ ] 4.3 Verify create/edit/delete Port followed by reload/SSE keeps graph and canvas consistent.
-- [ ] 4.4 Verify Edge Disconnect and physical wire removal converge on one persisted result.
-- [ ] 4.5 Verify Node delete never creates canvas-only phantom state.
+- [x] 4.3 Verify create/edit/delete Port persists across graph reload and SSE affected refs include the owning Node. Canvas geometry remains under 3.6 / manual acceptance.
+- [x] 4.4 Verify Edge Disconnect and physical wire removal converge on the same persisted `DELETE /edge/{id}` path and reload result.
+- [x] 4.5 Verify Node delete persists across reload and never leaves a server-side phantom object.
 
 ## 5. Manual acceptance
 
