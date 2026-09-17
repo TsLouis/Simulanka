@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from typer.main import get_command
 from typer.testing import CliRunner
 
 from simulanka.cli.app import app
@@ -37,11 +38,29 @@ from simulanka.layout.project import ProjectLayout
         ["note", "resolve"],
     ],
 )
-def test_graph_write_commands_expose_actor_option(command: list[str]) -> None:
-    result = CliRunner().invoke(app, [*command, "--help"])
+def test_graph_write_commands_register_actor_option(command: list[str]) -> None:
+    """Assert the stable command contract, not renderer or implementation classes.
 
-    assert result.exit_code == 0, result.output
-    assert "--actor" in result.output
+    The actor-passthrough contract is that every graph-mutating command accepts
+    explicit ``--actor`` and binds it to ``SIMULANKA_ACTOR``. Typer versions may
+    change Rich rendering and even the concrete Click classes they expose, so
+    traverse the generated command model by its stable attributes instead.
+    """
+    current = get_command(app)
+    for token in command:
+        commands = getattr(current, "commands", None)
+        assert isinstance(commands, dict), command
+        assert token in commands, command
+        current = commands[token]
+
+    actor_options = [
+        param
+        for param in getattr(current, "params", [])
+        if "--actor" in getattr(param, "opts", [])
+    ]
+    assert len(actor_options) == 1, command
+    assert getattr(actor_options[0], "name", None) == "actor"
+    assert getattr(actor_options[0], "envvar", None) == "SIMULANKA_ACTOR"
 
 
 def test_cli_actor_precedence_and_task_event_accounting(tmp_path: Path) -> None:
