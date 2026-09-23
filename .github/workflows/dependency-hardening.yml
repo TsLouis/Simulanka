@@ -1,0 +1,92 @@
+name: Dependency hardening
+
+on:
+  pull_request:
+    paths:
+      - 'frontend/**'
+      - 'scripts/markdown_security_smoke.py'
+      - 'openspec/changes/frontend-dependency-hardening/**'
+      - '.github/workflows/dependency-hardening.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'frontend/**'
+      - 'scripts/markdown_security_smoke.py'
+      - '.github/workflows/dependency-hardening.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-hardening-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Committed-lock audit and FileViewer safety
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DO_NOT_TRACK: 'true'
+      OPENSPEC_TELEMETRY: '0'
+      CI: 'true'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Record committed dependency inputs
+        run: |
+          mkdir -p security-evidence
+          git rev-parse HEAD > security-evidence/revision.txt
+          cp frontend/package.json frontend/package-lock.json security-evidence/
+          sha256sum frontend/package.json frontend/package-lock.json > security-evidence/input-sha256.txt
+          node --version > security-evidence/node.txt
+          npm --version > security-evidence/npm.txt
+      - name: Clean install committed lock (no resolution or audit-fix)
+        run: npm ci --prefix frontend
+      - name: Audit all frontend dependencies (fail closed)
+        run: |
+          npm audit --prefix frontend --json > security-evidence/audit.json
+          node -e "const r=require('./security-evidence/audit.json'); if(r.error || r.metadata?.vulnerabilities?.total !== 0) process.exit(1)"
+          git diff --exit-code -- frontend/package.json frontend/package-lock.json
+      - name: Frontend compatibility
+        run: |
+          set -o pipefail
+          npm test --prefix frontend 2>&1 | tee security-evidence/frontend-tests.txt
+          npm run check --prefix frontend 2>&1 | tee security-evidence/frontend-check.txt
+          npm run build --prefix frontend 2>&1 | tee security-evidence/frontend-build.txt
+      - name: OpenSpec strict validation for active changes
+        if: github.event_name == 'pull_request'
+        run: |
+          set -o pipefail
+          for change in workspace-status-resilience frontend-dependency-hardening; do
+            if test -d "openspec/changes/$change"; then
+              npx --yes @fission-ai/openspec@1.13.1 validate "$change" --strict --no-interactive 2>&1 | tee "security-evidence/openspec-$change.txt"
+            fi
+          done
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install disposable server and browser harness
+        run: |
+          python -m pip install -e '.[dev,server]' 'playwright==1.58.0'
+          python -m playwright install --with-deps chromium
+      - name: Real registered Markdown through production FileViewer
+        run: |
+          set -o pipefail
+          python scripts/markdown_security_smoke.py 2>&1 | tee security-evidence/browser-log.txt
+      - name: Retain exact verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-security-verification
+          path: security-evidence/
+          retention-days: 14
+          if-no-files-found: error
