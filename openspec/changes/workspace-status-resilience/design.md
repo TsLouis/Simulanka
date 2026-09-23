@@ -19,3 +19,7 @@ The server event stream emits ready at its current graph version and only emits 
 Preserve the quiet canvas-first night palette, object grammar, and native Port geometry. Navigation gains accessible labels/current location, readable connection text, keyboard focus and narrow-screen wrapping. A ResizeObserver tracks actual canvas dimensions when toolbar height changes.
 
 A read-only-permission CI workflow runs frontend gates, backend regression, and real Chromium against a disposable synthetic project. Browser fault injection targets layout HTTP responses and the real SSE transport; no user data, model calls, or production test endpoints are involved. Native canvas drill-down and responsive screenshots supplement tests but do not substitute for full manual Port/Agent acceptance. Existing PR acceptance checkboxes remain untouched.
+
+## Browser-discovered search gap
+
+The first Chromium pass confirmed the directory template is named `dir` but displays `directory` as its type. Filtering only labels/names/categories makes that visible type unsearchable. Extend filtering to the already server-supplied profile string, without changing the catalog, parent rules or write permissions. Retain the real browser `directory` search and add direct regressions. The test harness uses actual keyboard navigation before testing focus-visible. Dependency audit results are retained as reports, not represented as remediated findings.

@@ -189,6 +189,10 @@ def run() -> None:
                             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
                             assert page.locator(".topbar").evaluate("el => el.scrollWidth <= innerWidth")
                             page.get_by_role("button", name="Reload view").focus()
+                            # Enter via the keyboard, not a synthetic focus after a mouse gesture.
+                            page.keyboard.press("Shift+Tab")
+                            page.keyboard.press("Tab")
+                            expect(page.get_by_role("button", name="Reload view")).to_be_focused()
                             assert page.get_by_role("button", name="Reload view").evaluate("el => getComputedStyle(el).outlineStyle !== 'none'")
                             page.screenshot(path=str(OUTPUT / f"workspace-{width}.png"))
                         checks.append("Chromium: 390/768px toolbar layout, focus visibility, reduced-motion rendering")

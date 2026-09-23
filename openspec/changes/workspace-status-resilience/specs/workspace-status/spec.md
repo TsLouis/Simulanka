@@ -34,3 +34,10 @@ The toolbar SHALL expose named history controls, current graph location, textual
 #### Scenario: The toolbar wraps or opens a warning
 - **WHEN** viewport width or toolbar content changes
 - **THEN** navigation remains available without page-level horizontal overflow and the canvas backing dimensions follow its rendered dimensions
+
+### Requirement: Search visible object types
+The add-node menu SHALL match the visible server-supplied type as well as label, name and category, without adding otherwise unavailable catalog entries.
+
+#### Scenario: A template name differs from its type
+- **WHEN** the user searches `directory` and the available template is named `dir` with type `directory`
+- **THEN** the template remains discoverable and can be created through the existing server-authorized path

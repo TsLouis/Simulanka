@@ -39,12 +39,24 @@ jobs:
           git archive --format=zip HEAD > acceptance/source.zip
       - name: Install frontend
         run: npm ci --prefix frontend
+      - name: Record dependency audit (report only)
+        run: |
+          audit_status=0
+          npm audit --prefix frontend --json > acceptance/npm-audit.json || audit_status=$?
+          echo "$audit_status" > acceptance/npm-audit-exit-code.txt
+          node -e "const r=require('./acceptance/npm-audit.json'); if(r.error) throw new Error(JSON.stringify(r.error)); console.log(r.metadata.vulnerabilities)"
       - name: Frontend unit tests
-        run: npm test --prefix frontend
+        run: |
+          set -o pipefail
+          npm test --prefix frontend 2>&1 | tee acceptance/frontend-tests.txt
       - name: Svelte and TypeScript
-        run: npm run check --prefix frontend
+        run: |
+          set -o pipefail
+          npm run check --prefix frontend 2>&1 | tee acceptance/frontend-check.txt
       - name: Production build
-        run: npm run build --prefix frontend
+        run: |
+          set -o pipefail
+          npm run build --prefix frontend 2>&1 | tee acceptance/frontend-build.txt
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -53,11 +65,15 @@ jobs:
       - name: Install backend and browser harness
         run: python -m pip install -e '.[dev,server]' 'playwright==1.58.0'
       - name: Full backend regression
-        run: pytest -q --junitxml=acceptance/backend-tests.xml
+        run: |
+          set -o pipefail
+          pytest -q --junitxml=acceptance/backend-tests.xml 2>&1 | tee acceptance/backend-tests.txt
       - name: Install Chromium
         run: python -m playwright install --with-deps chromium
       - name: Real browser and API smoke
-        run: python scripts/workspace_browser_smoke.py
+        run: |
+          set -o pipefail
+          python scripts/workspace_browser_smoke.py 2>&1 | tee acceptance/browser-log.txt
       - name: Keep verification bundle
         if: always()
         uses: actions/upload-artifact@v4
