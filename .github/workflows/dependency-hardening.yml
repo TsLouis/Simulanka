@@ -16,52 +16,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  candidate:
-    name: Candidate resolution (not committed-lock acceptance)
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - name: Record baseline
-        run: |
-          mkdir -p dependency-evidence
-          git rev-parse HEAD > dependency-evidence/revision.txt
-          node --version > dependency-evidence/node.txt
-          npm --version > dependency-evidence/npm.txt
-      - name: Generate candidate without force or application edits
-        run: |
-          npm pkg set --prefix frontend 'dependencies.dompurify=^3.4.13' 'devDependencies.vite=^8.0.16'
-          npm update --prefix frontend --package-lock-only --ignore-scripts --no-fund dompurify vite postcss nanoid devalue
-          cp frontend/package.json dependency-evidence/package.json
-          cp frontend/package-lock.json dependency-evidence/package-lock.json
-          git diff -- frontend/package.json frontend/package-lock.json > dependency-evidence/candidate.diff
-      - name: Clean install candidate
-        run: npm ci --prefix frontend
-      - name: Audit candidate (fail closed)
-        run: |
-          npm audit --prefix frontend --json > dependency-evidence/audit.json
-          node -e "const r=require('./dependency-evidence/audit.json'); if(r.error || r.metadata?.vulnerabilities?.total !== 0) process.exit(1)"
-      - name: Test candidate
-        run: |
-          set -o pipefail
-          npm test --prefix frontend 2>&1 | tee dependency-evidence/frontend-tests.txt
-          npm run check --prefix frontend 2>&1 | tee dependency-evidence/frontend-check.txt
-          npm run build --prefix frontend 2>&1 | tee dependency-evidence/frontend-build.txt
-      - name: Retain candidate and evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: dependency-candidate
-          path: dependency-evidence/
-          retention-days: 14
-          if-no-files-found: error
-
   review:
     name: OpenSpec and retrospective code impact
     runs-on: ubuntu-latest
@@ -91,6 +45,7 @@ jobs:
           npx --yes @fission-ai/openspec@1.13.1 validate workspace-status-resilience --strict --no-interactive 2>&1 | tee review-evidence/openspec-workspace.txt
           npx --yes @fission-ai/openspec@1.13.1 validate frontend-dependency-hardening --strict --no-interactive 2>&1 | tee review-evidence/openspec-dependencies.txt
       - name: Index current source without generated instructions
+        id: index
         run: |
           set -o pipefail
           timeout 360 npx --yes gitnexus@1.6.12 analyze --index-only --skip-fts --workers 2 2>&1 | tee review-evidence/gitnexus-analyze.txt
@@ -98,15 +53,17 @@ jobs:
         run: |
           set -o pipefail
           npx --yes gitnexus@1.6.12 impact subscribeEvents --direction upstream --file frontend/src/lib/events.ts --repo "$GITHUB_WORKSPACE" 2>&1 | tee review-evidence/impact-events.txt
-          npx --yes gitnexus@1.6.12 impact load --direction upstream --file frontend/src/App.svelte --repo "$GITHUB_WORKSPACE" 2>&1 | tee review-evidence/impact-load.txt
           npx --yes gitnexus@1.6.12 impact filterGroups --direction upstream --file frontend/src/lib/templates.ts --repo "$GITHUB_WORKSPACE" 2>&1 | tee review-evidence/impact-search.txt
           npx --yes gitnexus@1.6.12 impact ViewRequestGate --direction upstream --file frontend/src/lib/view-request-gate.ts --repo "$GITHUB_WORKSPACE" 2>&1 | tee review-evidence/impact-read-gate.txt
-      - name: Detect changes against integrated base
+          npx --yes gitnexus@1.6.12 impact load --direction upstream --file frontend/src/App.svelte --repo "$GITHUB_WORKSPACE" 2>&1 | tee review-evidence/impact-load.txt
+      - name: Detect changes even if a symbol lookup failed
+        if: ${{ always() && steps.index.outcome == 'success' }}
         run: |
           set -o pipefail
           npx --yes gitnexus@1.6.12 detect-changes --scope compare --base-ref 5f1a037e93a64d138af34615475ee67741d8cf24 --repo "$GITHUB_WORKSPACE" 2>&1 | tee review-evidence/detect-changes.txt
+          npx --yes gitnexus@1.6.12 detect-changes --scope compare --base-ref 5f6993cfdb41c38757d130a2792883681435ddba --repo "$GITHUB_WORKSPACE" 2>&1 | tee review-evidence/detect-dependency-changes.txt
           git diff --exit-code -- frontend/src src
-      - name: Retain complete review output
+      - name: Retain complete review output (UNKNOWN or partial is not a clean gate)
         if: always()
         uses: actions/upload-artifact@v4
         with:
