@@ -1,0 +1,55 @@
+name: Workspace acceptance
+
+on:
+  pull_request:
+    paths:
+      - 'frontend/**'
+      - 'src/simulanka/server/**'
+      - 'scripts/workspace_browser_smoke.py'
+      - '.github/workflows/workspace-acceptance.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: workspace-acceptance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact proposed revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Save reproducible source snapshot
+        run: |
+          mkdir -p acceptance
+          git rev-parse HEAD > acceptance/revision.txt
+          git archive --format=zip HEAD > acceptance/source.zip
+      - name: Install frontend
+        run: npm ci --prefix frontend
+      - name: Frontend unit tests
+        run: npm test --prefix frontend
+      - name: Svelte and TypeScript
+        run: npm run check --prefix frontend
+      - name: Production build
+        run: npm run build --prefix frontend
+      - name: Keep verification bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: workspace-verification
+          path: |
+            acceptance/
+            frontend/dist/
+          retention-days: 7
+          if-no-files-found: error
