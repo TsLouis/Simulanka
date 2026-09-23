@@ -33,6 +33,7 @@
   import { installConnectionFeedback } from './lib/connection-feedback'
   import { createAgentSessionController } from './lib/agent-session'
   import { CreateReloadGate } from './lib/create-reload-gate'
+  import { ViewRequestGate } from './lib/view-request-gate'
   import WorkspaceShell from './lib/WorkspaceShell.svelte'
   import TopBar from './lib/TopBar.svelte'
   import ContextMenu from './lib/ContextMenu.svelte'
@@ -49,6 +50,8 @@
   let status = 'idle'
   let positionSaveError: string | null = null
   const createReloadGate = new CreateReloadGate()
+  const viewRequests = new ViewRequestGate()
+  let canvasResizeObserver: ResizeObserver | null = null
   let nodeCount = 0
   let edgeCount = 0
   let boundaryCount = 0
@@ -115,10 +118,14 @@
   $: viewPositions = positions[rootKey] ?? {}
 
   async function load() {
+    if (viewRequests.disposed) return
+    const request = viewRequests.begin(currentRootId)
     status = 'loading…'
     createAffordance = null
     try {
-      const payload = await fetchGraph(currentRootId)
+      const payload = await fetchGraph(request.root)
+      // A slow old view (or reload) must never replace newer navigation.
+      if (!viewRequests.accepts(request, currentRootId)) return
       // A reload may already be fetching when Add Node begins. Never render
       // that response until every create has handed off its initial position.
       if (createReloadGate.deferIfBusy()) return
@@ -215,7 +222,9 @@
 
       applyPendingSelect()
     } catch (err) {
-      status = `error: ${(err as Error).message}`
+      if (viewRequests.accepts(request, currentRootId)) {
+        status = `error: ${(err as Error).message}`
+      }
     }
   }
 
@@ -861,9 +870,9 @@
       try {
         await savePositions(rk, delta)
       } catch (err) {
-        // Best-effort: log and drop. The next drag will retry; in-memory
-        // positions still reflect the user's intent for this session.
-        console.error('savePositions failed', err)
+        // Layout is sidecar state: report the failure without undoing graph
+        // edits or claiming that this unacknowledged delta reached the disk.
+        positionSaveError = `Layout save failed: ${(err as Error).message}`
       }
     }
   }
@@ -962,9 +971,12 @@
     } catch (err) {
       console.warn('fetchPositions failed; starting with empty layout cache', err)
     }
+    if (viewRequests.disposed) return
+    canvasResizeObserver = new ResizeObserver(resizeCanvas)
+    canvasResizeObserver.observe(canvasEl)
     void fetchTemplates()
       .then(t => {
-        customTemplates = t
+        if (!viewRequests.disposed) customTemplates = t
       })
       .catch(() => undefined)
     void load()
@@ -972,6 +984,9 @@
       onReady: gv => {
         liveOk = true
         liveVersion = gv
+        // The server begins at its current version on every connection;
+        // catch up changes missed during disconnection (and startup).
+        scheduleReload()
       },
       onCommit: msg => {
         liveOk = true
@@ -1005,7 +1020,7 @@
   // one reload of the final state.
   let reloadTimer: number | null = null
   function scheduleReload() {
-    if (createReloadGate.deferIfBusy()) return
+    if (viewRequests.disposed || createReloadGate.deferIfBusy()) return
     if (reloadTimer !== null) window.clearTimeout(reloadTimer)
     reloadTimer = window.setTimeout(() => {
       reloadTimer = null
@@ -1037,6 +1052,9 @@
   }
 
   onDestroy(() => {
+    viewRequests.dispose()
+    canvasResizeObserver?.disconnect()
+    if (reloadTimer !== null) window.clearTimeout(reloadTimer)
     subscription?.close()
     canvasEl?.removeEventListener('contextmenu', onCanvasContextMenu)
     canvasEl?.removeEventListener('mousedown', onAgentPointerMouseDown, true)
@@ -1070,7 +1088,9 @@
     {crumbs}
     canBack={navBack.length > 0}
     canForward={navFwd.length > 0}
-    status={positionSaveError ?? status}
+    {status}
+    positionWarning={positionSaveError}
+    onDismissPositionWarning={() => (positionSaveError = null)}
     {liveOk}
     {liveVersion}
     {nodeCount}
