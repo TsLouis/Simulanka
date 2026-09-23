@@ -3,9 +3,15 @@ name: Dependency hardening
 on:
   pull_request:
     paths:
-      - 'frontend/package.json'
-      - 'frontend/package-lock.json'
+      - 'frontend/**'
+      - 'scripts/markdown_security_smoke.py'
       - 'openspec/changes/frontend-dependency-hardening/**'
+      - '.github/workflows/dependency-hardening.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'frontend/**'
+      - 'scripts/markdown_security_smoke.py'
       - '.github/workflows/dependency-hardening.yml'
 
 permissions:
@@ -16,8 +22,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  review:
-    name: OpenSpec and retrospective code impact
+  verify:
+    name: Committed-lock audit and FileViewer safety
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -27,47 +33,57 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Record exact review scope
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Record committed dependency inputs
         run: |
-          mkdir -p review-evidence
-          git rev-parse HEAD > review-evidence/revision.txt
-          git diff --name-status 5f6993cfdb41c38757d130a2792883681435ddba HEAD > review-evidence/dependency-scope.txt
-          git diff --name-status 5f1a037e93a64d138af34615475ee67741d8cf24 HEAD > review-evidence/workspace-scope.txt
+          mkdir -p security-evidence
+          git rev-parse HEAD > security-evidence/revision.txt
+          cp frontend/package.json frontend/package-lock.json security-evidence/
+          sha256sum frontend/package.json frontend/package-lock.json > security-evidence/input-sha256.txt
+          node --version > security-evidence/node.txt
+          npm --version > security-evidence/npm.txt
+      - name: Clean install committed lock (no resolution or audit-fix)
+        run: npm ci --prefix frontend
+      - name: Audit all frontend dependencies (fail closed)
+        run: |
+          npm audit --prefix frontend --json > security-evidence/audit.json
+          node -e "const r=require('./security-evidence/audit.json'); if(r.error || r.metadata?.vulnerabilities?.total !== 0) process.exit(1)"
+          git diff --exit-code -- frontend/package.json frontend/package-lock.json
+      - name: Frontend compatibility
+        run: |
+          set -o pipefail
+          npm test --prefix frontend 2>&1 | tee security-evidence/frontend-tests.txt
+          npm run check --prefix frontend 2>&1 | tee security-evidence/frontend-check.txt
+          npm run build --prefix frontend 2>&1 | tee security-evidence/frontend-build.txt
       - name: OpenSpec strict validation
+        if: github.event_name == 'pull_request'
         run: |
           set -o pipefail
-          npx --yes @fission-ai/openspec@1.13.1 validate workspace-status-resilience --strict --no-interactive 2>&1 | tee review-evidence/openspec-workspace.txt
-          npx --yes @fission-ai/openspec@1.13.1 validate frontend-dependency-hardening --strict --no-interactive 2>&1 | tee review-evidence/openspec-dependencies.txt
-      - name: Index current source without generated instructions
-        id: index
+          npx --yes @fission-ai/openspec@1.13.1 validate workspace-status-resilience --strict --no-interactive 2>&1 | tee security-evidence/openspec-workspace.txt
+          npx --yes @fission-ai/openspec@1.13.1 validate frontend-dependency-hardening --strict --no-interactive 2>&1 | tee security-evidence/openspec-dependencies.txt
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install disposable server and browser harness
+        run: |
+          python -m pip install -e '.[dev,server]' 'playwright==1.58.0'
+          python -m playwright install --with-deps chromium
+      - name: Real registered Markdown through production FileViewer
         run: |
           set -o pipefail
-          timeout 360 npx --yes gitnexus@1.6.12 analyze --index-only --skip-fts --workers 2 2>&1 | tee review-evidence/gitnexus-analyze.txt
-      - name: Retrospective impact (not a claim of pre-edit analysis)
-        run: |
-          set -o pipefail
-          npx --yes gitnexus@1.6.12 impact subscribeEvents --direction upstream --file frontend/src/lib/events.ts --repo "$GITHUB_WORKSPACE" 2>&1 | tee review-evidence/impact-events.txt
-          npx --yes gitnexus@1.6.12 impact filterGroups --direction upstream --file frontend/src/lib/templates.ts --repo "$GITHUB_WORKSPACE" 2>&1 | tee review-evidence/impact-search.txt
-          npx --yes gitnexus@1.6.12 impact ViewRequestGate --direction upstream --file frontend/src/lib/view-request-gate.ts --repo "$GITHUB_WORKSPACE" 2>&1 | tee review-evidence/impact-read-gate.txt
-          npx --yes gitnexus@1.6.12 impact load --direction upstream --file frontend/src/App.svelte --repo "$GITHUB_WORKSPACE" 2>&1 | tee review-evidence/impact-load.txt
-      - name: Detect changes even if a symbol lookup failed
-        if: ${{ always() && steps.index.outcome == 'success' }}
-        run: |
-          set -o pipefail
-          npx --yes gitnexus@1.6.12 detect-changes --scope compare --base-ref 5f1a037e93a64d138af34615475ee67741d8cf24 --repo "$GITHUB_WORKSPACE" 2>&1 | tee review-evidence/detect-changes.txt
-          npx --yes gitnexus@1.6.12 detect-changes --scope compare --base-ref 5f6993cfdb41c38757d130a2792883681435ddba --repo "$GITHUB_WORKSPACE" 2>&1 | tee review-evidence/detect-dependency-changes.txt
-          git diff --exit-code -- frontend/src src
-      - name: Retain complete review output (UNKNOWN or partial is not a clean gate)
+          python scripts/markdown_security_smoke.py 2>&1 | tee security-evidence/browser-log.txt
+      - name: Retain exact verification evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: repository-review
-          path: review-evidence/
+          name: dependency-security-verification
+          path: security-evidence/
           retention-days: 14
           if-no-files-found: error
