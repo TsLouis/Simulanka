@@ -8,6 +8,8 @@
 
 - [x] 1.7 Make visible object types searchable (browser-discovered gap).
 
+- [x] 1.8 Restore development Port update/delete transport parity; add real proxy regression.
+
 ## 2. Verification
 - [x] 2.1 Run 14 focused event/request-gate/template-search tests locally.
 - [x] 2.2 Run full frontend tests, Svelte/TypeScript check and production build on proposed code.

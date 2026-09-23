@@ -41,3 +41,10 @@ The add-node menu SHALL match the visible server-supplied type as well as label,
 #### Scenario: A template name differs from its type
 - **WHEN** the user searches `directory` and the available template is named `dir` with type `directory`
 - **THEN** the template remains discoverable and can be created through the existing server-authorized path
+
+### Requirement: Port transport parity
+Development-mode Port update and delete requests SHALL reach the configured API with their method, path and body intact.
+
+#### Scenario: Editing a Port through the development server
+- **WHEN** the client sends a Port update or delete through Vite
+- **THEN** the existing backend endpoint receives the request instead of the SPA fallback

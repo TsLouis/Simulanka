@@ -23,3 +23,7 @@ A read-only-permission CI workflow runs frontend gates, backend regression, and 
 ## Browser-discovered search gap
 
 The first Chromium pass confirmed the directory template is named `dir` but displays `directory` as its type. Filtering only labels/names/categories makes that visible type unsearchable. Extend filtering to the already server-supplied profile string, without changing the catalog, parent rules or write permissions. Retain the real browser `directory` search and add direct regressions. The test harness uses actual keyboard navigation before testing focus-visible. Dependency audit results are retained as reports, not represented as remediated findings.
+
+## Development transport parity
+
+Final route review found `/port/{id}/update` and `/port/{id}` missing from the Vite proxy although `/node/{id}/ports` is covered. Same-origin production smoke cannot catch this development-only gap. Add a bounded `/port` proxy rule and a real HTTP proxy regression using an ephemeral local upstream; preserve `/node_modules` and existing routes. No backend contract or permission changes.
