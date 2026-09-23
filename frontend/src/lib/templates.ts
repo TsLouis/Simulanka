@@ -113,6 +113,7 @@ export function filterGroups(groups: TemplateGroup[], query: string): TemplateGr
         template =>
           template.label.toLowerCase().includes(normalized) ||
           template.name.toLowerCase().includes(normalized) ||
+          template.type.toLowerCase().includes(normalized) ||
           group.category.toLowerCase().includes(normalized),
       ),
     }))

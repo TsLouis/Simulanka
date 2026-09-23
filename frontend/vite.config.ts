@@ -32,6 +32,8 @@ export default defineConfig({
       // /node_modules/** and breaks every dev-mode module load (2026-07-12
       // 实测翻车). Proxy keys starting with ^ are treated as regex.
       '^/node(/|$)': apiTarget,
+      // Port update/delete are siblings of /node, not covered by its proxy.
+      '^/port(?:/|$)': apiTarget,
       // GET loads persisted layout, POST /ui/positions/{rootKey} saves drag
       // deltas. Without this rule dev-mode position persistence silently 404s
       // (the request hits the Vite dev server, not the backend).
