@@ -9,11 +9,11 @@
 - [x] 2.3 Add a disposable real-FileViewer Markdown safety regression without production hooks.
 
 ## 3. Verify and deliver
-- [ ] 3.1 Verify committed-lock audit, frontend tests/check/build.
-- [ ] 3.2 Run existing Chromium/FastAPI/backend acceptance and new FileViewer safety checks on the committed candidate.
+- [x] 3.1 Verify committed-lock audit, frontend tests/check/build.
+- [x] 3.2 Run existing Chromium/FastAPI/backend acceptance and new FileViewer safety checks on the committed candidate.
 - [x] 3.3 Execute OpenSpec/GitNexus tooling and record limitations without waiving incomplete gates.
-- [ ] 3.4 Publish exact committed-candidate evidence and final diff review; preserve outstanding parent acceptance.
+- [x] 3.4 Publish exact committed-candidate evidence and final diff review; preserve outstanding parent acceptance.
 
-Candidate run 35867416702: audited dependency set has zero findings, 60 frontend tests pass, check/build pass. This is candidate evidence, not committed-lock acceptance. Exact lock Git blob is `4f298fb0aacf6846647e1d5aa906f4dd30fb72e3` (verified byte-for-byte after upload).
+Verified application/lock/harness revision: `f0aea78f807cfd7ee367b7e975ea4eab8489e59c`. Three CI workflows passed: 60 frontend tests, zero type diagnostics, production build, npm audit zero findings, backend 397 passed / 6 skipped, workspace and FileViewer browser checks without page errors. See verification.md for exact runs and artifacts.
 
-OpenSpec strict passed for both changes. GitNexus runs 35867416702 / 35867815444 executed indexing/impact/detect-changes; Svelte lookup remains incomplete, risk UNKNOWN, so the parent GitNexus gate is NOT marked complete. See review.md.
+OpenSpec strict passed for both changes. GitNexus runs 35867416702 / 35867815444 executed indexing/impact/detect-changes, but Svelte lookup and graph coverage remain incomplete. Completing task 3.3 means execution and honest reporting, NOT a clean GitNexus gate. The parent gate, full manual/real-project acceptance, merge and deployment remain open.

@@ -61,12 +61,15 @@ jobs:
           npm test --prefix frontend 2>&1 | tee security-evidence/frontend-tests.txt
           npm run check --prefix frontend 2>&1 | tee security-evidence/frontend-check.txt
           npm run build --prefix frontend 2>&1 | tee security-evidence/frontend-build.txt
-      - name: OpenSpec strict validation
+      - name: OpenSpec strict validation for active changes
         if: github.event_name == 'pull_request'
         run: |
           set -o pipefail
-          npx --yes @fission-ai/openspec@1.13.1 validate workspace-status-resilience --strict --no-interactive 2>&1 | tee security-evidence/openspec-workspace.txt
-          npx --yes @fission-ai/openspec@1.13.1 validate frontend-dependency-hardening --strict --no-interactive 2>&1 | tee security-evidence/openspec-dependencies.txt
+          for change in workspace-status-resilience frontend-dependency-hardening; do
+            if test -d "openspec/changes/$change"; then
+              npx --yes @fission-ai/openspec@1.13.1 validate "$change" --strict --no-interactive 2>&1 | tee "security-evidence/openspec-$change.txt"
+            fi
+          done
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
